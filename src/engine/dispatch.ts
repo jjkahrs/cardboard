@@ -43,13 +43,23 @@ import { evalCriteria } from './criteria';
 import { scanContinuous } from './continuous';
 import { applyEffect, canMove, type EffectContext } from './effects';
 import { appendPending, pop, promotePending, push, top } from './frames';
-import { clear, isResuming, isSuspended, promptIdOf, raise, validateAnswer } from './interaction';
+import {
+  clear,
+  isResuming,
+  isSuspended,
+  promptIdOf,
+  raise,
+  validateAnswer,
+  validateNumberAnswer,
+  validateOptionAnswer,
+  validateSeatAnswer,
+} from './interaction';
 // v2 §4.7, §4.8 — step 22. `pending.ts` owns the `resolve` frame's body; this module only wires it
 // into the `advance()` switch, the same way it wires `event`/`rule`/`settle`.
 import { advanceResolve } from './pending';
 import { applyTransition, findAutoTransition } from './stateMachine';
 import { CHOSEN_PROMPT_KEY, resolveTargets } from './targets';
-import { resolveSeat, zoneKey } from './valueRef';
+import { resolveSeat, resolveValueRef, zoneKey } from './valueRef';
 
 // ---------------------------------------------------------------------------
 // Results and logging
@@ -386,6 +396,116 @@ function promptLabel(interaction: Interaction): string {
 }
 
 /**
+ * v2 §4.5, §5.5, §5.11, steps 28/29 — the raise half of `chooseMode`/`chooseNumber`/`sealedChoice`'s
+ * suspension. Parallels the `TargetSelector`-prompt block in `runEffect` below: resolve whatever the
+ * interaction needs, raise it (or push the `sealed` frame and raise), log, and leave the cursor
+ * untouched (§3.3 — raise before mutate). A resolution failure (a bad seat ref, a non-numeric
+ * min/max) is NOT a suspend — it is a rule-legal refusal of just this ONE effect, handled exactly
+ * like "0 legal targets" above: `onRejection` decides whether the RULE aborts or continues past it.
+ */
+function raiseChoice(
+  frame: RuleFrame,
+  rule: RuleSet,
+  effect: Extract<Effect, { kind: 'chooseMode' | 'chooseNumber' | 'sealedChoice' }>,
+  promptId: string,
+  state: PlayState,
+  def: GameDefinition,
+  lines: LogLine[]
+): StepResult {
+  const fail = (reason: RejectReason, message: string): StepResult => {
+    log(lines, {
+      level: levelFor(reason),
+      kind: 'prompt',
+      depth: frame.depth,
+      ruleId: rule.id,
+      effectKind: effect.kind,
+      message,
+    });
+    if (rule.onRejection === 'abort') frame.aborted = true;
+    else frame.cursor += 1;
+    return MORE;
+  };
+
+  if (effect.kind === 'sealedChoice') {
+    const seats = resolveSeat(effect.seats, state, frame.ctx);
+    if (!seats.ok) return fail(seats.reason, `sealedChoice "${effect.choiceId}": ${seats.message}`);
+    if (seats.seats.length === 0) {
+      return fail('NO_TARGETS', `sealedChoice "${effect.choiceId}": no seats resolved.`);
+    }
+    // Pushed ON TOP of this very `rule` frame — dispatch's `advance()` processes the `sealed` frame
+    // next, and this `rule` frame resumes (from the SAME cursor) once it pops (§5.11, `submitSealed`).
+    push(state, { kind: 'sealed', choiceId: effect.choiceId, parentId: frame.id, depth: frame.depth });
+    raise(state, {
+      kind: 'sealed',
+      promptId,
+      choiceId: effect.choiceId,
+      seats: seats.seats,
+      options: effect.options,
+      submitted: {},
+    });
+    log(lines, {
+      level: 'info',
+      kind: 'prompt',
+      depth: frame.depth,
+      ruleId: rule.id,
+      effectKind: effect.kind,
+      // Opening the choice names WHO is in it, never what anyone will pick — §5.11 rule 1 governs
+      // submission, not this line, but nothing here reveals a value either.
+      message: `Sealed choice "${effect.choiceId}" opened for seats ${seats.seats.join(', ')}.`,
+    });
+    return SUSPENDED;
+  }
+
+  const seats = resolveSeat(effect.seat, state, frame.ctx);
+  if (!seats.ok) return fail(seats.reason, `${effect.kind} "${effect.promptText}": ${seats.message}`);
+  if (seats.seats.length !== 1) {
+    return fail(
+      'INVALID_SEAT',
+      `${effect.kind} "${effect.promptText}": seat ref resolved to ${seats.seats.length} seats; expected exactly one.`
+    );
+  }
+  const seat = seats.seats[0];
+
+  if (effect.kind === 'chooseMode') {
+    raise(state, {
+      kind: 'chooseOption',
+      promptId,
+      promptText: effect.promptText,
+      seat,
+      options: effect.modes.map((m, idx) => ({ id: String(idx), label: m.label })),
+    });
+  } else {
+    const min = resolveValueRef(effect.min, state, frame.ctx, def);
+    if (!min.ok) return fail(min.reason, `chooseNumber "${effect.promptText}": min — ${min.message}`);
+    if (min.values.length !== 1 || typeof min.values[0] !== 'number') {
+      return fail('TYPE_MISMATCH', `chooseNumber "${effect.promptText}": min did not resolve to a single number.`);
+    }
+    const max = resolveValueRef(effect.max, state, frame.ctx, def);
+    if (!max.ok) return fail(max.reason, `chooseNumber "${effect.promptText}": max — ${max.message}`);
+    if (max.values.length !== 1 || typeof max.values[0] !== 'number') {
+      return fail('TYPE_MISMATCH', `chooseNumber "${effect.promptText}": max did not resolve to a single number.`);
+    }
+    raise(state, {
+      kind: 'chooseNumber',
+      promptId,
+      promptText: effect.promptText,
+      seat,
+      min: min.values[0],
+      max: max.values[0],
+    });
+  }
+  log(lines, {
+    level: 'info',
+    kind: 'prompt',
+    depth: frame.depth,
+    ruleId: rule.id,
+    effectKind: effect.kind,
+    message: `Prompt "${effect.promptText}" (seat ${seat}): raised.`,
+  });
+  return SUSPENDED;
+}
+
+/**
  * ONE effect — the one at `frame.cursor` — then the cursor moves. v1 ran the whole remaining list
  * per `step()`; v2 runs one (§3.2). Observable state is identical, only the number of `step()`
  * calls changes, and the store loops until `done`.
@@ -461,6 +581,32 @@ function runEffect(
       // v2's equivalent is simply leaving the cursor where it is — this very frame is the top of the
       // stack, so resuming re-enters the same effect with the answer now in `ctx.promptAnswers`.
       return SUSPENDED;
+    }
+  }
+
+  // v2 §4.5, §5.11, steps 28/29 — `chooseMode`/`chooseNumber`/`sealedChoice` all suspend WITHOUT a
+  // `target: TargetSelector` (`selector` above is null for every one of them), so they get their own
+  // raise-before-mutate dance here, parallel to the block above. `promptId` is the SAME formula
+  // either way, which is what lets re-entry (after the answer/reveal lands) recognise "already
+  // resolved" through the SAME `frame.ctx.promptAnswers[promptId]` check `chooseCards` uses.
+  if (!selector && (effect.kind === 'chooseMode' || effect.kind === 'chooseNumber' || effect.kind === 'sealedChoice')) {
+    chosen = frame.ctx.promptAnswers[promptId];
+    if (chosen === undefined) {
+      return raiseChoice(frame, rule, effect, promptId, state, def, lines);
+    }
+    if (effect.kind === 'sealedChoice') {
+      // `submitSealed` already did EVERYTHING — recorded, revealed, logged, cleared the interaction,
+      // popped the `sealed` frame, and wrote this very marker. Nothing is left to apply; `effects.ts`
+      // is deliberately never reached for this kind from the top level (see its own comment).
+      frame.cursor += 1;
+      return MORE;
+    }
+    if (effect.kind === 'chooseNumber') {
+      // Persist under the AUTHORED key too, not just `promptId` — `promptId` only proves resumption;
+      // this is what makes a LATER effect's `ValueRef{kind:'promptNumber', key}` resolve (the design
+      // slip closed in this step). `frame.ctx` is the real, rewound object — unlike the `effectCtx`
+      // copy built below for the CURRENT effect only — so this write outlives this one application.
+      frame.ctx.promptAnswers[effect.key] = [...chosen];
     }
   }
 
@@ -747,14 +893,27 @@ function advance(state: PlayState, def: GameDefinition, lines: LogLine[]): StepR
     // v2 §4.7, §4.8 — step 22. `pending.ts`'s `advanceResolve` owns the body.
     case 'resolve':
       return advanceResolve(frame, state, def, lines);
-    // v2 §4.7 — STUB. Nothing in this wave can PUSH either of these two frames (`openPriority` and
-    // `sealedChoice` both reject NOT_ACTIVATABLE in effects.ts), so a throw here is honest: reaching
-    // this arm means something upstream pushed a frame it should not have been able to. Real bodies
-    // land with the steps that push them.
+    // v2 §4.7 — STUB. Nothing in this wave can PUSH this frame (`openPriority` rejects
+    // NOT_ACTIVATABLE in effects.ts), so a throw here is honest: reaching this arm means something
+    // upstream pushed a frame it should not have been able to. A real body lands with step 24.
     case 'priority':
       throw new Error('priority frame not implemented — v2 step 24');
+    // v2 §4.7, §5.11, step 29 — genuinely unreachable in normal play: `raiseChoice` always pairs
+    // pushing this frame with raising the matching `Interaction`, so `isSuspended` at the top of this
+    // function returns SUSPENDED before this switch is ever reached while the choice is open, and
+    // `submitSealed` pops the frame in the SAME action that clears the interaction once resolved.
+    // Kept as a named, non-throwing recovery — matching `pending.ts`'s `advanceResolve` precedent for
+    // "nothing in this wave can reach this" — rather than a throw, in case a future caller ever pushes
+    // one without following that pairing.
     case 'sealed':
-      throw new Error('sealed frame not implemented — v2 step 29');
+      pop(state);
+      log(lines, {
+        level: 'error',
+        kind: 'skip',
+        depth: frame.depth,
+        message: `Sealed choice "${frame.choiceId}": frame reached advance() with no open Interaction — popped defensively.`,
+      });
+      return MORE;
   }
 }
 
@@ -978,14 +1137,139 @@ function applyAction(
       return reject('NOT_ACTIVATABLE', `Activate: RuleSet.activation is not yet implemented — v2 step 25.`);
     case 'passPriority':
       return reject('INVALID_ANSWER', 'Pass priority ignored: no priority window is open — v2 step 24.');
-    case 'answerOption':
-      return reject('INVALID_ANSWER', 'Answer ignored: chooseOption is not yet raised — v2 step 28.');
-    case 'answerNumber':
-      return reject('INVALID_ANSWER', 'Answer ignored: chooseNumber is not yet raised — v2 step 28.');
-    case 'answerSeat':
-      return reject('INVALID_ANSWER', 'Answer ignored: chooseSeat is not yet raised — v2 step 24/28.');
-    case 'submitSealed':
-      return reject('INVALID_ANSWER', 'Submission ignored: sealedChoice is not yet raised — v2 step 29.');
+
+    // -----------------------------------------------------------------------
+    // v2 §4.9, §4.12, step 28 — mirrors `answerPrompt` exactly: validate against the pinned
+    // interaction (pure, so a rejected answer leaves the suspension untouched), write the answer
+    // into the suspended `rule` frame's own `ctx.promptAnswers` (keyed by ITS `promptId`, so
+    // `runEffect` recognises "already answered" on re-entry), clear, log, resume.
+    case 'answerOption': {
+      const pending = state.interaction;
+      if (!pending) return reject('INVALID_ANSWER', 'Answer ignored: no prompt is pending.');
+      const verdict = validateOptionAnswer(pending, action.optionId);
+      if (!verdict.ok) return reject(verdict.reason, verdict.detail ?? verdict.reason, SUSPENDED);
+      const head = top(state);
+      if (head?.kind !== 'rule') {
+        return reject('INVALID_ANSWER', 'Answer ignored: the suspended effect is gone.', SUSPENDED);
+      }
+      head.ctx.promptAnswers[pending.promptId] = [action.optionId];
+      clear(state);
+      log(lines, {
+        level: 'info',
+        kind: 'prompt',
+        depth: head.depth,
+        ruleId: head.ruleId,
+        message: `Prompt ${promptLabel(pending)} answered: ${action.optionId}.`,
+      });
+      return MORE;
+    }
+
+    case 'answerNumber': {
+      const pending = state.interaction;
+      if (!pending) return reject('INVALID_ANSWER', 'Answer ignored: no prompt is pending.');
+      const verdict = validateNumberAnswer(pending, action.value);
+      if (!verdict.ok) return reject(verdict.reason, verdict.detail ?? verdict.reason, SUSPENDED);
+      const head = top(state);
+      if (head?.kind !== 'rule') {
+        return reject('INVALID_ANSWER', 'Answer ignored: the suspended effect is gone.', SUSPENDED);
+      }
+      head.ctx.promptAnswers[pending.promptId] = [String(action.value)];
+      clear(state);
+      log(lines, {
+        level: 'info',
+        kind: 'prompt',
+        depth: head.depth,
+        ruleId: head.ruleId,
+        message: `Prompt ${promptLabel(pending)} answered: ${action.value}.`,
+      });
+      return MORE;
+    }
+
+    // Nothing in this wave RAISES a `chooseSeat` interaction (§4.5's Effect union has no producer of
+    // one) — this arm is correct, generic machinery exercised only defensively today, same status
+    // `priority`/`sealed` had before their own raising primitives landed.
+    case 'answerSeat': {
+      const pending = state.interaction;
+      if (!pending) return reject('INVALID_ANSWER', 'Answer ignored: no prompt is pending.');
+      const verdict = validateSeatAnswer(pending, action.seat);
+      if (!verdict.ok) return reject(verdict.reason, verdict.detail ?? verdict.reason, SUSPENDED);
+      const head = top(state);
+      if (head?.kind !== 'rule') {
+        return reject('INVALID_ANSWER', 'Answer ignored: the suspended effect is gone.', SUSPENDED);
+      }
+      head.ctx.promptAnswers[pending.promptId] = [String(action.seat)];
+      clear(state);
+      log(lines, {
+        level: 'info',
+        kind: 'prompt',
+        depth: head.depth,
+        ruleId: head.ruleId,
+        message: `Prompt ${promptLabel(pending)} answered: seat ${action.seat}.`,
+      });
+      return MORE;
+    }
+
+    // -----------------------------------------------------------------------
+    // v2 §4.9, §4.12, §5.11, step 29. §5.11's three rules, all enforced right here:
+    //  1. NO log line while seats remain outstanding — the early `return SUSPENDED` below logs
+    //     nothing at all.
+    //  2. `interaction.submitted` only ever gains entries; nothing here (or anywhere else) lets one
+    //     seat read another's before the reveal — that refusal lives in `visibility.ts`, consulted by
+    //     the UI, not by this action (there is nothing secret in `PlayState` itself to leak from).
+    //  3. Reveal walks `pending.seats` (the frame-push-time resolution order), never
+    //     `Object.keys(pending.submitted)` (insertion/submission order) — so two sessions where the
+    //     same two seats submit in opposite orders produce byte-identical state (§9.4(b)).
+    case 'submitSealed': {
+      const pending = state.interaction;
+      if (!pending || pending.kind !== 'sealed') {
+        return reject('INVALID_ANSWER', 'Submission ignored: no sealed choice is open.');
+      }
+      if (!pending.seats.includes(action.seat)) {
+        return reject(
+          'INVALID_ANSWER',
+          `Submission ignored: seat ${action.seat} is not part of sealed choice "${pending.choiceId}".`,
+          SUSPENDED
+        );
+      }
+      if (action.seat in pending.submitted) {
+        return reject('INVALID_ANSWER', `Submission ignored: seat ${action.seat} already submitted.`, SUSPENDED);
+      }
+      if (!pending.options.some((o) => o.id === action.optionId)) {
+        return reject(
+          'INVALID_ANSWER',
+          `Submission invalid: "${action.optionId}" is not one of the offered options.`,
+          SUSPENDED
+        );
+      }
+
+      pending.submitted[action.seat] = action.optionId;
+
+      if (Object.keys(pending.submitted).length < pending.seats.length) {
+        // Rule 1 — still sealed. Nothing logged, nothing else touched.
+        return SUSPENDED;
+      }
+
+      // Every seat is in — reveal. Rule 3: SEATS order, never submission order.
+      const optionLabel = (id: string) => pending.options.find((o) => o.id === id)?.label ?? id;
+      const parts = pending.seats.map((s) => `seat ${s} → ${optionLabel(pending.submitted[s])}`);
+      log(lines, {
+        level: 'info',
+        kind: 'prompt',
+        message: `Sealed choice "${pending.choiceId}" resolved: ${parts.join(', ')}.`,
+      });
+
+      clear(state);
+      // The `sealed` frame is the top of the stack by construction — nothing can push above an open
+      // interaction (§3.3's AWAITING_PROMPT gate blocks every action but the ones resuming it).
+      const sealedFrame = pop(state);
+      const head = top(state);
+      if (sealedFrame?.kind === 'sealed' && head?.kind === 'rule') {
+        // The marker `runEffect` checks for "already resolved" on re-entry — see its `sealedChoice`
+        // branch, which advances the cursor and does nothing else once it finds this.
+        head.ctx.promptAnswers[pending.promptId] = ['resolved'];
+      }
+      return MORE;
+    }
   }
 }
 

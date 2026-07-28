@@ -183,9 +183,11 @@ function walkValueRef(v: ValueRef, p: string, w: Walk): void {
     case 'cardTag':
       return walkCardRef(v.card, `${p}.card`, w);
     // §4.2, §5.7 — `replacedAmount` is bound at replacement time; carries no authored id.
+    // v2 §8 step 28 — `promptNumber.key` is free-form like `chooseNumber.key` itself; no authored id.
     case 'literal':
     case 'activeSeatCount':
     case 'replacedAmount':
+    case 'promptNumber':
       return;
     // v2 §4.2 — the `ActionRef` inside can still carry one, per `walkActionRef` above.
     case 'actionField':

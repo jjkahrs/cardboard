@@ -137,6 +137,36 @@ const midStackPromptRule: RuleSet = {
   activation: null,
 };
 
+/**
+ * v2 §5.11, §9.5 edge case 13 — a global rule reachable only via `fireEvent`, same discipline as
+ * `promptRule`/`midStackPromptRule` above. Two seats, so `{kind:'all'}` resolves to exactly the pair
+ * the rewind-across-an-open-sealed-choice test needs.
+ */
+const strikeRule: RuleSet = {
+  id: 'rs_strike',
+  name: 'Strike',
+  trigger: 'doStrike',
+  stateFilter: null,
+  condition: null,
+  effects: [
+    {
+      kind: 'sealedChoice',
+      choiceId: 'strike',
+      seats: { kind: 'all' },
+      options: [
+        { id: 'hit', label: 'Hit' },
+        { id: 'dodge', label: 'Dodge' },
+      ],
+    },
+  ],
+  priority: 0,
+  onRejection: 'continue',
+  modifier: null,
+  continuous: false,
+  replaces: null,
+  activation: null,
+};
+
 const testDef: GameDefinition = {
   schemaVersion: SCHEMA_VERSION,
   id: 'test-session-def',
@@ -146,9 +176,9 @@ const testDef: GameDefinition = {
   zones: [handZone, deckZone, battlefieldZone],
   templates: [blankTemplate],
   decks: [deck],
-  customEvents: ['doShuffle', 'doPrompt', 'doMidPrompt'],
-  ruleSets: [shuffleRule, promptRule, midStackPromptRule],
-  globalRuleSetIds: ['rs_shuffle', 'rs_prompt', 'rs_midprompt'],
+  customEvents: ['doShuffle', 'doPrompt', 'doMidPrompt', 'doStrike'],
+  ruleSets: [shuffleRule, promptRule, midStackPromptRule, strikeRule],
+  globalRuleSetIds: ['rs_shuffle', 'rs_prompt', 'rs_midprompt', 'rs_strike'],
   priorityWindows: [],
   machine: {
     states: [
@@ -197,6 +227,14 @@ function interaction(): Extract<Interaction, { kind: 'chooseCards' }> | null {
   if (i === null) return null;
   expect(i.kind).toBe('chooseCards');
   return i as Extract<Interaction, { kind: 'chooseCards' }>;
+}
+
+/** Same narrowing as `interaction()` above, for `rs_strike`'s `sealedChoice` — §9.5 edge case 13. */
+function sealedInteraction(): Extract<Interaction, { kind: 'sealed' }> | null {
+  const i = session().state.interaction;
+  if (i === null) return null;
+  expect(i.kind).toBe('sealed');
+  return i as Extract<Interaction, { kind: 'sealed' }>;
 }
 
 /** Sorts object keys recursively before stringifying — the same spirit as `exportJson`'s canonical
@@ -406,6 +444,49 @@ describe('rewind — across a suspension parked MID stack (§5.10, v2-only)', ()
     expect(session().state.interaction).toBeNull();
     expect(session().state.stack).toEqual([]);
     expect(session().state.pending).toEqual([]);
+  });
+});
+
+describe('rewind — into the middle of an open sealed choice (§9.5 edge case 13)', () => {
+  it('rewinding to between the two submissions restores exactly seat 0\'s entry; resuming from there matches a session that never rewound', () => {
+    // Session A — rewinds mid-choice, then finishes it.
+    useSessionStore.getState().dispatch({ kind: 'fireEvent', name: 'doStrike', seat: null });
+    expect(sealedInteraction()?.choiceId).toBe('strike');
+
+    useSessionStore.getState().dispatch({ kind: 'submitSealed', seat: 0, optionId: 'hit' });
+    const midChoice = session().log.length; // right after seat 0's submission, before seat 1's
+    // §5.11 rule 1 — the submission itself added a LogEntry (sessionStore appends one per dispatch),
+    // but that entry carries no LINES: `interaction.submitted` is what changed, not the log.
+    expect(session().log.at(-1)!.lines).toEqual([]);
+
+    useSessionStore.getState().dispatch({ kind: 'submitSealed', seat: 1, optionId: 'dodge' });
+    expect(sealedInteraction()).toBeNull(); // resolved
+
+    // Rewind to BETWEEN the two submissions.
+    useSessionStore.getState().rewind(midChoice);
+    const reopened = sealedInteraction();
+    expect(reopened).not.toBeNull();
+    // Exactly seat 0's entry — not seat 1's (not yet submitted at this point), not both.
+    expect(reopened!.submitted).toEqual({ 0: 'hit' });
+    expect(reopened!.seats).toEqual([0, 1]);
+
+    // Resume from the rewound point.
+    useSessionStore.getState().dispatch({ kind: 'submitSealed', seat: 1, optionId: 'dodge' });
+    expect(sealedInteraction()).toBeNull();
+    const resumedState = session().state;
+    const resumedLog = session().log;
+
+    // Session B — the SAME sequence, never rewound. §9.5 edge case 13's replay-equivalence claim,
+    // extended from v1's H1 (which only covered PlayState's "static" fields) to `interaction`.
+    fresh();
+    useSessionStore.getState().dispatch({ kind: 'fireEvent', name: 'doStrike', seat: null });
+    useSessionStore.getState().dispatch({ kind: 'submitSealed', seat: 0, optionId: 'hit' });
+    useSessionStore.getState().dispatch({ kind: 'submitSealed', seat: 1, optionId: 'dodge' });
+    const neverRewoundState = session().state;
+    const neverRewoundLog = session().log;
+
+    expect(canonicalJson(resumedState)).toBe(canonicalJson(neverRewoundState));
+    expect(canonicalJson(resumedLog)).toBe(canonicalJson(neverRewoundLog));
   });
 });
 

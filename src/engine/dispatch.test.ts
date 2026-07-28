@@ -29,6 +29,7 @@ import { step } from './dispatch';
 import { appendPending } from './frames';
 import { createPlayState } from './setup';
 import { zoneKey } from './valueRef';
+import { resolveSealedSubmission } from './visibility';
 import {
   ATTACKERS,
   BATTLEFIELD,
@@ -1446,5 +1447,301 @@ describe("CardRef{kind:'host'} through a real dispatch", () => {
 
     expect(state.pools[N]).toBe(0);
     expect(lines.some((l) => l.message.includes('is not attached to anything'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2 §4.5, §4.9, §5.5, step 28 — AC: SP10. `chooseMode` pauses showing MODE LABELS, never cards;
+// the effect written AFTER it in the rule must not have mutated state while suspended; once
+// answered, the chosen branch's effects run in order and the rule continues.
+// ---------------------------------------------------------------------------
+
+describe('AC: SP10 — chooseMode pauses showing mode labels, not cards', () => {
+  const RULE_ID = 'rs_mode';
+
+  function modeDef(): GameDefinition {
+    const rule = bump(RULE_ID, 'e', {
+      effects: [
+        {
+          kind: 'chooseMode',
+          promptText: 'Pick a mode',
+          seat: { kind: 'seat', index: 0 },
+          modes: [
+            { label: 'Add one', effects: [{ kind: 'changePool', poolId: N, seat: null, op: 'add', amount: { kind: 'literal', value: 1 } }] },
+            { label: 'Add two', effects: [{ kind: 'changePool', poolId: N, seat: null, op: 'add', amount: { kind: 'literal', value: 2 } }] },
+          ],
+        },
+        // the effect AFTER chooseMode, in the SAME rule — SP10's "no later effect has run" target.
+        { kind: 'changePool', poolId: N, seat: null, op: 'add', amount: { kind: 'literal', value: 100 } },
+      ],
+    });
+    return mini({ ruleSets: [rule], globalRuleSetIds: [rule.id] });
+  }
+
+  it('AC: SP10 — suspends with state.interaction.kind === "chooseOption", options equal to the mode labels', () => {
+    const def = modeDef();
+    const state = createPlayState(def, 'seed');
+
+    const { result } = drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+
+    expect(result).toEqual({ done: true, suspended: true, haltedByLoopGuard: false });
+    expect(state.interaction?.kind).toBe('chooseOption');
+    const interaction = state.interaction as Extract<Interaction, { kind: 'chooseOption' }>;
+    expect(interaction.options).toEqual([
+      { id: '0', label: 'Add one' },
+      { id: '1', label: 'Add two' },
+    ]);
+    expect(interaction.promptText).toBe('Pick a mode');
+    expect(interaction.seat).toBe(0);
+  });
+
+  it('AC: SP10 — the effect after chooseMode has demonstrably not mutated state while suspended', () => {
+    const def = modeDef();
+    const state = createPlayState(def, 'seed');
+
+    drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+
+    // Asserting only "suspended" would pass an implementation that ran everything and then asked.
+    expect(state.pools[N]).toBe(0);
+  });
+
+  it('AC: SP10 — the chosen branch\'s effects run in order, then the rule continues past chooseMode', () => {
+    const def = modeDef();
+    const state = createPlayState(def, 'seed');
+    drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+
+    const { result } = drive(state, def, { kind: 'answerOption', optionId: '1' });
+
+    expect(result.suspended).toBe(false);
+    expect(state.interaction).toBeNull();
+    // 2 (mode "Add two") + 100 (the trailing effect, now that it has run) = 102.
+    expect(state.pools[N]).toBe(102);
+    expect(idle(state)).toEqual(IDLE);
+  });
+
+  it('rejects an answer naming no offered option, leaving state and suspension untouched', () => {
+    const def = modeDef();
+    const state = createPlayState(def, 'seed');
+    drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+    const before = JSON.stringify(state);
+
+    const { lines, result } = drive(state, def, { kind: 'answerOption', optionId: 'zzz' });
+
+    expect(JSON.stringify(state)).toBe(before);
+    expect(result.suspended).toBe(true);
+    expect(lines[0].message).toContain('Answer invalid');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2 §4.2, §4.5, step 28 — the `chooseNumber` design-slip closure, end to end: the effect raises,
+// the resolved min/max land on the Interaction, and the answer is readable by a LATER effect via
+// `ValueRef{kind:'promptNumber'}`. The unit-level ValueRef read itself is `valueRef.test.ts`'s.
+// ---------------------------------------------------------------------------
+
+describe('chooseNumber + ValueRef{kind:"promptNumber"} — end to end', () => {
+  const RULE_ID = 'rs_number';
+
+  function numberDef(): GameDefinition {
+    const rule = bump(RULE_ID, 'e', {
+      effects: [
+        {
+          kind: 'chooseNumber',
+          promptText: 'Pick X',
+          seat: { kind: 'seat', index: 0 },
+          min: { kind: 'literal', value: 0 },
+          max: { kind: 'literal', value: 10 },
+          key: 'x',
+        },
+        { kind: 'changePool', poolId: N, seat: null, op: 'add', amount: { kind: 'promptNumber', key: 'x' } },
+      ],
+    });
+    return mini({ ruleSets: [rule], globalRuleSetIds: [rule.id] });
+  }
+
+  it('raises chooseNumber with the resolved bounds, then the answer feeds a later effect', () => {
+    const def = numberDef();
+    const state = createPlayState(def, 'seed');
+
+    drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+    expect(state.interaction).toMatchObject({ kind: 'chooseNumber', min: 0, max: 10, seat: 0 });
+
+    const { result } = drive(state, def, { kind: 'answerNumber', value: 7 });
+
+    expect(result.suspended).toBe(false);
+    expect(state.interaction).toBeNull();
+    expect(state.pools[N]).toBe(7);
+    expect(idle(state)).toEqual(IDLE);
+  });
+
+  it('rejects an out-of-range answer, leaving state and suspension untouched', () => {
+    const def = numberDef();
+    const state = createPlayState(def, 'seed');
+    drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+    const before = JSON.stringify(state);
+
+    const { lines, result } = drive(state, def, { kind: 'answerNumber', value: 11 });
+
+    expect(JSON.stringify(state)).toBe(before);
+    expect(result.suspended).toBe(true);
+    expect(lines[0].message).toContain('Answer invalid');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2 §4.5, §4.9, §5.11, step 29 — AC: V5, §9.4(b)'s sealed bullet, §9.4(f) point 2, §9.5 edge case 8.
+// ---------------------------------------------------------------------------
+
+describe('sealedChoice — §5.11', () => {
+  const RULE_ID = 'rs_strike';
+  const OPTIONS = [
+    { id: 'hit', label: 'Hit' },
+    { id: 'dodge', label: 'Dodge' },
+  ];
+
+  function strikeDef(): GameDefinition {
+    const rule = bump(RULE_ID, 'e', {
+      effects: [{ kind: 'sealedChoice', choiceId: 'strike', seats: { kind: 'all' }, options: OPTIONS }],
+    });
+    return mini({ playerCount: 2, ruleSets: [rule], globalRuleSetIds: [rule.id] });
+  }
+
+  const openStrike = (state: PlayState, def: GameDefinition) => drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+
+  const sealedInteraction = (state: PlayState) => {
+    if (state.interaction?.kind !== 'sealed') throw new Error('expected a sealed interaction');
+    return state.interaction;
+  };
+
+  it('opens with both seats listed and nothing submitted yet', () => {
+    const def = strikeDef();
+    const state = createPlayState(def, 'seed');
+
+    const { result } = openStrike(state, def);
+
+    expect(result).toEqual({ done: true, suspended: true, haltedByLoopGuard: false });
+    const interaction = sealedInteraction(state);
+    expect(interaction.choiceId).toBe('strike');
+    expect(interaction.seats).toEqual([0, 1]);
+    expect(interaction.options).toEqual(OPTIONS);
+    expect(interaction.submitted).toEqual({});
+  });
+
+  it('AC: V5 — the first submission is invisible (no LogLine of any kind) and stays sealed', () => {
+    const def = strikeDef();
+    const state = createPlayState(def, 'seed');
+    openStrike(state, def);
+
+    const { lines, result } = drive(state, def, { kind: 'submitSealed', seat: 0, optionId: 'hit' });
+
+    expect(lines).toEqual([]); // §5.11 rule 1 — no log line on submission, not even a redacted one
+    expect(result.suspended).toBe(true);
+    expect(sealedInteraction(state).submitted).toEqual({ 0: 'hit' });
+  });
+
+  it('AC: V5 — the second submission reveals and resolves both in one transaction and one log entry', () => {
+    const def = strikeDef();
+    const state = createPlayState(def, 'seed');
+    openStrike(state, def);
+    drive(state, def, { kind: 'submitSealed', seat: 0, optionId: 'hit' });
+
+    const { lines, result } = drive(state, def, { kind: 'submitSealed', seat: 1, optionId: 'dodge' });
+
+    expect(result.suspended).toBe(false);
+    expect(state.interaction).toBeNull();
+    // ONE transaction (one `drive()` call — sessionStore.ts appends exactly one LogEntry per
+    // dispatch) containing exactly one line naming BOTH resolved values.
+    expect(lines).toHaveLength(1);
+    expect(lines[0].message).toContain('seat 0 → Hit');
+    expect(lines[0].message).toContain('seat 1 → Dodge');
+    expect(idle(state)).toEqual(IDLE);
+  });
+
+  it('rejects a submission from a seat not part of the choice, an already-submitted seat, and an unknown option', () => {
+    const def = strikeDef();
+    const state = createPlayState(def, 'seed');
+    openStrike(state, def);
+
+    expect(drive(state, def, { kind: 'submitSealed', seat: 5, optionId: 'hit' }).result.suspended).toBe(true);
+    expect(drive(state, def, { kind: 'submitSealed', seat: 0, optionId: 'zzz' }).result.suspended).toBe(true);
+    drive(state, def, { kind: 'submitSealed', seat: 0, optionId: 'hit' });
+    const { lines, result } = drive(state, def, { kind: 'submitSealed', seat: 0, optionId: 'dodge' });
+    expect(result.suspended).toBe(true);
+    expect(lines[0].message).toContain('already submitted');
+    expect(sealedInteraction(state).submitted).toEqual({ 0: 'hit' }); // unchanged by the rejected re-submit
+  });
+
+  // §9.4(b) — "resolution order is seats order, never submission order" is the property this proves,
+  // not merely that both eventually resolve.
+  describe('§9.4(b) — submission order does not affect the resolved state', () => {
+    function canonicalJson(value: unknown): string {
+      const sort = (v: unknown): unknown => {
+        if (Array.isArray(v)) return v.map(sort);
+        if (v !== null && typeof v === 'object') {
+          return Object.fromEntries(
+            Object.entries(v as object)
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([k, x]) => [k, sort(x)])
+          );
+        }
+        return v;
+      };
+      return JSON.stringify(sort(value));
+    }
+
+    it('seat 0 then seat 1, and seat 1 then seat 0, produce byte-identical state', () => {
+      const defAB = strikeDef();
+      const stateAB = createPlayState(defAB, 'seed');
+      openStrike(stateAB, defAB);
+      drive(stateAB, defAB, { kind: 'submitSealed', seat: 0, optionId: 'hit' });
+      drive(stateAB, defAB, { kind: 'submitSealed', seat: 1, optionId: 'dodge' });
+
+      const defBA = strikeDef();
+      const stateBA = createPlayState(defBA, 'seed');
+      openStrike(stateBA, defBA);
+      drive(stateBA, defBA, { kind: 'submitSealed', seat: 1, optionId: 'dodge' });
+      drive(stateBA, defBA, { kind: 'submitSealed', seat: 0, optionId: 'hit' });
+
+      expect(canonicalJson(stateAB)).toBe(canonicalJson(stateBA));
+    });
+  });
+
+  // §9.4(f) point 2 — engine-side half. The DOM half (PromptBar/EventLogPanel) is Phase 3's.
+  describe('§9.4(f) point 2 — hidden until reveal, engine-side', () => {
+    it('no LogLine of any kind exists between the two submissions, and visibility.ts refuses to resolve A\'s submission for a pinned seat B while revealAll short-circuits it', () => {
+      const def = strikeDef();
+      const state = createPlayState(def, 'seed');
+      openStrike(state, def);
+
+      const { lines } = drive(state, def, { kind: 'submitSealed', seat: 0, optionId: 'hit' });
+      expect(lines).toEqual([]);
+
+      const interaction = sealedInteraction(state);
+      expect(resolveSealedSubmission(interaction, 0, 1, false)).toBeNull(); // pinned to B: refused
+      expect(resolveSealedSubmission(interaction, 0, 0, false)).toBe('hit'); // pinned to A: A's own
+      expect(resolveSealedSubmission(interaction, 0, 1, true)).toBe('hit'); // reveal-all short-circuits
+    });
+  });
+
+  // §9.5 edge case 8 — DESIGNED CHOICE pinned down by this test, not behaviour derived from §5.11
+  // (which says nothing about this case): a submission already recorded resolves as submitted
+  // regardless of later elimination. If this changes, update this comment, not just the code.
+  describe('§9.5 edge case 8 — a submitter eliminated between submitting and the reveal', () => {
+    it('the eliminated seat\'s recorded submission still resolves normally', () => {
+      const def = strikeDef();
+      const state = createPlayState(def, 'seed');
+      openStrike(state, def);
+      drive(state, def, { kind: 'submitSealed', seat: 0, optionId: 'hit' });
+
+      // §5.12's own mechanism, applied directly — the elimination effect itself is `effects.test.ts`'s.
+      state.seatOrder = state.seatOrder.filter((s) => s !== 0);
+      state.eliminated.push(0);
+
+      const { lines, result } = drive(state, def, { kind: 'submitSealed', seat: 1, optionId: 'dodge' });
+
+      expect(result.suspended).toBe(false);
+      expect(lines[0].message).toContain('seat 0 → Hit');
+      expect(lines[0].message).toContain('seat 1 → Dodge');
+    });
   });
 });

@@ -23,11 +23,13 @@ export function isDangling(ref: ValueRef, def: GameDefinition): boolean {
     // `activeSeatCount` reads `seatOrder.length`; a tag is a free-form string declared nowhere
     // (§4.3). `replacedAmount` (v2 §4.2, §5.7) is bound at replacement time. `actionField`'s
     // `ActionRef` (v2 §4.2) addresses a runtime `PendingAction`, not a `GameDefinition` entity.
-    // None of the four carries an authored id, so none can dangle.
+    // `promptNumber.key` (v2 §4.2, §8 step 28) is free-form like `chooseNumber.key` itself.
+    // None of the five carries an authored id, so none can dangle.
     case 'activeSeatCount':
     case 'cardTag':
     case 'replacedAmount':
     case 'actionField':
+    case 'promptNumber':
       return false;
   }
 }

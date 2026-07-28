@@ -198,5 +198,25 @@ export function resolveValueRef(
     // read, mirroring `cardTag`'s shape immediately above.
     case 'actionField':
       return resolveActionField(ref, state, ctx);
+
+    // v2 §4.2, §8 step 28 — the `chooseNumber` design-slip closure. `chooseNumber`'s answer is
+    // written into `ctx.promptAnswers[effect.key]` by `dispatch.ts`'s `runEffect` the moment
+    // `answerNumber` resolves it (the SAME `ctx.promptAnswers` mechanism `targets.ts`'s
+    // `CHOSEN_PROMPT_KEY` already uses for card-target prompts, just keyed by the AUTHORED `key`
+    // instead of a derived promptId, so it survives past the one effect that raised it and is
+    // readable by any later effect in the same rule). Same discipline as `replacedAmount`:
+    // UNBOUND_REF, not 0, when nothing has answered it — a dangling read must not read as a
+    // plausible number.
+    case 'promptNumber': {
+      const answer = ctx.promptAnswers[ref.key]?.[0];
+      if (answer === undefined) {
+        return fail('UNBOUND_REF', `Ref "promptNumber" (key "${ref.key}") is unbound: no chooseNumber has answered under that key yet.`);
+      }
+      const value = Number(answer);
+      if (!Number.isFinite(value)) {
+        return fail('TYPE_MISMATCH', `Ref "promptNumber" (key "${ref.key}"): stored answer "${answer}" is not a number.`);
+      }
+      return { ok: true, values: [value], quantifier: 'every' };
+    }
   }
 }
