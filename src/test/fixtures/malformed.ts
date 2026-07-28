@@ -68,6 +68,7 @@ export const malformedBase: GameDefinition = deepFreeze({
       effects: [{ kind: 'shuffleZone', zone: { zoneId: MB_DECK_ZONE, seat: { kind: 'all' } } }],
       priority: 0,
       onRejection: 'continue',
+      modifier: null,
     },
   ],
   globalRuleSetIds: [MB_RULESET],

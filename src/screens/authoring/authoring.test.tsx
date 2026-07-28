@@ -120,6 +120,7 @@ describe('<PoolsScreen>', () => {
       ],
       priority: 0,
       onRejection: 'continue',
+      modifier: null,
     };
     useDefinitionStore.getState().setDefinition(
       blank({
@@ -266,6 +267,7 @@ describe('<EventsScreen>', () => {
           effects: [],
           priority: 0,
           onRejection: 'continue',
+          modifier: null,
         },
       ],
     });

@@ -114,6 +114,7 @@ describe('generateRulesProse', () => {
           ],
           priority: 0,
           onRejection: 'continue',
+          modifier: null,
         },
       ],
       def
@@ -133,6 +134,7 @@ describe('generateRulesProse', () => {
       effects: [effect],
       priority: 0,
       onRejection: 'continue' as const,
+      modifier: null,
     });
     const prose = generateRulesProse(
       [

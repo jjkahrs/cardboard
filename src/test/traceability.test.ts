@@ -76,6 +76,9 @@ const IN_SCOPE: Criterion[] = [
   // than with the components. The visual half stays a manual glance per §9.1.
   { id: 'L1', prose: 'Kraft palette, marker font, no external font/image requests', expected: 'theme.test.ts' },
   { id: 'L2', prose: 'Catalog card and in-play card render identically', expected: 'Card.test.tsx' },
+  // v2 §9.1 — the modifier rows, provable headlessly the moment step 13's modifiers.ts exists.
+  { id: 'MTG6', prose: 'Static +1/+1 rule; new creature entering the zone reads the bonus immediately, no recalculation action', expected: 'modifiers.test.ts' },
+  { id: 'MTG7', prose: '`set` modifier before `adjust` regardless of authoring order', expected: 'modifiers.test.ts' },
 ];
 
 // Every criterion in §9.1 now has a home: step 25 landed the play screen, which was the last one

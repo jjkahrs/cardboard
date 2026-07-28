@@ -144,6 +144,7 @@ export const strikeRule: RuleSet = {
   ],
   priority: 0,
   onRejection: 'continue',
+  modifier: null,
 };
 
 /** A3 asserts this rule's generated prose verbatim, so it stays one unambiguous effect. */
@@ -163,6 +164,7 @@ export const cantripRule: RuleSet = {
   ],
   priority: 0,
   onRejection: 'continue',
+  modifier: null,
 };
 
 /**
@@ -193,6 +195,7 @@ export const gruntRule: RuleSet = {
   ],
   priority: 0,
   onRejection: 'continue',
+  modifier: null,
 };
 
 /**
@@ -225,6 +228,7 @@ export const bombRule: RuleSet = {
   ],
   priority: 0,
   onRejection: 'continue',
+  modifier: null,
 };
 
 export const ruleSets: RuleSet[] = [strikeRule, cantripRule, gruntRule, bombRule];

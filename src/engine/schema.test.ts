@@ -99,6 +99,7 @@ const valid: GameDefinition = {
       ],
       priority: 0,
       onRejection: 'continue',
+      modifier: null,
     },
     {
       id: 'r-upkeep',
@@ -114,6 +115,7 @@ const valid: GameDefinition = {
       ],
       priority: 5,
       onRejection: 'abort',
+      modifier: null,
     },
   ],
   globalRuleSetIds: ['r-upkeep'],

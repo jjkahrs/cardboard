@@ -185,6 +185,7 @@ const bump = (id: string, trigger: string, extra: Partial<RuleSet> = {}): RuleSe
   effects: [{ kind: 'changePool', poolId: N, seat: null, op: 'add', amount: { kind: 'literal', value: 1 } }],
   priority: 0,
   onRejection: 'continue',
+  modifier: null,
   ...extra,
 });
 
@@ -727,6 +728,7 @@ describe('bindings and rejection policy', () => {
   it("onRejection 'abort' stops the remaining effects but keeps the applied ones", () => {
     const rule = bump('rs_abort', 'e', {
       onRejection: 'abort',
+      modifier: null,
       effects: [
         { kind: 'changePool', poolId: N, seat: null, op: 'add', amount: { kind: 'literal', value: 1 } },
         { kind: 'changePool', poolId: 'nope', seat: null, op: 'add', amount: { kind: 'literal', value: 1 } },

@@ -39,6 +39,7 @@ export function RuleSetsScreen() {
         effects: [],
         priority: 0,
         onRejection: 'continue',
+        modifier: null,
       })
     );
     if (result.ok && result.id !== undefined) open(result.id);

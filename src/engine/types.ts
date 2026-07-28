@@ -294,6 +294,24 @@ export interface RuleSet {
   priority: number;
   /** default 'continue' — §5.3 */
   onRejection: 'continue' | 'abort';
+
+  /**
+   * v2 §4.5 / §5.4 — a continuously-applying value modifier. NEVER materialized into state; it is
+   * re-derived on every read by `modifiers.ts`, so there is no teardown path to forget when the
+   * source leaves play by an unanticipated route.
+   *
+   * `.nullable()`-and-PRESENT in the zod mirror, not `.optional()` — §7.2's byte-identical round
+   * trip needs the key written even when null, or the loss only shows up on the *second* trip.
+   */
+  modifier: {
+    /** Which cards it applies to. Re-evaluated per read, bound to the SOURCE card as `triggering`. */
+    scope: TargetSelector;
+    indexId: Id;
+    op: 'set' | 'adjust';
+    amount: ValueRef;
+    /** Applies only while the source card is in one of these zones. Empty => wherever the source is. */
+    activeZones: Id[];
+  } | null;
 }
 
 // ---------------------------------------------------------------------------

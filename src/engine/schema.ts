@@ -266,6 +266,16 @@ export const RuleSetSchema = z.object({
   effects: z.array(EffectSchema),
   priority: z.number(),
   onRejection: z.enum(['continue', 'abort']),
+  /** §4.5, §5.4. `.nullable()` and PRESENT — see §7.2 and the note on `limits` below. */
+  modifier: z
+    .object({
+      scope: TargetSelectorSchema,
+      indexId: IdSchema,
+      op: z.enum(['set', 'adjust']),
+      amount: ValueRefSchema,
+      activeZones: z.array(IdSchema),
+    })
+    .nullable(),
 });
 
 // ---------------------------------------------------------------------------

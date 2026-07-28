@@ -102,6 +102,7 @@ const rule = (id: Id, trigger: string, effects: RuleSet['effects'], over: Partia
   effects,
   priority: 0,
   onRejection: 'continue',
+  modifier: null,
   ...over,
 });
 

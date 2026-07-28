@@ -176,3 +176,10 @@ export {
 
 /** Resolved ABOVE `<Card>`, in ZoneView, so the Catalog renders the identical component. */
 export { resolveVisibility } from './visibility';
+
+/**
+ * §5.4 — derived card values. Also resolved above `<Card>` in ZoneView (§6.8): `<Card>` has no
+ * `PlayState` and must not acquire one, or v1 §6.3's "catalog and play render identically"
+ * guarantee stops being structural.
+ */
+export { effectiveIndex, effectiveTags, collectModifiers, type ActiveModifier } from './modifiers';

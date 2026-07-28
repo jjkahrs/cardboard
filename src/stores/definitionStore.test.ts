@@ -131,6 +131,7 @@ describe('pools', () => {
           effects: [],
           priority: 0,
           onRejection: 'continue',
+          modifier: null,
         },
       ],
     });
@@ -273,6 +274,7 @@ describe('deleting a referenced entity', () => {
           ],
           priority: 0,
           onRejection: 'continue',
+          modifier: null,
         },
       ],
     });

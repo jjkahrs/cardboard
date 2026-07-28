@@ -37,6 +37,7 @@ const rule = (over: Partial<RuleSet> = {}): RuleSet => ({
   effects: [],
   priority: 0,
   onRejection: 'continue',
+  modifier: null,
   ...over,
 });
 

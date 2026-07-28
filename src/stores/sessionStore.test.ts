@@ -72,6 +72,7 @@ const shuffleRule: RuleSet = {
   effects: [{ kind: 'shuffleZone', zone: { zoneId: DECK, seat: { kind: 'active' } } }],
   priority: 0,
   onRejection: 'continue',
+  modifier: null,
 };
 
 const promptRule: RuleSet = {
@@ -93,6 +94,7 @@ const promptRule: RuleSet = {
   ],
   priority: 0,
   onRejection: 'continue',
+  modifier: null,
 };
 
 /**
@@ -122,6 +124,7 @@ const midStackPromptRule: RuleSet = {
   ],
   priority: 0,
   onRejection: 'continue',
+  modifier: null,
 };
 
 const testDef: GameDefinition = {
