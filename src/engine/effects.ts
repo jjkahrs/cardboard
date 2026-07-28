@@ -324,6 +324,19 @@ export function canMove(
   if (!zoneDef) {
     return { ok: false, reason: 'MISSING_REFERENT', detail: `Zone "${inst.zoneId}" does not exist in this definition.` };
   }
+  // §5.12: `{kind:'seat', index}` resolves for an ousted seat so the log and the UI can still name
+  // it, but that seat's zones are rejected AS A MOVE DESTINATION. The authored-effect path already
+  // refuses this in `keysOf` above, on the zone OPERAND; the tester's own `moveCard` action never
+  // goes through `keysOf` (`dispatch.ts`'s `zoneKeyOf` is a separate, simpler resolver), so without
+  // this the one path a human actually clicks was the one path that let a card into a dead seat's
+  // hand. It belongs here rather than in either caller: `canMove` is the single probe the engine
+  // action and the UI's `moveDestinations` both consult, so one guard covers both and they cannot
+  // drift. Override still forces it through — per §9.5 this is a destination check, not a
+  // precondition — because every caller already handles `!ok` under override.
+  const { seat: toSeat } = parseZoneKey(toZoneKey);
+  if (toSeat !== null && state.eliminated.includes(toSeat)) {
+    return { ok: false, reason: 'SEAT_ELIMINATED', detail: `that seat has been eliminated` };
+  }
   if (zoneDef.maxCapacity === null) return { ok: true };
   const incoming = cardIds.filter((id) => !inst.cardIds.includes(id)).length;
   const held = inst.cardIds.length;

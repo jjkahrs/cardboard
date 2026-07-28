@@ -65,6 +65,9 @@ export function moveDestinations(
       // The zone the card is already in is a no-op move (§5.9 row 15), not a destination.
       if (key === from || !state.zones[key]) continue;
 
+      // §6.3/§5.12's eliminated-seat refusal is INSIDE this probe, not restated here: `canMove`
+      // is where the engine's own `moveCard` reads it from too, so the badge and the action can
+      // never disagree about whether a dead seat's hand is a legal destination.
       const probe = canMove(state, def, [cardId], key);
       destinations.push({
         ordinal: destinations.length + 1,

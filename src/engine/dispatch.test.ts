@@ -1188,6 +1188,28 @@ describe('actions', () => {
     expect(lines[0].change).toMatchObject({ before: false, after: true });
   });
 
+  // §5.12: the ousted seat's zones are rejected as a move destination. The authored-effect path
+  // has always refused this in `keysOf`, but the TESTER's `moveCard` resolves its zone through
+  // `zoneKeyOf`, which never consulted `state.eliminated` — so the one path a human clicks was the
+  // one path that let a card into a dead seat's hand. The guard now lives in `canMove`, the single
+  // probe this action and the UI's `moveDestinations` both read.
+  it('rejects a move into an eliminated seat’s zone, and override still forces it', () => {
+    const state = emptyBoard(duel, MAIN);
+    place(state, duel, BF, GRUNT, 'g1');
+    state.seatOrder = [0];
+    state.eliminated = [1];
+    const hand1 = zoneKey(HAND, 1);
+
+    const { lines } = drive(state, duel, { kind: 'moveCard', cardId: 'g1', to: { zoneId: HAND, seat: { kind: 'seat', index: 1 } }, position: 'top' });
+    expect(state.zones[hand1].cardIds).toEqual([]); // nothing moved
+    expect(state.zones[BF].cardIds).toEqual(['g1']);
+    expect(lines[0].message).toContain('that seat has been eliminated');
+
+    // A destination check, not a precondition (§9.5 edge case 9) — override is allowed to force it.
+    drive(state, duel, { kind: 'moveCard', cardId: 'g1', to: { zoneId: HAND, seat: { kind: 'seat', index: 1 } }, position: 'top' }, true);
+    expect(state.zones[hand1].cardIds).toEqual(['g1']);
+  });
+
   it('a new action resets the budget; a resume does not', () => {
     const state = emptyBoard(duel, MAIN);
     place(state, duel, BF, GRUNT, 'g1');
