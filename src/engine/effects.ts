@@ -21,7 +21,7 @@
 
 import { parseZoneKey, resolveCardRef, resolvePoolDef, resolveSeat, resolveValueRef, zoneKey } from './valueRef';
 import type { ResolutionFail } from './valueRef';
-import { type CandidateLog, resolveTargets } from './targets';
+import { type CandidateLog, resolveTargets, type TargetResult } from './targets';
 // Cyclic with `modifiers.ts` (it imports `clampValue` from here) by design (§5.4). Both directions
 // are function-body calls only, so module evaluation order never matters.
 import { effectiveIndex, invalidateEffective } from './modifiers';
@@ -31,6 +31,10 @@ import { hashSeed, shuffle } from './rng';
 // which is erased at compile time. No runtime cycle: this file is the only one of the pair that
 // actually depends on the other at runtime.
 import { applyWithReplacement } from './replacement';
+// v2 §4.8, step 22/23 — `pending.ts` owns the pending-action layer; this module only wires its
+// three effect arms (`announceAction`, `counterAction`) and consults `actionTargetKey` before
+// resolving a target-bearing effect's targets (see `resolveEffectTargets` below).
+import { actionTargetKey, announceAction, counterAction } from './pending';
 import type {
   Effect,
   EffectResult,
@@ -44,6 +48,7 @@ import type {
   NumericOp,
   PlayState,
   RejectReason,
+  TargetSelector,
   TriggerContext,
   ZoneKey,
   ZoneRef,
@@ -56,6 +61,15 @@ export interface EffectContext {
   ctx: TriggerContext;
   depth: number;
   override: boolean;
+  /**
+   * v2 §4.8, step 22/23 — this effect's position in `rule.effects`, when it is running inside a
+   * `rule` frame's cursor (`dispatch.ts`'s `runEffect` is the only caller that supplies a real one).
+   * OPTIONAL and not part of the original v1 contract: every existing call site that builds an
+   * `EffectContext` object literal without it (several test files outside this wave's file
+   * boundaries) keeps compiling unchanged. `resolveEffectTargets` below is the one reader — it is
+   * what lets a target-bearing effect consult `pending.ts`'s frozen-target key for THIS effect.
+   */
+  effectIndex?: number;
   log(line: LogLine): void;
   /**
    * APPENDS to `state.pending` only. dispatch.ts owns depth+1 and the FIFO placement (§3.2).
@@ -475,6 +489,38 @@ function writeNote(v: GameValue, op: NumericOp, before: number | boolean, after:
 }
 
 // ---------------------------------------------------------------------------
+// v2 §4.8 — frozen targets (`pending.ts`'s `announceAction`). An announced pending action resolves
+// each target-bearing effect in its rule ONCE, at announce time, and threads the frozen ids into
+// `ctx.promptAnswers` under `actionTargetKey(effectIndex)` — the same mechanism `CHOSEN_PROMPT_KEY`
+// already uses to thread an answered prompt's choice back into `resolveTargets`, just keyed
+// per-effect instead of per-prompt. `ec.effectIndex` is undefined for every call site that is NOT
+// a `rule` frame's cursor (`dispatch.ts`'s `runEffect` is the only one that supplies a real one), so
+// nothing outside a running rule can accidentally collide with a frozen entry.
+// ---------------------------------------------------------------------------
+
+function resolveEffectTargets(ec: EffectContext, effect: Effect & { target: TargetSelector }): TargetResult {
+  const frozen =
+    ec.effectIndex !== undefined ? ec.ctx.promptAnswers[actionTargetKey(ec.effectIndex)] : undefined;
+  if (frozen === undefined) {
+    return resolveTargets(effect.target, ec.state, ec.ctx, ec.def, candidateLog(ec, effect));
+  }
+  // §9.5 edge case 15 — a frozen target destroyed between announce and resolve is SKIPPED and
+  // logged, never resolved against an id absent from `state.cards`. Deliberately more lenient than
+  // a LIVE `resolveTargets`, which fails the whole batch on one dead id (§5.3 atomicity): a frozen
+  // selection already committed to a specific set at announce time, so losing one member shrinks
+  // the batch instead of voiding the whole effect.
+  const kept: Id[] = [];
+  for (const id of frozen) {
+    if (ec.state.cards[id]) kept.push(id);
+    else emit(ec, effect, 'info', `Frozen target ${id}: no longer exists. Skipped.`, null, 'skip');
+  }
+  if (kept.length === 0) {
+    return { ok: false, reason: 'NO_TARGETS', message: `${effect.kind}: every frozen target is gone.` };
+  }
+  return { ok: true, kind: 'cards', cardIds: Object.freeze(kept), requested: frozen.length, actual: kept.length };
+}
+
+// ---------------------------------------------------------------------------
 // applyEffect
 // ---------------------------------------------------------------------------
 
@@ -508,7 +554,7 @@ function applyEffectInner(effect: Effect, ec: EffectContext): EffectResult {
   switch (effect.kind) {
     // -----------------------------------------------------------------------
     case 'moveCards': {
-      const targets = resolveTargets(effect.target, state, ctx, def, candidateLog(ec, effect));
+      const targets = resolveEffectTargets(ec, effect);
       if (!targets.ok) return failed(ec, effect, targets);
       if (targets.kind === 'prompt') {
         return reject(ec, effect, 'AWAITING_PROMPT', `Move: prompt "${targets.promptText}" has no answer bound.`);
@@ -670,7 +716,7 @@ function applyEffectInner(effect: Effect, ec: EffectContext): EffectResult {
 
     // -----------------------------------------------------------------------
     case 'setCardIndex': {
-      const targets = resolveTargets(effect.target, state, ctx, def, candidateLog(ec, effect));
+      const targets = resolveEffectTargets(ec, effect);
       if (!targets.ok) return failed(ec, effect, targets);
       if (targets.kind === 'prompt') {
         return reject(ec, effect, 'AWAITING_PROMPT', `SetIndex: prompt "${targets.promptText}" has no answer bound.`);
@@ -726,7 +772,7 @@ function applyEffectInner(effect: Effect, ec: EffectContext): EffectResult {
     // -----------------------------------------------------------------------
     case 'flipCard':
     case 'rotateCard': {
-      const targets = resolveTargets(effect.target, state, ctx, def, candidateLog(ec, effect));
+      const targets = resolveEffectTargets(ec, effect);
       if (!targets.ok) return failed(ec, effect, targets);
       if (targets.kind === 'prompt') {
         return reject(ec, effect, 'AWAITING_PROMPT', `${effect.kind}: prompt "${targets.promptText}" has no answer bound.`);
@@ -812,7 +858,7 @@ function applyEffectInner(effect: Effect, ec: EffectContext): EffectResult {
 
     // -----------------------------------------------------------------------
     case 'destroyCards': {
-      const targets = resolveTargets(effect.target, state, ctx, def, candidateLog(ec, effect));
+      const targets = resolveEffectTargets(ec, effect);
       if (!targets.ok) return failed(ec, effect, targets);
       if (targets.kind === 'prompt') {
         return reject(ec, effect, 'AWAITING_PROMPT', `Destroy: prompt "${targets.promptText}" has no answer bound.`);
@@ -907,7 +953,7 @@ function applyEffectInner(effect: Effect, ec: EffectContext): EffectResult {
 
     // -----------------------------------------------------------------------
     case 'setTag': {
-      const targets = resolveTargets(effect.target, state, ctx, def, candidateLog(ec, effect));
+      const targets = resolveEffectTargets(ec, effect);
       if (!targets.ok) return failed(ec, effect, targets);
       if (targets.kind === 'prompt') {
         return reject(ec, effect, 'AWAITING_PROMPT', `SetTag: prompt "${targets.promptText}" has no answer bound.`);
@@ -942,7 +988,7 @@ function applyEffectInner(effect: Effect, ec: EffectContext): EffectResult {
     // -----------------------------------------------------------------------
     case 'attach':
     case 'detach': {
-      const targets = resolveTargets(effect.target, state, ctx, def, candidateLog(ec, effect));
+      const targets = resolveEffectTargets(ec, effect);
       if (!targets.ok) return failed(ec, effect, targets);
       if (targets.kind === 'prompt') {
         return reject(ec, effect, 'AWAITING_PROMPT', `${effect.kind}: prompt "${targets.promptText}" has no answer bound.`);
@@ -984,7 +1030,7 @@ function applyEffectInner(effect: Effect, ec: EffectContext): EffectResult {
 
     // -----------------------------------------------------------------------
     case 'setController': {
-      const targets = resolveTargets(effect.target, state, ctx, def, candidateLog(ec, effect));
+      const targets = resolveEffectTargets(ec, effect);
       if (!targets.ok) return failed(ec, effect, targets);
       if (targets.kind === 'prompt') {
         return reject(ec, effect, 'AWAITING_PROMPT', `SetController: prompt "${targets.promptText}" has no answer bound.`);
@@ -1031,14 +1077,15 @@ function applyEffectInner(effect: Effect, ec: EffectContext): EffectResult {
     }
 
     // -----------------------------------------------------------------------
-    // v2 §4.5 — STUB. The type exists (step 21/31 has to make every §4 union compile), but the
-    // behaviour belongs to the step named per kind below. Grouped into one arm because all six
-    // reject identically: nothing here can run, so nothing here should pretend to.
+    // v2 §4.5, §4.8 — step 22/23. Full logic lives in `pending.ts`; this arm just wires it up.
     case 'announceAction':
-    case 'counterAction': {
-      const step = effect.kind === 'announceAction' ? 22 : 23;
-      return reject(ec, effect, 'NOT_ACTIVATABLE', `${effect.kind}: not yet implemented — v2 step ${step}.`);
-    }
+      return announceAction(ec, effect);
+    case 'counterAction':
+      return counterAction(ec, effect);
+
+    // -----------------------------------------------------------------------
+    // v2 §4.5 — STUB. The type exists (step 21/31 has to make every §4 union compile), but the
+    // behaviour belongs to the step named per kind below.
     case 'openPriority':
       return reject(ec, effect, 'NOT_ACTIVATABLE', `${effect.kind}: not yet implemented — v2 step 24.`);
     case 'chooseMode':
