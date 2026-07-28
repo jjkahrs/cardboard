@@ -7,6 +7,7 @@
  */
 
 import { createPlayState } from '../engine/setup';
+import { parseZoneKey } from '../engine/valueRef';
 import { START_STATE_ID, type GameDefinition, type Id, type PlayState } from '../engine/types';
 
 /** A real state with every card removed — zones instanced, pools defaulted, nothing dealt. */
@@ -31,7 +32,19 @@ export function place(
   const template = def.templates.find((t) => t.id === templateId);
   const indexValues: Record<Id, number | boolean> = {};
   for (const index of template?.indexes ?? []) indexValues[index.id] = index.value.defaultValue;
-  state.cards[id] = { id, templateId, indexValues, faceDown: false, rotated: false };
+  // Identity fields seeded the same way `createPlayState` deals them (§4.3), so a hand-built board
+  // is indistinguishable from a dealt one for anything that reads owner or tags.
+  state.cards[id] = {
+    id,
+    templateId,
+    indexValues,
+    faceDown: false,
+    rotated: false,
+    tags: [...(template?.tags ?? [])],
+    owner: parseZoneKey(key).seat,
+    controller: null,
+    attachedTo: null,
+  };
   state.zones[key].cardIds.push(id);
   return id;
 }

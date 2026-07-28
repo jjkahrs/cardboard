@@ -154,6 +154,62 @@ describe('createPlayState', () => {
     expect(state.cards[cardId].rotated).toBe(false);
   });
 
+  // -------------------------------------------------------------------------
+  // The seat ring (§3.5) and the card identity fields (§4.3)
+  // -------------------------------------------------------------------------
+
+  it('initialises the seat ring to 0..playerCount-1 with nothing eliminated', () => {
+    const state = createPlayState(baseDef({ playerCount: 4 }), '12345');
+    expect(state.seatOrder).toEqual([0, 1, 2, 3]);
+    expect(state.eliminated).toEqual([]);
+  });
+
+  it('keeps per-seat storage dense and full-length — one zone instance and one pool slot per seat', () => {
+    const pool: PointPool = { id: 'hp', scope: 'player', value: { type: 'integer', name: 'HP', defaultValue: 20, min: null, max: null } };
+    const state = createPlayState(baseDef({ playerCount: 3, zones: [handZone], pools: [pool] }), '12345');
+    expect(state.playerPools.hp).toEqual([20, 20, 20]);
+    expect(Object.keys(state.zones).sort()).toEqual(['hand#0', 'hand#1', 'hand#2']);
+  });
+
+  it('seeds tags from the template as a per-instance COPY, and leaves controller/attachedTo null', () => {
+    const tagged: CardTemplate = { ...cardTemplate, tags: ['creature', 'token'] };
+    const deckZone: PlayZone = { id: 'deck', name: 'Deck', scope: 'shared', visibility: 'faceDown', layout: 'stack', ordered: true, maxCapacity: null };
+    const deck: Deck = { id: 'd', name: 'D', zoneId: 'deck', entries: [{ templateId: 'card', quantity: 2 }] };
+    const def = baseDef({ playerCount: 1, zones: [deckZone], decks: [deck], templates: [tagged] });
+
+    const state = createPlayState(def, '12345');
+    const [a, b] = state.zones['deck'].cardIds;
+    expect(state.cards[a].tags).toEqual(['creature', 'token']);
+    expect(state.cards[a].controller).toBeNull();
+    expect(state.cards[a].attachedTo).toBeNull();
+
+    // Two instances of one template must not share the array, and neither may alias the definition:
+    // a `setTag` on one instance would otherwise silently retag every card in the game.
+    expect(state.cards[a].tags).not.toBe(tagged.tags);
+    expect(state.cards[a].tags).not.toBe(state.cards[b].tags);
+    state.cards[a].tags.push('enchanted');
+    expect(state.cards[b].tags).toEqual(['creature', 'token']);
+    expect(tagged.tags).toEqual(['creature', 'token']);
+  });
+
+  it('sets owner at deal time: the seat of the player-scoped zone dealt into, null for a shared one', () => {
+    const sharedZone: PlayZone = { id: 'deck', name: 'Deck', scope: 'shared', visibility: 'faceDown', layout: 'stack', ordered: true, maxCapacity: null };
+    const def = baseDef({
+      playerCount: 2,
+      zones: [sharedZone, handZone],
+      decks: [
+        { id: 'shared', name: 'Shared', zoneId: 'deck', entries: [{ templateId: 'card', quantity: 2 }] },
+        { id: 'perSeat', name: 'Per seat', zoneId: 'hand', entries: [{ templateId: 'card', quantity: 2 }] },
+      ],
+    });
+
+    const state = createPlayState(def, '12345');
+    const owners = (key: string) => state.zones[key].cardIds.map((id) => state.cards[id].owner);
+    expect(owners('deck')).toEqual([null, null]);
+    expect(owners('hand#0')).toEqual([0, 0]);
+    expect(owners('hand#1')).toEqual([1, 1]);
+  });
+
   it('does not mutate the input definition', () => {
     const def = baseDef({ playerCount: 2, zones: [handZone, battlefieldZone] });
     const snapshot = JSON.parse(JSON.stringify(def));

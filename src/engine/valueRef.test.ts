@@ -74,7 +74,7 @@ function makeCtx(overrides: Partial<TriggerContext> = {}): TriggerContext {
 }
 
 function card(id: string, indexValues: Record<string, number | boolean> = {}): CardInstance {
-  return { id, templateId: 't1', indexValues, faceDown: false, rotated: false };
+  return { id, templateId: 't1', indexValues, faceDown: false, rotated: false, tags: [], owner: null, controller: null, attachedTo: null };
 }
 
 function zoneInst(zoneId: string, seat: number | null, cardIds: string[]): ZoneInstance {

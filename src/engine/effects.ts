@@ -654,7 +654,19 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
         const id = `c${state.nextSeq++}`; // deterministic, never a UUID (§4.4)
         const indexValues: Record<Id, number | boolean> = {};
         for (const index of template.indexes) indexValues[index.id] = index.value.defaultValue;
-        state.cards[id] = { id, templateId: template.id, indexValues, faceDown: false, rotated: false };
+        // Same identity seeding as setup.ts's deal (§4.3): a created card's owner is the seat of
+        // the zone it is created into, and null for a shared zone.
+        state.cards[id] = {
+          id,
+          templateId: template.id,
+          indexValues,
+          faceDown: false,
+          rotated: false,
+          tags: [...template.tags],
+          owner: parseZoneKey(to.key).seat,
+          controller: null,
+          attachedTo: null,
+        };
         ids.push(id);
       }
       const dest = state.zones[to.key].cardIds;

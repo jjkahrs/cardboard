@@ -44,7 +44,24 @@ const POINTS = [0, 1, 12, 99, 198, 200];
  */
 function observable(state: Record<string, unknown>): unknown {
   const { cards, zones, pools, playerPools, currentStateId, finished, rngCursor, nextSeq } = state;
-  return { cards, zones, pools, playerPools, currentStateId, finished, rngCursor, nextSeq };
+  return { cards: v1Cards(cards), zones, pools, playerPools, currentStateId, finished, rngCursor, nextSeq };
+}
+
+/**
+ * `PlayState.seatOrder` and `eliminated` (§3.5) are excluded by the destructure above simply by not
+ * being named. `CardInstance`'s four v2 identity fields (§4.3 — `tags`, `owner`, `controller`,
+ * `attachedTo`) need this explicit strip instead, because `cards` is compared wholesale. They have
+ * no v1 counterpart at all, so there is nothing here they could agree or disagree with; a card's v1
+ * observable state is its id, template, index values and its two flags, and those are named below
+ * rather than subtracted, so a field added to `CardInstance` later is opted IN by a human.
+ */
+function v1Cards(cards: unknown): unknown {
+  return Object.fromEntries(
+    Object.entries(cards as Record<string, Record<string, unknown>>).map(([key, card]) => {
+      const { id, templateId, indexValues, faceDown, rotated } = card;
+      return [key, { id, templateId, indexValues, faceDown, rotated }];
+    }),
+  );
 }
 
 /**

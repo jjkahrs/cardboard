@@ -157,6 +157,17 @@ export interface CardInstance {
   indexValues: Record<Id, number | boolean>;
   faceDown: boolean;
   rotated: boolean;
+  /**
+   * §4.3. Seeded as a COPY of `template.tags` at creation and mutable per instance thereafter, so
+   * one instance gaining a tag never edits the definition every other instance shares.
+   */
+  tags: string[];
+  /** §4.3. Set once at creation — the seat whose zone it was dealt into. null for a shared zone. */
+  owner: SeatId | null;
+  /** §4.3. null => derive from the seat of the zone currently holding it. */
+  controller: SeatId | null;
+  /** §4.3. Host instance id. Attachment is a REFERENCE, not a zone, so a host moving changes nothing. */
+  attachedTo: Id | null;
 }
 
 // ---------------------------------------------------------------------------

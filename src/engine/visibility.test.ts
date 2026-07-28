@@ -7,7 +7,7 @@ const faceDownZone: PlayZone = { ...faceUpZone, visibility: 'faceDown' };
 const ownerOnlyZone: PlayZone = { ...faceUpZone, visibility: 'ownerOnly', scope: 'player' };
 
 function card(faceDown: boolean): CardInstance {
-  return { id: 'c1', templateId: 't', indexValues: {}, faceDown, rotated: false };
+  return { id: 'c1', templateId: 't', indexValues: {}, faceDown, rotated: false, tags: [], owner: 0, controller: null, attachedTo: null };
 }
 
 describe('resolveVisibility', () => {

@@ -54,6 +54,10 @@ function card(id: Id, templateId: Id, over: Partial<CardInstance> = {}): CardIns
     indexValues: { [POWER]: Number(id.slice(1)) },
     faceDown: false,
     rotated: false,
+    tags: [...(duel.templates.find((t) => t.id === templateId)?.tags ?? [])],
+    owner: null,
+    controller: null,
+    attachedTo: null,
     ...over,
   };
 }

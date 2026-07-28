@@ -59,7 +59,20 @@ export function createPlayState(def: GameDefinition, seed: string): PlayState {
           for (const index of template.indexes) {
             indexValues[index.id] = index.value.defaultValue;
           }
-          cards[id] = { id, templateId: template.id, indexValues, faceDown: false, rotated: false };
+          cards[id] = {
+            id,
+            templateId: template.id,
+            indexValues,
+            faceDown: false,
+            rotated: false,
+            // A COPY: `template.tags` is shared by every instance and the definition is frozen.
+            tags: [...template.tags],
+            // Deal time is the only place owner is ever set (§4.3). `seat` is the seat whose
+            // player-scoped zone instance this deck deals into, and null for a shared zone.
+            owner: seat,
+            controller: null,
+            attachedTo: null,
+          };
           instanceIds.push(id);
         }
       }

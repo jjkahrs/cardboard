@@ -26,6 +26,7 @@ import {
   ATTACKERS,
   BATTLEFIELD,
   COMBAT,
+  CREATURE_TAG,
   DECK,
   DISCARD,
   duel,
@@ -641,7 +642,21 @@ describe('createCard', () => {
     const ids = h.state.zones[FIELD].cardIds;
     expect(ids).toEqual([`c${seqBefore}`, `c${seqBefore + 1}`]);
     expect(h.state.nextSeq).toBe(seqBefore + 2);
-    expect(h.state.cards[ids[0]]).toEqual({ id: ids[0], templateId: GRUNT, indexValues: { [POWER]: 1 }, faceDown: false, rotated: false });
+    // §4.3: a created card seeds its identity fields the same way the deal does — tags copied from
+    // the template, owner taken from the destination zone (FIELD is shared, hence null).
+    expect(h.state.cards[ids[0]]).toEqual({
+      id: ids[0],
+      templateId: GRUNT,
+      indexValues: { [POWER]: 1 },
+      faceDown: false,
+      rotated: false,
+      tags: [CREATURE_TAG],
+      owner: null,
+      controller: null,
+      attachedTo: null,
+    });
+    // The copy is per-instance: mutating one instance's tags must not reach the definition.
+    expect(h.state.cards[ids[0]].tags).not.toBe(duel.templates.find((t) => t.id === GRUNT)!.tags);
   });
 
   it('is identical across two independently constructed sessions (§9.4 item 1)', () => {

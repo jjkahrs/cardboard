@@ -28,6 +28,10 @@ const instanceOf = (template: CardTemplate, over: Partial<CardInstance> = {}): C
   indexValues: {},
   faceDown: false,
   rotated: false,
+  tags: [...template.tags],
+  owner: 0,
+  controller: null,
+  attachedTo: null,
   ...over,
 });
 
