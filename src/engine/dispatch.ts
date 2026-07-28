@@ -43,6 +43,9 @@ import { evalCriteria } from './criteria';
 import { applyEffect, canMove, type EffectContext } from './effects';
 import { appendPending, pop, promotePending, push, top } from './frames';
 import { clear, isResuming, isSuspended, promptIdOf, raise, validateAnswer } from './interaction';
+// v2 §4.7, §4.8 — step 22. `pending.ts` owns the `resolve` frame's body; this module only wires it
+// into the `advance()` switch, the same way it wires `event`/`rule`/`settle`.
+import { advanceResolve } from './pending';
 import { applyTransition, findAutoTransition } from './stateMachine';
 import { CHOSEN_PROMPT_KEY, resolveTargets } from './targets';
 import { resolveSeat, zoneKey } from './valueRef';
@@ -125,7 +128,11 @@ function makeEc(
   parentId: number | null,
   override: boolean,
   ruleId: Id | null,
-  effectKind: Effect['kind'] | null
+  effectKind: Effect['kind'] | null,
+  // v2 §4.8, step 22/23 — this effect's position in `rule.effects`, i.e. `frame.cursor` at the one
+  // call site that has a `rule` frame (`runEffect`, below). Every other caller omits it, which is
+  // exactly what tells `effects.ts`'s `resolveEffectTargets` a frozen-target lookup cannot apply.
+  effectIndex?: number
 ): EffectContext {
   return {
     state,
@@ -133,6 +140,7 @@ function makeEc(
     ctx,
     depth,
     override,
+    effectIndex,
     // Filling in a null ruleId/effectKind is this module's job — effects.ts does not know which
     // RuleSet is driving it, and H2 requires every change line to name one.
     log: (l) =>
@@ -473,7 +481,7 @@ function runEffect(
     effect,
     // Override is ACTION-scoped (§5.9 rows 1b/5c): it is a property of the tester's own move,
     // never of rule execution, so a rule-driven effect is always evaluated without it.
-    makeEc(state, def, lines, effectCtx, frame.depth, frame.id, false, rule.id, effect.kind)
+    makeEc(state, def, lines, effectCtx, frame.depth, frame.id, false, rule.id, effect.kind, i)
   );
   if (!result.ok) {
     log(lines, {
@@ -718,12 +726,13 @@ function advance(state: PlayState, def: GameDefinition, lines: LogLine[]): StepR
       return advanceRule(frame, state, def, lines);
     case 'settle':
       return advanceSettle(frame, state, def, lines);
-    // v2 §4.7 — STUB. Nothing in this wave can PUSH one of these three frames (`announceAction`,
-    // `openPriority` and `sealedChoice` all reject NOT_ACTIVATABLE in effects.ts), so a throw here
-    // is honest: reaching this arm means something upstream pushed a frame it should not have been
-    // able to. Real bodies land with the steps that push them.
+    // v2 §4.7, §4.8 — step 22. `pending.ts`'s `advanceResolve` owns the body.
     case 'resolve':
-      throw new Error('resolve frame not implemented — v2 step 22');
+      return advanceResolve(frame, state, def, lines);
+    // v2 §4.7 — STUB. Nothing in this wave can PUSH either of these two frames (`openPriority` and
+    // `sealedChoice` both reject NOT_ACTIVATABLE in effects.ts), so a throw here is honest: reaching
+    // this arm means something upstream pushed a frame it should not have been able to. Real bodies
+    // land with the steps that push them.
     case 'priority':
       throw new Error('priority frame not implemented — v2 step 24');
     case 'sealed':

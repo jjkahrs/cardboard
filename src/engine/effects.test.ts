@@ -1416,19 +1416,13 @@ describe('module boundaries', () => {
 });
 
 // ---------------------------------------------------------------------------
-// v2 §4.5 — the six phase-2 effect kinds are STUBS this wave: nothing runs, and the rejection
-// names the step that replaces the stub. Step 21+31 exists to make the union compile, not to
-// implement these; see effects.ts's `applyEffectInner`.
+// v2 §4.5 — four phase-2 effect kinds are still STUBS this wave: nothing runs, and the rejection
+// names the step that replaces the stub. `announceAction`/`counterAction` graduated out of this
+// table in step 22/23 — see `pending.test.ts` for their real behaviour.
 // ---------------------------------------------------------------------------
 
 describe('phase-2 effect kinds — stubbed, rejecting NOT_ACTIVATABLE with the owning step named', () => {
   it.each([
-    ['announceAction', { kind: 'announceAction', ruleId: STRIKE, window: null } as Effect, '22'],
-    [
-      'counterAction',
-      { kind: 'counterAction', action: { kind: 'allOnStack', where: null } } as Effect,
-      '23',
-    ],
     ['openPriority', { kind: 'openPriority', window: 'w1' } as Effect, '24'],
     [
       'chooseMode',

@@ -755,8 +755,8 @@ describe('resolveValueRef', () => {
   });
 
   // -------------------------------------------------------------------------
-  // v2 §4.2, §5.7 — replacedAmount and actionField. Final behaviour, not stubs: outside a
-  // replacement rule / step 23's pendingActions resolution, both are genuinely unbound.
+  // v2 §4.2, §5.7 — replacedAmount. Final behaviour, not a stub: outside a replacement rule it is
+  // genuinely unbound.
   // -------------------------------------------------------------------------
 
   describe('replacedAmount', () => {
@@ -766,9 +766,59 @@ describe('resolveValueRef', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // v2 §4.2, §4.8 — actionField, resolved for real by `pending.ts` (step 23). Ordering,
+  // resolve-time behaviour and the stack-based ACs (MTG2/MTG3) live in `pending.test.ts`; this is
+  // just the ValueRef wiring plus §9.5 edge case 11.
+  // -------------------------------------------------------------------------
+
   describe('actionField', () => {
-    it('is UNBOUND_REF everywhere — pendingActions resolution is step 23, not this wave', () => {
+    const pendingAction = {
+      id: 'a1',
+      ruleId: 'r1',
+      sourceCardId: null,
+      controller: 1,
+      ctx: makeCtx(),
+      targets: { '0': ['c1', 'c2'], '1': ['c3'] },
+      tags: [],
+      countered: false,
+    };
+
+    it('reads controller/targetCount off an action on top of the stack', () => {
+      const state = makeState(2, 0, { pendingActions: { a1: pendingAction }, actionStack: ['a1'] });
+      expect(
+        resolveValueRef(
+          { kind: 'actionField', action: { kind: 'topOfStack' }, field: 'controller' },
+          state,
+          makeCtx(),
+          makeDef()
+        )
+      ).toEqual({ ok: true, values: [1], quantifier: 'every' });
+      expect(
+        resolveValueRef(
+          { kind: 'actionField', action: { kind: 'topOfStack' }, field: 'targetCount' },
+          state,
+          makeCtx(),
+          makeDef()
+        )
+      ).toEqual({ ok: true, values: [3], quantifier: 'every' });
+    });
+
+    // §9.5 edge case 11 — never `undefined` propagating a silent NaN/false.
+    it('an empty actionStack fails MISSING_REFERENT, not undefined', () => {
       const ref = { kind: 'actionField', action: { kind: 'topOfStack' }, field: 'controller' } as const;
+      const result = resolveValueRef(ref, makeState(2, 0), makeCtx(), makeDef());
+      expect(result).toMatchObject({ ok: false, reason: 'MISSING_REFERENT' });
+    });
+
+    it('a dangling {kind:"action", id} is TARGET_GONE', () => {
+      const ref = { kind: 'actionField', action: { kind: 'action', id: 'ghost' }, field: 'controller' } as const;
+      const result = resolveValueRef(ref, makeState(2, 0), makeCtx(), makeDef());
+      expect(result).toMatchObject({ ok: false, reason: 'TARGET_GONE' });
+    });
+
+    it('triggeringAction is UNBOUND_REF outside a pending action\'s own resolution', () => {
+      const ref = { kind: 'actionField', action: { kind: 'triggeringAction' }, field: 'controller' } as const;
       const result = resolveValueRef(ref, makeState(2, 0), makeCtx(), makeDef());
       expect(result).toMatchObject({ ok: false, reason: 'UNBOUND_REF' });
     });

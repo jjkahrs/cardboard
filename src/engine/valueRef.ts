@@ -21,6 +21,11 @@ import type { ResolutionFail } from './seats';
 // Cyclic with `modifiers.ts` by design (§5.4): a computed value is defined in terms of the refs it
 // reads. Only ever called from inside a function body, so module evaluation order is irrelevant.
 import { effectiveIndex, effectiveTags } from './modifiers';
+// v2 §4.2, §4.8, step 23 — `pending.ts` owns ActionRef/ActionSelector resolution the way `seats.ts`
+// owns SeatRef/CardRef. Cyclic with `criteria.ts`/`valueRef.ts` by design (`pending.ts`'s
+// `allOnStack` needs `evalCriteria`, which needs `resolveValueRef` from here) — function-body calls
+// only, same discipline as the `modifiers.ts` cycle immediately above.
+import { resolveActionField } from './pending';
 
 // `resolveSeat` moved to seats.ts with the ring (§3.5); `zoneKey`/`parseZoneKey`/`resolveCardRef`
 // followed it in step 17, because §4.1's `owner`/`controller` make SeatRef, CardRef and ZoneRef one
@@ -188,10 +193,10 @@ export function resolveValueRef(
     case 'replacedAmount':
       return fail('UNBOUND_REF', 'Ref "replacedAmount" is unbound: it resolves only inside a replacement rule.');
 
-    // v2 §4.2 — reads a characteristic off a `PendingAction`. `state.pendingActions` exists (§4.10)
-    // but nothing resolves an `ActionRef` against it yet — that lands with `pending.ts` in step 23.
-    // STUB: rejects UNBOUND_REF rather than the wrong answer.
+    // v2 §4.2, §4.8 — reads a characteristic off a `PendingAction`. `pending.ts` owns ActionRef
+    // resolution the way `seats.ts` owns SeatRef/CardRef; this is a thin ActionRef resolve + field
+    // read, mirroring `cardTag`'s shape immediately above.
     case 'actionField':
-      return fail('UNBOUND_REF', `Ref "actionField" (${ref.field}) is not resolvable yet — v2 step 23.`);
+      return resolveActionField(ref, state, ctx);
   }
 }
