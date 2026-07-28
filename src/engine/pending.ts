@@ -22,10 +22,29 @@
  * selector, which fails the whole batch on one dead id — §5.3's atomicity does not apply to a
  * selection that was already committed at announce time).
  *
- * A target selector that resolves to an unanswered PROMPT at announce time is deliberately left
- * UNFROZEN: freezing it would mean suspending mid-announce to ask the tester right now, which this
- * wave does not do (announcing never suspends). It falls through to a live, at-resolve-time prompt
- * instead — a real interim limitation, not a bug, called out in the implementation report.
+ * A target selector that resolves to an unanswered PROMPT at announce time SUSPENDS announce itself
+ * (§4.8's carried-over fix, landed in step 24 — steps 22/23 left this interim, see the note they used
+ * to leave here). This is not a new mechanism: step 5 already established raise-before-mutate — an
+ * effect raises its interaction BEFORE mutating anything, and the frame cursor does not advance until
+ * it completes (§3.3) — `announceAction` now uses that exact path for every target-bearing effect in
+ * the ANNOUNCED rule, one prompt at a time, re-entrant across suspend/resume the same way `runEffect`
+ * is for a single effect's own `target`. `announcePromptScan` below finds the first not-yet-answered
+ * one on each call; `dispatch.ts`'s `runEffect` (§4.8 step 24) checks `isSuspended(state)` right after
+ * calling `applyEffect` and holds the cursor when it is set, since `announceAction` is the one effect
+ * kind that can now suspend from OUTSIDE `runEffect`'s own top-of-function `target` check. Only once
+ * every prompt-bearing target is answered does `announceAction` mint the `PendingAction`'s id, freeze
+ * everything (including the now-answered prompts, read straight from `ctx.promptAnswers` rather than
+ * re-resolved live), push it, and log — i.e. the id is minted, and `state.pendingActions`/
+ * `actionStack` are touched, only on the FINAL, non-suspending pass, so a suspended announce leaves
+ * genuinely nothing mutated (§3.3's rule, not just its spirit).
+ *
+ * WINDOW (§4.6, §5.5, step 24). Once an announce's targets are fully frozen, a non-null
+ * `effect.window` opens a `priority` frame over the freshly-created action — `priority.ts`'s
+ * `resolveWindowOrder`/`openPriorityWindow` own the frame itself; this file only resolves the window
+ * BEFORE creating the `PendingAction` (using the controller seat it already knows, not a lookup
+ * through `state.pendingActions[id]`, since `id` does not exist yet) so a bad window reference rejects
+ * the WHOLE announce with nothing mutated, rather than leaving an action on the stack with no window
+ * over it.
  *
  * ADDRESSABILITY (§4.2, §9.5 edge case 11). `resolveActionRef`/`resolveActionSelector` mirror
  * `seats.ts`'s `resolveCardRef`/`resolveSeat`: pure, never throw, typed failures instead of
@@ -60,8 +79,10 @@ import type {
   LogLine,
   PendingAction,
   PlayState,
+  PriorityWindow,
   RejectReason,
   StepResult,
+  TargetSelector,
   TriggerContext,
 } from './types';
 import type { ResolutionFail } from './seats';
@@ -69,6 +90,8 @@ import type { EffectContext } from './effects';
 import { resolveTargets } from './targets';
 import { evalCriteria } from './criteria';
 import { pop, push } from './frames';
+import { raise } from './interaction';
+import { openPriorityWindow, resolveWindowOrder } from './priority';
 
 // ---------------------------------------------------------------------------
 // Reserved `ctx.promptAnswers` keys — parallel to `targets.ts`'s `CHOSEN_PROMPT_KEY`. Neither can
@@ -208,6 +231,29 @@ export function resolveActionField(
 }
 
 // ---------------------------------------------------------------------------
+// The announce-time prompt suspend — §4.8's carried-over fix (file header). Mirrors dispatch.ts's own
+// `promptTarget`: the innermost `prompt` selector, whether the effect's `target` IS one or WRAPS one
+// via `matching` (§4.4).
+// ---------------------------------------------------------------------------
+
+function innerPrompt(s: TargetSelector): Extract<TargetSelector, { kind: 'prompt' }> | null {
+  if (s.kind === 'prompt') return s;
+  if (s.kind === 'matching') return innerPrompt(s.from);
+  return null;
+}
+
+/**
+ * Deterministic per announced rule + target-effect index. The extra `:announce:` segment cannot
+ * collide with `interaction.ts`'s own `promptIdOf` formula (`${logSeq}:${ruleId}:${effectIndex}`
+ * — no colon in a plain effect index), which is what keeps an announced rule's OWN prompts (asked
+ * normally, at ITS resolve time, if this same rule is ever invoked directly) distinct from the
+ * announce-time freezing prompts this file asks on its behalf.
+ */
+function announceTargetPromptId(state: PlayState, ruleId: Id, effectIndex: number): string {
+  return `${state.logSeq}:${ruleId}:announce:${effectIndex}`;
+}
+
+// ---------------------------------------------------------------------------
 // announceAction — §4.5, §4.8
 // ---------------------------------------------------------------------------
 
@@ -228,15 +274,81 @@ export function announceAction(
     return reject(ec, effect, 'INVALID_SEAT', `Announce "${rule.name}": no acting seat is bound (triggeringSeat is null).`);
   }
 
+  // §4.6, §5.5 — validated BEFORE anything mutates (plan then mutate, §5.3), using the controller
+  // seat already known above rather than a lookup through `state.pendingActions`, which does not
+  // have this entry yet. A bad window reference rejects the WHOLE announce with nothing mutated.
+  let window: PriorityWindow | undefined;
+  if (effect.window !== null) {
+    window = def.priorityWindows.find((w) => w.id === effect.window);
+    if (!window) {
+      return reject(ec, effect, 'MISSING_REFERENT', `Announce "${rule.name}": priority window "${effect.window}" does not exist in this definition.`);
+    }
+    const orderRes = resolveWindowOrder(window, state, ctx, controller);
+    if (!orderRes.ok) {
+      return reject(ec, effect, orderRes.reason, orderRes.message);
+    }
+  }
+
+  // §4.8's carried-over fix — raise BEFORE mutating anything (§3.3, reused verbatim from step 5): scan
+  // the ANNOUNCED rule's target-bearing effects, in order, for the first one whose selector wraps a
+  // `prompt` and has no frozen answer yet. Re-entrant across suspend/resume: `ctx.promptAnswers`
+  // already carries every earlier one THIS announce has already asked, since `ctx` is the SAME object
+  // `dispatch.ts`'s `runEffect` re-enters this effect with on resume (unchanged across passes, only
+  // gaining keys).
+  for (let i = 0; i < rule.effects.length; i++) {
+    const fx = rule.effects[i];
+    if (!('target' in fx)) continue;
+    const prompt = innerPrompt(fx.target);
+    if (!prompt) continue;
+    const promptId = announceTargetPromptId(state, rule.id, i);
+    if (ctx.promptAnswers[promptId] !== undefined) continue; // already answered on an earlier pass
+    const candidates = resolveTargets(fx.target, state, ctx, def);
+    if (!candidates.ok || candidates.kind !== 'prompt') {
+      // Zero legal targets, or an outright resolution failure — left unfrozen for resolve time to
+      // handle, unchanged from before this fix. Only a genuinely OPEN prompt suspends.
+      continue;
+    }
+    raise(state, {
+      kind: 'chooseCards',
+      promptId,
+      promptText: candidates.promptText,
+      seat: controller,
+      candidates: [...candidates.candidates],
+      min: candidates.min,
+      max: candidates.max,
+    });
+    emit(
+      ec,
+      effect,
+      'info',
+      `Announce "${rule.name}": prompt "${candidates.promptText}" (seat ${controller}) — ${candidates.candidates.length} legal target(s).`,
+      null,
+      'prompt'
+    );
+    // dispatch.ts's `runEffect` checks `isSuspended(state)` right after this call returns and holds
+    // the cursor when it is set — the cursor does NOT advance, so resuming re-enters THIS SAME effect.
+    return { ok: true };
+  }
+
   const id = `a${state.nextSeq++}`;
 
-  // Freeze — see the file header. Only a resolution that lands on a concrete card list freezes; a
-  // live prompt or an outright failure is left for resolve time to handle, exactly as it always
-  // would for a rule invoked any other way.
+  // Freeze — see the file header. A resolution that lands on a concrete card list freezes, and so
+  // now does a resolved PROMPT answer (read straight from `ctx.promptAnswers`, already validated by
+  // `dispatch.ts`'s `answerPrompt` against the SAME candidates/min/max this file raised above). An
+  // outright failure (NO_TARGETS or worse) is still left for resolve time to handle, exactly as it
+  // always would for a rule invoked any other way.
   const targets: Record<string, Id[]> = {};
   const promptAnswers: Record<string, Id[]> = { ...ctx.promptAnswers, [ACTION_ID_KEY]: [id] };
   rule.effects.forEach((fx, i) => {
     if (!('target' in fx)) return;
+    if (innerPrompt(fx.target)) {
+      const chosen = ctx.promptAnswers[announceTargetPromptId(state, rule.id, i)];
+      if (chosen !== undefined) {
+        targets[String(i)] = [...chosen];
+        promptAnswers[actionTargetKey(i)] = [...chosen];
+      }
+      return;
+    }
     const res = resolveTargets(fx.target, state, ctx, def);
     if (res.ok && res.kind === 'cards') {
       targets[String(i)] = [...res.cardIds];
@@ -276,6 +388,13 @@ export function announceAction(
     { path: 'actionStack', before, after: [...state.actionStack] },
     'change'
   );
+
+  // §4.6, §5.5 — opens a priority window over the action just placed. Already validated above (plan
+  // then mutate), so this cannot fail; `priority.ts` owns the frame's own shape.
+  if (window) {
+    openPriorityWindow(ec, effect, window, id, controller);
+  }
+
   return { ok: true };
 }
 

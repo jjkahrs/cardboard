@@ -1416,14 +1416,14 @@ describe('module boundaries', () => {
 });
 
 // ---------------------------------------------------------------------------
-// v2 §4.5 — four phase-2 effect kinds are still STUBS this wave: nothing runs, and the rejection
+// v2 §4.5 — three phase-2 effect kinds are still STUBS this wave: nothing runs, and the rejection
 // names the step that replaces the stub. `announceAction`/`counterAction` graduated out of this
-// table in step 22/23 — see `pending.test.ts` for their real behaviour.
+// table in step 22/23 (see `pending.test.ts`); `openPriority` graduates in step 24 (see the
+// `openPriority — wiring` block below and `priority.test.ts` for its full semantics).
 // ---------------------------------------------------------------------------
 
 describe('phase-2 effect kinds — stubbed, rejecting NOT_ACTIVATABLE with the owning step named', () => {
   it.each([
-    ['openPriority', { kind: 'openPriority', window: 'w1' } as Effect, '24'],
     [
       'chooseMode',
       { kind: 'chooseMode', promptText: 'Pick', seat: seat(0), modes: [] } as Effect,
@@ -1449,5 +1449,46 @@ describe('phase-2 effect kinds — stubbed, rejecting NOT_ACTIVATABLE with the o
       expect(result.detail).toContain(kind);
     }
     expect(JSON.stringify(h.state)).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2 §4.5, §4.6, §5.5 — step 24. `openPriority`'s own wiring only: MISSING_REFERENT for a bad
+// window, and a real window pushes a `priority` frame. §5.5's own semantics (order, passes,
+// eliminated-seat skipping, PRIORITY_EXHAUSTED, ...) live in `priority.test.ts`.
+// ---------------------------------------------------------------------------
+
+describe('openPriority — wiring (§8 step 24)', () => {
+  it('rejects MISSING_REFERENT for a window that does not exist in this definition, mutating nothing', () => {
+    const before = JSON.stringify(h.state);
+    const result = applyEffect({ kind: 'openPriority', window: 'w1' }, h.ec);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('MISSING_REFERENT');
+      expect(result.detail).toContain('w1');
+    }
+    expect(JSON.stringify(h.state)).toBe(before);
+  });
+
+  it('pushes a priority frame ordered from the active seat, over the LIVE seatOrder at push time', () => {
+    const def = {
+      ...duel,
+      priorityWindows: [
+        { id: 'w1', name: 'Test Window', start: 'active' as const, direction: 'forward' as const, includeStart: true, passesToClose: null, collapseEmptyOffers: true as const },
+      ],
+    };
+    h.ec.def = def;
+    const result = applyEffect({ kind: 'openPriority', window: 'w1' }, h.ec);
+    expect(result.ok).toBe(true);
+    expect(h.state.stack).toHaveLength(1);
+    const frame = h.state.stack[0];
+    expect(frame.kind).toBe('priority');
+    if (frame.kind === 'priority') {
+      expect(frame.windowId).toBe('w1');
+      expect(frame.actionId).toBeNull();
+      expect(frame.order).toEqual([0, 1]); // duel is 2 seats, active is seat 0 (§9.2)
+      expect(frame.cursor).toBe(0);
+      expect(frame.consecutivePasses).toBe(0);
+    }
   });
 });

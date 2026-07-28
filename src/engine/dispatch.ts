@@ -46,7 +46,12 @@ import { appendPending, pop, promotePending, push, top } from './frames';
 import { clear, isResuming, isSuspended, promptIdOf, raise, validateAnswer } from './interaction';
 // v2 §4.7, §4.8 — step 22. `pending.ts` owns the `resolve` frame's body; this module only wires it
 // into the `advance()` switch, the same way it wires `event`/`rule`/`settle`.
-import { advanceResolve } from './pending';
+import { actionTargetKey, advanceResolve } from './pending';
+// v2 §4.6, §4.7, §5.5 — step 24. `priority.ts` owns the `priority` frame's body and the
+// `passPriority` action; this module only wires both into `advance()`/`applyAction`.
+import { advancePriority, passPriority } from './priority';
+// v2 §4.12, §5.8 — step 25. `activation.ts` owns the `activate` action's body.
+import { activateRule } from './activation';
 import { applyTransition, findAutoTransition } from './stateMachine';
 import { CHOSEN_PROMPT_KEY, resolveTargets } from './targets';
 import { resolveSeat, zoneKey } from './valueRef';
@@ -120,7 +125,7 @@ function baseCtx(state: PlayState): TriggerContext {
   return { triggeringCardId: null, zoneKey: null, triggeringSeat: activeSeat(state), promptAnswers: {}, sourceCardId: null };
 }
 
-function makeEc(
+export function makeEc(
   state: PlayState,
   def: GameDefinition,
   lines: LogLine[],
@@ -142,6 +147,10 @@ function makeEc(
     depth,
     override,
     effectIndex,
+    // v2 §4.6, §4.7 — the enclosing `rule` frame's own id, so an effect that pushes a frame directly
+    // (`priority.ts`'s `openPriorityWindow`) can set `parentId` correctly. See EffectContext's own
+    // doc comment in effects.ts.
+    parentId,
     // Filling in a null ruleId/effectKind is this module's job — effects.ts does not know which
     // RuleSet is driving it, and H2 requires every change line to name one.
     log: (l) =>
@@ -407,7 +416,13 @@ function runEffect(
   let chosen: Id[] | undefined;
 
   if (selector) {
-    chosen = frame.ctx.promptAnswers[promptId];
+    // v2 §4.8's carried-over fix (§8 step 24) — a target already FROZEN by `announceAction` (this
+    // effect is being run by a `resolve` frame, at its own position in the announced rule's
+    // `effects`) is an answer too, under `pending.ts`'s reserved key rather than this one. Without
+    // this, a rule whose OWN top-level effect target is (or wraps) a `prompt` would ask a SECOND,
+    // live prompt at resolve time regardless of what was frozen at announce time — exactly the
+    // silent re-aiming §4.8 exists to prevent, just delayed instead of skipped.
+    chosen = frame.ctx.promptAnswers[promptId] ?? frame.ctx.promptAnswers[actionTargetKey(i)];
     if (chosen === undefined) {
       // §3.3 hard rule: raise BEFORE any mutation. This effect executes twice — once to raise, once
       // to complete — so it must be re-entrant by construction.
@@ -484,6 +499,15 @@ function runEffect(
     // never of rule execution, so a rule-driven effect is always evaluated without it.
     makeEc(state, def, lines, effectCtx, frame.depth, frame.id, false, rule.id, effect.kind, i)
   );
+  // v2 §4.8's carried-over fix — `announceAction` can now suspend INTERNALLY (raising its own
+  // interaction before it has frozen anything, mirroring the raise-before-mutate rule above) rather
+  // than only through this function's own top-of-function `target`-prompt path. This check is what
+  // makes that possible without a second copy of the suspend/resume machinery: nothing else in this
+  // file ever calls `raise()` from inside `applyEffect`, so for every OTHER effect kind
+  // `isSuspended(state)` is unconditionally false here and this branch never fires.
+  if (isSuspended(state)) {
+    return SUSPENDED;
+  }
   if (!result.ok) {
     log(lines, {
       level: levelFor(result.reason),
@@ -747,15 +771,31 @@ function advance(state: PlayState, def: GameDefinition, lines: LogLine[]): StepR
     // v2 §4.7, §4.8 — step 22. `pending.ts`'s `advanceResolve` owns the body.
     case 'resolve':
       return advanceResolve(frame, state, def, lines);
-    // v2 §4.7 — STUB. Nothing in this wave can PUSH either of these two frames (`openPriority` and
-    // `sealedChoice` both reject NOT_ACTIVATABLE in effects.ts), so a throw here is honest: reaching
-    // this arm means something upstream pushed a frame it should not have been able to. Real bodies
-    // land with the steps that push them.
+    // v2 §4.7, §4.6, §5.5 — step 24. `priority.ts` owns the body.
     case 'priority':
-      throw new Error('priority frame not implemented — v2 step 24');
+      return advancePriority(frame, state, def, lines);
+    // v2 §4.7 — STUB. Nothing in this wave can PUSH this frame (`sealedChoice` still rejects
+    // NOT_ACTIVATABLE in effects.ts), so a throw here is honest: reaching this arm means something
+    // upstream pushed a frame it should not have been able to. A real body lands with step 29.
     case 'sealed':
       throw new Error('sealed frame not implemented — v2 step 29');
   }
+}
+
+// ---------------------------------------------------------------------------
+// v2 §4.12, §5.5 — `passPriority` and a priority-window `activate` response are RESUMES of an
+// already-open transaction, exactly like `answerPrompt`/`cancelPrompt`, but `isResuming` (which
+// `sessionStore.ts` also reads) cannot classify them from the action alone: `activate` is legal
+// BOTH as a fresh top-level action (a sorcery-speed ability, no window open) and as a response to an
+// open `priority` interaction, and only the CURRENT `state.interaction` tells the two apart. Kept
+// local to this file rather than widening `interaction.ts`'s exported `isResuming` — `sessionStore.
+// ts`'s OWN `!resuming && !isSuspended(...)` guard already refuses to bump `logSeq` whenever an
+// interaction is genuinely open, regardless of this predicate, so nothing there needs to agree with
+// it (§8 step 24's own report works through why in detail).
+// ---------------------------------------------------------------------------
+
+function isPriorityResume(state: PlayState, action: PlayAction): boolean {
+  return state.interaction?.kind === 'priority' && (action.kind === 'passPriority' || action.kind === 'activate');
 }
 
 // ---------------------------------------------------------------------------
@@ -804,7 +844,7 @@ function applyAction(
   if (state.finished) {
     return reject('SESSION_FINISHED', 'Session finished at "End". Only Rewind is accepted.');
   }
-  const resuming = isResuming(action);
+  const resuming = isResuming(action) || isPriorityResume(state, action);
   if (state.interaction && !resuming) {
     // Row 9, widened from "a card prompt" to ANY interaction. Rewind is the store's job and never
     // reaches step().
@@ -823,6 +863,8 @@ function applyAction(
     if (state.budget.causalDepth !== 0) state.budget.causalDepth = 0;
     if (state.budget.effectsUsed !== 0) state.budget.effectsUsed = 0;
     if (state.budget.settleIterations !== 0) state.budget.settleIterations = 0;
+    // v2 §5.5 — same "per transaction, not per dispatch()" scope as the three counters above.
+    if (state.budget.priorityRounds !== 0) state.budget.priorityRounds = 0;
   }
 
   const ctx = baseCtx(state);
@@ -970,14 +1012,17 @@ function applyAction(
       return MORE;
     }
 
+    // v2 §4.12, §5.8 — step 25. `activation.ts` owns the body.
+    case 'activate':
+      return activateRule(state, def, action, lines, override);
+    // v2 §4.12, §5.5 — step 24. `priority.ts` owns the body.
+    case 'passPriority':
+      return passPriority(state, def, lines);
+
     // -----------------------------------------------------------------------
     // v2 §4.12 — STUB. The action exists (step 21/31 has to make PlayAction compile), but nothing
     // in this wave can raise the interaction it answers, or run the primitive it drives. Real
     // bodies land with the steps named below.
-    case 'activate':
-      return reject('NOT_ACTIVATABLE', `Activate: RuleSet.activation is not yet implemented — v2 step 25.`);
-    case 'passPriority':
-      return reject('INVALID_ANSWER', 'Pass priority ignored: no priority window is open — v2 step 24.');
     case 'answerOption':
       return reject('INVALID_ANSWER', 'Answer ignored: chooseOption is not yet raised — v2 step 28.');
     case 'answerNumber':

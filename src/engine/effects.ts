@@ -35,6 +35,9 @@ import { applyWithReplacement } from './replacement';
 // three effect arms (`announceAction`, `counterAction`) and consults `actionTargetKey` before
 // resolving a target-bearing effect's targets (see `resolveEffectTargets` below).
 import { actionTargetKey, announceAction, counterAction } from './pending';
+// v2 §4.6, §5.5 — step 24. `priority.ts` owns the priority frame's body; this module only wires the
+// `openPriority` effect's one job, opening a STANDALONE window (no pending action attached).
+import { openPriorityWindow } from './priority';
 import type {
   Effect,
   EffectResult,
@@ -70,6 +73,15 @@ export interface EffectContext {
    * what lets a target-bearing effect consult `pending.ts`'s frozen-target key for THIS effect.
    */
   effectIndex?: number;
+  /**
+   * v2 §4.7, §4.6 — the CURRENT `rule` frame's own id, so an effect that pushes a NEW frame directly
+   * rather than through `fireEvent` (`priority.ts`'s `openPriorityWindow`, called from `openPriority`
+   * below and from `pending.ts`'s `announceAction`) can set the new frame's `parentId` correctly
+   * instead of guessing. OPTIONAL for the same reason `effectIndex` above is: every existing call
+   * site that builds an `EffectContext` literal without it keeps compiling unchanged, and `null` is
+   * used at push time when it is absent.
+   */
+  parentId?: number | null;
   log(line: LogLine): void;
   /**
    * APPENDS to `state.pending` only. dispatch.ts owns depth+1 and the FIFO placement (§3.2).
@@ -1084,10 +1096,21 @@ function applyEffectInner(effect: Effect, ec: EffectContext): EffectResult {
       return counterAction(ec, effect);
 
     // -----------------------------------------------------------------------
+    // v2 §4.5, §4.6, §5.5 — step 24. A STANDALONE window: no pending action attached, so
+    // `PriorityWindow{start:'controllerOfAction'}` has nothing to resolve against and fails rather
+    // than guessing (`openPriorityWindow`'s job). `announceAction.window` is the OTHER opener,
+    // attached to the action it just placed — that path lives in `pending.ts`.
+    case 'openPriority': {
+      const window = def.priorityWindows.find((w) => w.id === effect.window);
+      if (!window) {
+        return reject(ec, effect, 'MISSING_REFERENT', `Open priority: window "${effect.window}" does not exist in this definition.`);
+      }
+      return openPriorityWindow(ec, effect, window, null, null);
+    }
+
+    // -----------------------------------------------------------------------
     // v2 §4.5 — STUB. The type exists (step 21/31 has to make every §4 union compile), but the
     // behaviour belongs to the step named per kind below.
-    case 'openPriority':
-      return reject(ec, effect, 'NOT_ACTIVATABLE', `${effect.kind}: not yet implemented — v2 step 24.`);
     case 'chooseMode':
     case 'chooseNumber':
       return reject(ec, effect, 'NOT_ACTIVATABLE', `${effect.kind}: not yet implemented — v2 step 28.`);

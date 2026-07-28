@@ -19,6 +19,7 @@ import {
   type Interaction,
   type PlayState,
   type PlayZone,
+  type PriorityWindow,
   type RuleSet,
 } from '../engine/types';
 
@@ -571,5 +572,181 @@ describe('performance budget', () => {
     // one-time log-scale effect) but nowhere near doubling, so 2x is generous and unambiguous, not
     // a constant tuned to clear the observed number.
     expect(avg200).toBeLessThan(2 * avg10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2 §4.6, §5.5, §8 step 24 — priority windows through the real transaction loop. `priority.test.ts`
+// owns the engine-level mechanism; this file's job is only the store-level half of MTG5: a seat that
+// passes gets its OWN LogEntry/rewind point, distinct from the one that raised the interaction.
+// ---------------------------------------------------------------------------
+
+describe('rewind — priority (AC: MTG5)', () => {
+  const POOL_ID = 'pool_mtg_session';
+  const WIN_ID = 'win_mtg_session';
+
+  const rsOriginalMtg: RuleSet = {
+    id: 'rs_original_mtg_session',
+    name: 'Original',
+    trigger: 'never_original_mtg_session',
+    stateFilter: null,
+    condition: null,
+    effects: [{ kind: 'changePool', poolId: POOL_ID, seat: { kind: 'triggeringSeat' }, op: 'subtract', amount: { kind: 'literal', value: 3 } }],
+    priority: 0,
+    onRejection: 'continue',
+    modifier: null,
+    continuous: false,
+    replaces: null,
+    activation: null,
+  };
+
+  const rsAnnounceMtg: RuleSet = {
+    id: 'rs_announce_mtg_session',
+    name: 'AnnounceMtg',
+    trigger: 'doAnnounceMtg',
+    stateFilter: null,
+    condition: null,
+    effects: [{ kind: 'announceAction', ruleId: rsOriginalMtg.id, window: WIN_ID }],
+    priority: 0,
+    onRejection: 'continue',
+    modifier: null,
+    continuous: false,
+    replaces: null,
+    activation: null,
+  };
+
+  // Freely activatable by any seat (no costCheck) — this test is about the REWIND/log-entry shape
+  // of a pass, not about per-seat legality, which `priority.test.ts` already covers thoroughly.
+  const rsRespondMtg: RuleSet = {
+    id: 'rs_respond_mtg_session',
+    name: 'Respond',
+    trigger: 'never_respond_mtg_session',
+    stateFilter: null,
+    condition: null,
+    effects: [],
+    priority: 0,
+    onRejection: 'continue',
+    modifier: null,
+    continuous: false,
+    replaces: null,
+    activation: { costCheck: null, cost: [], window: WIN_ID, perInstance: false, label: 'Respond' },
+  };
+
+  const winMtgSession: PriorityWindow = {
+    id: WIN_ID,
+    name: 'MTG',
+    start: 'active',
+    direction: 'forward',
+    includeStart: true,
+    passesToClose: null,
+    collapseEmptyOffers: true,
+  };
+
+  const priorityDef: GameDefinition = {
+    ...testDef,
+    id: 'test-session-def-priority',
+    pools: [{ id: POOL_ID, scope: 'player', value: { type: 'integer', name: 'Pool', defaultValue: 20, min: 0, max: 20 } }],
+    customEvents: [...testDef.customEvents, 'doAnnounceMtg'],
+    ruleSets: [...testDef.ruleSets, rsOriginalMtg, rsAnnounceMtg, rsRespondMtg],
+    globalRuleSetIds: [...testDef.globalRuleSetIds, rsAnnounceMtg.id],
+    priorityWindows: [winMtgSession],
+  };
+
+  // AC: MTG5
+  it('passPriority is a fresh, own LogEntry; rewinding to before it restores the original raised interaction', () => {
+    useSessionStore.getState().startSession(priorityDef, SEED);
+
+    useSessionStore.getState().dispatch({ kind: 'fireEvent', name: 'doAnnounceMtg', seat: 0 });
+    const announceEntry = session().log.at(-1)!;
+    expect(announceEntry.flags.suspended).toBe(true);
+    expect(session().state.interaction?.kind).toBe('priority');
+    const beforePass = session().log.length;
+    const rawInteraction = session().state.interaction;
+
+    useSessionStore.getState().dispatch({ kind: 'passPriority' });
+    expect(session().log).toHaveLength(beforePass + 1); // its OWN entry, not folded into the raise
+    const passEntry = session().log.at(-1)!;
+    expect(passEntry.cause.kind).toBe('userAction');
+    expect(passEntry).not.toEqual(announceEntry);
+    // Seat 0 declined; the round continues to seat 1 (also freely activatable), offering a NEW,
+    // distinct interaction — proof this pass genuinely advanced the round rather than reopening the
+    // same one.
+    expect(session().state.interaction).toMatchObject({ kind: 'priority', seat: 1 });
+    expect(session().state.interaction).not.toEqual(rawInteraction);
+
+    // Rewind TO the point before the pass: the ORIGINAL raised interaction comes back exactly.
+    useSessionStore.getState().rewind(beforePass);
+    expect(session().state.interaction).toEqual(rawInteraction);
+
+    // Rewind PAST the announce entirely: no interaction, nothing pending.
+    useSessionStore.getState().rewind(beforePass - 1);
+    expect(session().state.interaction).toBeNull();
+    expect(session().state.actionStack).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2 §4.5, §5.8, §8 step 25 — AC: SP8, §9.4(e) case 3. `activation.test.ts` owns the engine-level
+// discard/replay mechanism; this file's job is the store-level half: one activation is one
+// LogEntry/one HistoryFrame, so rewinding past it is a single step with no partial-restore point
+// reachable in between (there is no "in between" — only one new index exists at all).
+// ---------------------------------------------------------------------------
+
+describe('rewind — activation (AC: SP8, §9.4(e) case 3)', () => {
+  const ACT_POOL_ID = 'pool_activation_session';
+  const MARKER_POOL_ID = 'pool_activation_marker';
+
+  const rsAbilitySession: RuleSet = {
+    id: 'rs_ability_session',
+    name: 'Ability',
+    trigger: 'never_ability_session',
+    stateFilter: null,
+    condition: null,
+    effects: [{ kind: 'changePool', poolId: MARKER_POOL_ID, seat: { kind: 'triggeringSeat' }, op: 'add', amount: { kind: 'literal', value: 1 } }],
+    priority: 0,
+    onRejection: 'continue',
+    modifier: null,
+    continuous: false,
+    replaces: null,
+    activation: {
+      costCheck: { kind: 'criteria', left: { kind: 'pool', poolId: ACT_POOL_ID, seat: { kind: 'triggeringSeat' } }, op: '>=', right: { kind: 'literal', value: 2 } },
+      cost: [{ kind: 'changePool', poolId: ACT_POOL_ID, seat: { kind: 'triggeringSeat' }, op: 'subtract', amount: { kind: 'literal', value: 2 } }],
+      window: null,
+      perInstance: false,
+      label: 'Ability',
+    },
+  };
+
+  const activationDef: GameDefinition = {
+    ...testDef,
+    id: 'test-session-def-activation',
+    pools: [
+      { id: ACT_POOL_ID, scope: 'player', value: { type: 'integer', name: 'Pool', defaultValue: 5, min: 0, max: 99 } },
+      { id: MARKER_POOL_ID, scope: 'player', value: { type: 'integer', name: 'Marker', defaultValue: 0, min: 0, max: 99 } },
+    ],
+    ruleSets: [...testDef.ruleSets, rsAbilitySession],
+  };
+
+  // AC: SP8
+  // AC: §9.4(e) case 3 — see activation.test.ts for cases 1/2 of the same scenario.
+  it('one activation is one LogEntry/HistoryFrame; rewinding past it restores the pool in one step', () => {
+    useSessionStore.getState().startSession(activationDef, SEED);
+    const before = session().log.length;
+
+    useSessionStore.getState().dispatch({ kind: 'activate', ruleId: rsAbilitySession.id, cardId: null, seat: 0 });
+
+    expect(session().state.playerPools[ACT_POOL_ID][0]).toBe(3); // 5 - 2
+    expect(session().state.playerPools[MARKER_POOL_ID][0]).toBe(1); // the ability's own effect ran
+    // One transaction, one entry, one history frame — cost AND effects together.
+    expect(session().log).toHaveLength(before + 1);
+    expect(session().history).toHaveLength(before + 1);
+
+    useSessionStore.getState().rewind(before);
+
+    expect(session().state.playerPools[ACT_POOL_ID][0]).toBe(5); // restored to the PRE-spend value
+    expect(session().state.playerPools[MARKER_POOL_ID][0]).toBe(0);
+    // No partial-restore state is reachable from any rewind point: there is only ONE new index this
+    // activation could ever be rewound to either side of.
+    expect(session().history).toHaveLength(before);
   });
 });
