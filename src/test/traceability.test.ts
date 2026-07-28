@@ -85,6 +85,11 @@ const IN_SCOPE: Criterion[] = [
   { id: 'SP11', prose: '5 seats, seat 3 eliminated -> the seat after 2 resolves to 4, activeSeatCount reads 4, finished stays false', expected: 'seats.test.ts' },
   { id: 'V2', prose: 'Seat ousted -> leaves the order, former neighbours become adjacent, later refs correct with no restart', expected: 'seats.test.ts' },
   { id: 'V10', prose: '4-seat and 5-seat sessions both read the correct table size from one authored threshold, no config', expected: 'seats.test.ts' },
+  // v2 §9.1 — the owner/controller/holder rows.
+  { id: 'SP5', prose: '`setController` seat wins over the holding zone for controllerOf; ownerOf unchanged', expected: 'effects.test.ts, valueRef.test.ts' },
+  { id: 'MTG8', prose: 'Card returned to its owner\'s hand after its controller changed -> owner\'s hand, not the controller\'s', expected: 'effects.test.ts' },
+  { id: 'V1', prose: '5 seats; the predator of the triggering card\'s owner resolves relative to that seat, not the active seat', expected: 'seats.test.ts' },
+  { id: 'V9', prose: 'Unique card contested; the controller changes without changing which zone instance holds it', expected: 'effects.test.ts' },
 ];
 
 // Every criterion in §9.1 now has a home: step 25 landed the play screen, which was the last one

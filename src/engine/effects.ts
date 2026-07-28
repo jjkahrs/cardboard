@@ -789,5 +789,53 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
       }
       return { ok: true };
     }
+
+    // -----------------------------------------------------------------------
+    case 'setController': {
+      const targets = resolveTargets(effect.target, state, ctx, def);
+      if (!targets.ok) return failed(ec, effect, targets);
+      if (targets.kind === 'prompt') {
+        return reject(ec, effect, 'AWAITING_PROMPT', `SetController: prompt "${targets.promptText}" has no answer bound.`);
+      }
+      // null is not "no seat resolved" — it is the authored instruction to CLEAR the override, so
+      // control goes back to being derived from the holding zone (§4.3).
+      let seat: number | null = null;
+      if (effect.seat !== null) {
+        const seats = resolveSeat(effect.seat, state, ctx);
+        if (!seats.ok) return failed(ec, effect, seats);
+        if (seats.seats.length !== 1) {
+          return reject(
+            ec,
+            effect,
+            'INVALID_SEAT',
+            `SetController: seat ref resolved to ${seats.seats.length} seats; expected exactly one.`
+          );
+        }
+        seat = seats.seats[0];
+      }
+
+      // Plan then mutate (§5.3): one dead target rejects the batch rather than half-reassigning it.
+      for (const id of targets.cardIds) {
+        if (!state.cards[id]) {
+          return reject(ec, effect, 'TARGET_GONE', `SetController on ${id}: card no longer exists.`);
+        }
+      }
+      for (const id of targets.cardIds) {
+        const before = state.cards[id].controller;
+        if (before === seat) continue; // §5.1 — a no-op write logs no change
+        state.cards[id].controller = seat;
+        // Deliberately does NOT move the card: §5.12's sibling ruling for §4.3. A contested unique
+        // changes hands where it stands, and which zone instance holds it is untouched.
+        emit(
+          ec,
+          effect,
+          'info',
+          `${id}: controller ${before === null ? 'zone-derived' : `seat ${before}`} → ${seat === null ? 'zone-derived' : `seat ${seat}`}.`,
+          { path: `cards.${id}.controller`, before, after: seat },
+          'change'
+        );
+      }
+      return { ok: true };
+    }
   }
 }

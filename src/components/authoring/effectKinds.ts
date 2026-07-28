@@ -81,6 +81,8 @@ export function defaultEffect(
     // picker offers it.
     case 'eliminateSeat':
       return { kind, seat: { kind: 'active' } };
+    case 'setController':
+      return { kind, target, seat: { kind: 'active' } };
   }
 }
 

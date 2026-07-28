@@ -78,6 +78,13 @@ function seatNoun(seat: SeatRef): string {
         : `the player ${-seat.offset} seats before ${seatNoun(seat.from)}`;
     case 'all':
       return seat.quantifier === 'some' ? 'any player' : 'each player';
+    // Minimum arms so the card face and rule-editor preview are not blank. Naming the card would
+    // need `def` threaded through `seatNoun` and every caller of it — step 19 owns that pass, along
+    // with the rest of §4.1's new vocabulary (`sum`, `relative`, `activeSeatCount`, …).
+    case 'owner':
+      return "the card's owner";
+    case 'controller':
+      return "the card's controller";
   }
 }
 
@@ -231,6 +238,10 @@ export function describeEffect(effect: Effect, def: GameDefinition): string {
     // real prose pass, including `sum` / `relative` / the rest of §4.1's new vocabulary.
     case 'eliminateSeat':
       return `eliminate ${seatNoun(effect.seat)}`;
+    case 'setController':
+      return effect.seat === null
+        ? `give up control of ${describeTarget(effect.target, def)}`
+        : `give control of ${describeTarget(effect.target, def)} to ${seatNoun(effect.seat)}`;
   }
 }
 

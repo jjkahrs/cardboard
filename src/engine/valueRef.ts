@@ -9,24 +9,22 @@
 import {
   ACTIVE_PLAYER_POOL,
   ACTIVE_PLAYER_POOL_ID,
-  type CardRef,
   type GameDefinition,
   type Id,
   type PlayState,
   type PointPool,
-  type SeatQuantifier,
   type TriggerContext,
   type ValueRef,
-  type ZoneKey,
-  type ZoneRef,
 } from './types';
-import { fail, resolveSeat } from './seats';
+import { fail, resolveCardRef, resolveSeat, resolveZoneKeys } from './seats';
 import type { ResolutionFail } from './seats';
 
-// `resolveSeat` and its result types moved to seats.ts with the ring (§3.5) — re-exported here so
-// the call sites that have always imported them from this module keep working.
-export { resolveSeat } from './seats';
-export type { ResolutionFail, SeatResolution, SeatResolutionOk } from './seats';
+// `resolveSeat` moved to seats.ts with the ring (§3.5); `zoneKey`/`parseZoneKey`/`resolveCardRef`
+// followed it in step 17, because §4.1's `owner`/`controller` make SeatRef, CardRef and ZoneRef one
+// mutually recursive cluster that cannot be split across two modules. Re-exported here so every
+// call site that has always imported them from this module is untouched.
+export { resolveSeat, zoneKey, parseZoneKey, resolveCardRef } from './seats';
+export type { CardResolution, ResolutionFail, SeatResolution, SeatResolutionOk } from './seats';
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -66,94 +64,6 @@ function quantified(
     return fail('TYPE_MISMATCH', `${label}: the "sum" quantifier needs numbers; this resolved to a boolean.`);
   }
   return { ok: true, values: [(values as number[]).reduce((a, b) => a + b, 0)], quantifier: 'every' };
-}
-
-// ---------------------------------------------------------------------------
-// zoneKey / parseZoneKey — §4.5
-// ---------------------------------------------------------------------------
-
-export function zoneKey(zoneId: Id, seat: number | null): ZoneKey {
-  return seat === null ? zoneId : `${zoneId}#${seat}`;
-}
-
-/**
- * Splits on a trailing `#<digits>`. A zoneId that itself ends in that exact shape (e.g. `"z#3"`)
- * and is used seatless is genuinely ambiguous with a seated key for the shorter zoneId `"z"` —
- * both produce the string `"z#3"`. Authored zoneIds should avoid ending in `#<digits>`; any other
- * zoneId, including one containing `#` elsewhere (`"z#one"`), round-trips correctly.
- */
-export function parseZoneKey(key: ZoneKey): { zoneId: Id; seat: number | null } {
-  const match = /^(.*)#(\d+)$/.exec(key);
-  if (match) {
-    return { zoneId: match[1], seat: Number(match[2]) };
-  }
-  return { zoneId: key, seat: null };
-}
-
-// ---------------------------------------------------------------------------
-// ZoneRef -> ZoneKey[] — shared by zoneCount and zoneTop
-// ---------------------------------------------------------------------------
-
-function resolveZoneKeys(
-  zone: ZoneRef,
-  state: PlayState,
-  ctx: TriggerContext
-): { ok: true; keys: ZoneKey[]; quantifier: SeatQuantifier } | ResolutionFail {
-  if (zone.seat === null) {
-    return { ok: true, keys: [zoneKey(zone.zoneId, null)], quantifier: 'every' };
-  }
-  const seatRes = resolveSeat(zone.seat, state, ctx);
-  if (!seatRes.ok) return seatRes;
-  return { ok: true, keys: seatRes.seats.map((s) => zoneKey(zone.zoneId, s)), quantifier: seatRes.quantifier };
-}
-
-// ---------------------------------------------------------------------------
-// CardRef -> CardInstance — §4.2, §5.9 row 13
-// ---------------------------------------------------------------------------
-
-type CardResolution = { ok: true; card: PlayState['cards'][string] } | ResolutionFail;
-
-/** Convention: index 0 is the TOP of a zone (last index is the bottom). InsertPosition 'top'
- * means insert-at-front; effects.ts and rendering must follow this same convention. */
-function resolveCardRef(ref: CardRef, state: PlayState, ctx: TriggerContext): CardResolution {
-  switch (ref.kind) {
-    case 'triggering': {
-      if (ctx.triggeringCardId === null) {
-        return fail('UNBOUND_REF', 'Ref "triggeringCard" is unbound.');
-      }
-      const card = state.cards[ctx.triggeringCardId];
-      return card ? { ok: true, card } : fail('TARGET_GONE', `Card "${ctx.triggeringCardId}" no longer exists.`);
-    }
-    case 'zoneTop': {
-      const zr = resolveZoneKeys(ref.zone, state, ctx);
-      if (!zr.ok) return zr;
-      if (zr.keys.length !== 1) {
-        return fail(
-          'INVALID_SEAT',
-          `Zone ref for "zoneTop" resolved to ${zr.keys.length} seats; expected exactly one.`
-        );
-      }
-      const key = zr.keys[0];
-      const zoneInst = state.zones[key];
-      if (!zoneInst) return fail('MISSING_REFERENT', `Zone "${key}" does not exist in this definition.`);
-      const topId = zoneInst.cardIds[0];
-      if (topId === undefined) return fail('TARGET_GONE', `Zone "${key}" is empty; no top card.`);
-      const card = state.cards[topId];
-      return card ? { ok: true, card } : fail('TARGET_GONE', `Card "${topId}" no longer exists.`);
-    }
-    case 'promptAnswer': {
-      const id = ctx.promptAnswers[ref.promptId]?.[ref.ordinal];
-      if (id === undefined) {
-        return fail('MISSING_REFERENT', `Prompt answer "${ref.promptId}"[${ref.ordinal}] is not available.`);
-      }
-      const card = state.cards[id];
-      return card ? { ok: true, card } : fail('TARGET_GONE', `Card "${id}" no longer exists.`);
-    }
-    case 'instance': {
-      const card = state.cards[ref.id];
-      return card ? { ok: true, card } : fail('TARGET_GONE', `Card "${ref.id}" no longer exists.`);
-    }
-  }
 }
 
 // ---------------------------------------------------------------------------

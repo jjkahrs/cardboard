@@ -374,6 +374,76 @@ it('V2: a seat ousted mid-session makes its former neighbours adjacent, with no 
   expect(seatOf(relative(seat(3), 1), state)).toBe('INVALID_SEAT');
 });
 
+// ---------------------------------------------------------------------------
+// owner / controller as seat refs — §4.1, §4.3
+// ---------------------------------------------------------------------------
+
+describe('owner / controller seat refs', () => {
+  const def = table(5);
+
+  /** Seat 3's top deck card, moved into seat 3's Hand. Owned by 3, held by 3. */
+  const cardOfSeat3 = (state: PlayState) => state.zones['zone_deck#3'].cardIds[0];
+
+  const ownerOfCard = (id: string): SeatRef => ({ kind: 'owner', card: { kind: 'instance', id } });
+  const controllerOfCard = (id: string): SeatRef => ({ kind: 'controller', card: { kind: 'instance', id } });
+
+  it('resolve to the seat that owns / controls the card, independently of each other', () => {
+    const state = createPlayState(def, 'owner');
+    const id = cardOfSeat3(state);
+    expect(seatOf(ownerOfCard(id), state)).toBe(3);
+    expect(seatOf(controllerOfCard(id), state)).toBe(3); // derived from the holding zone
+
+    state.cards[id].controller = 0;
+    expect(seatOf(ownerOfCard(id), state)).toBe(3); // unchanged
+    expect(seatOf(controllerOfCard(id), state)).toBe(0);
+  });
+
+  it('propagate the card ref\'s own failure rather than inventing a seat', () => {
+    const state = createPlayState(def, 'owner');
+    expect(seatOf(ownerOfCard('c-nope'), state)).toBe('TARGET_GONE');
+    expect(resolveSeat({ kind: 'owner', card: { kind: 'triggering' } }, state, ctx)).toMatchObject({
+      ok: false,
+      reason: 'UNBOUND_REF',
+    });
+  });
+
+  it('fail MISSING_REFERENT for a card with no seat at all, rather than defaulting to active', () => {
+    const state = createPlayState(def, 'owner');
+    const id = cardOfSeat3(state);
+    state.cards[id].owner = null;
+    expect(seatOf(ownerOfCard(id), state)).toBe('MISSING_REFERENT');
+  });
+
+  it('fail SEAT_ELIMINATED once the owning seat is ousted (§5.12)', () => {
+    const state = createPlayState(def, 'owner');
+    const id = cardOfSeat3(state);
+    eliminate(state, def, seat(3));
+    expect(seatOf(ownerOfCard(id), state)).toBe('SEAT_ELIMINATED');
+  });
+});
+
+// AC: V1 — the point of `relative` taking ANY base. `next`/`previous` would answer relative to the
+// active seat, which is the wrong player for a card whose turn it is not.
+it('V1: predator-of-the-owner resolves relative to the owner, not to the active seat', () => {
+  const def = table(5);
+  const state = createPlayState(def, 'v1');
+  const id = state.zones['zone_deck#3'].cardIds[0]; // owned by seat 3
+  state.pools[ACTIVE_PLAYER_POOL_ID] = 0; // ...whose turn it is NOT
+  const card: SeatRef = { kind: 'owner', card: { kind: 'instance', id } };
+
+  expect(seatOf({ kind: 'active' }, state)).toBe(0);
+  expect(seatOf(card, state)).toBe(3);
+  expect(seatOf(relative(card, -1), state)).toBe(2); // the owner's predator
+  expect(seatOf(relative(card, 1), state)).toBe(4); // and their prey
+
+  // The active-seat spelling answers a different question, which is exactly the bug V1 guards.
+  expect(seatOf({ kind: 'previous' }, state)).toBe(4);
+
+  // Still correct after an oust closes the ring between the owner and their predator.
+  eliminate(state, def, seat(2));
+  expect(seatOf(relative(card, -1), state)).toBe(1);
+});
+
 // AC: V10 — the same authored criterion, two table sizes, no per-game configuration. The threshold
 // is a single frozen CriteriaNode shared by both sessions on purpose: if `activeSeatCount` needed
 // tuning per table size, this could not be one object.

@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { applyEffect, canMove, clampValue, type EffectContext } from './effects';
 import { createPlayState } from './setup';
 import { zoneKey } from './valueRef';
+import { controllerOf, ownerOf } from './seats';
 import { ACTIVE_PLAYER_POOL_ID } from './types';
 import type {
   Effect,
@@ -860,6 +861,148 @@ describe('prompt selectors', () => {
 // ---------------------------------------------------------------------------
 // Cross-cutting: nothing here dispatches, and every rejection leaves state alone
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// setController, and the owner / controller / holder split — §4.3
+// ---------------------------------------------------------------------------
+
+describe('setController', () => {
+  /** One card owned by seat 0, sitting on the shared Battlefield. */
+  const onField = (): Id => {
+    const [id] = h.state.zones[DECK0].cardIds.splice(0, 1);
+    h.state.zones[FIELD].cardIds.push(id);
+    return id;
+  };
+
+  /** `id` is unused in the selector — the Battlefield holds exactly one card in these tests. */
+  const setController = (_id: Id, to: { kind: 'seat'; index: number } | null): Effect => ({
+    kind: 'setController',
+    target: { kind: 'topOfZone', zone: { zoneId: BATTLEFIELD, seat: null }, count: lit(1) },
+    seat: to,
+  });
+
+  // AC: SP5 — the override wins over the holding zone, and it does so WITHOUT touching `owner`.
+  // Three fields, three answers, from one card: that is the whole reason §4.3 splits them.
+  it('SP5: an explicit controller beats the holding zone, and leaves owner alone', () => {
+    const id = onField();
+    h.state.zones[FIELD].cardIds = [];
+    h.state.zones[HAND0].cardIds.push(id); // seat 0's Hand — zone-derived control is seat 0
+    expect(controllerOf(h.state, id)).toBe(0);
+    expect(ownerOf(h.state, id)).toBe(0);
+
+    h.state.cards[id].controller = 1;
+
+    expect(controllerOf(h.state, id)).toBe(1); // the override wins...
+    expect(ownerOf(h.state, id)).toBe(0); // ...and ownership is untouched
+    expect(h.state.zones[HAND0].cardIds).toContain(id); // and so is where it sits
+  });
+
+  it('null control derives from the holding zone, and follows the card between zones', () => {
+    const id = onField();
+    expect(h.state.cards[id].controller).toBeNull();
+    expect(controllerOf(h.state, id)).toBeNull(); // shared zone: nobody
+
+    h.state.zones[FIELD].cardIds = [];
+    h.state.zones[HAND1].cardIds.push(id);
+    expect(controllerOf(h.state, id)).toBe(1);
+  });
+
+  // AC: V9 — a contested unique changes hands where it stands.
+  it('V9: changes the controller without changing which zone instance holds the card', () => {
+    const id = onField();
+    const fieldBefore = h.state.zones[FIELD].cardIds.slice();
+
+    expect(applyEffect(setController(id, seat(1)), h.ec)).toEqual({ ok: true });
+
+    expect(h.state.cards[id].controller).toBe(1);
+    expect(controllerOf(h.state, id)).toBe(1);
+    expect(h.state.zones[FIELD].cardIds).toEqual(fieldBefore);
+    // No other zone instance gained it either — the card did not move anywhere at all.
+    const holders = Object.keys(h.state.zones).filter((k) => h.state.zones[k].cardIds.includes(id));
+    expect(holders).toEqual([FIELD]);
+    expect(h.events).toEqual([]); // control is not a zone change, so no enter/exit fires
+  });
+
+  it('logs one change line naming both sides, and null reads as "zone-derived"', () => {
+    const id = onField();
+    applyEffect(setController(id, seat(1)), h.ec);
+    expect(changeLines(h.lines)).toHaveLength(1);
+    expect(changeLines(h.lines)[0].change).toEqual({ path: `cards.${id}.controller`, before: null, after: 1 });
+    expect(messages(h.lines)).toContain('zone-derived → seat 1');
+
+    applyEffect(setController(id, null), h.ec);
+    expect(h.state.cards[id].controller).toBeNull();
+    expect(messages(h.lines)).toContain('seat 1 → zone-derived');
+  });
+
+  it('re-setting the same controller is a no-op that logs no change (§5.1)', () => {
+    const id = onField();
+    applyEffect(setController(id, seat(1)), h.ec);
+    h.lines.length = 0;
+    expect(applyEffect(setController(id, seat(1)), h.ec)).toEqual({ ok: true });
+    expect(changeLines(h.lines)).toEqual([]);
+  });
+
+  it('refuses a seat ref that resolves to more than one seat', () => {
+    onField();
+    const result = applyEffect(
+      {
+        kind: 'setController',
+        target: { kind: 'topOfZone', zone: { zoneId: BATTLEFIELD, seat: null }, count: lit(1) },
+        seat: { kind: 'all' },
+      },
+      h.ec
+    );
+    expect(result).toMatchObject({ ok: false, reason: 'INVALID_SEAT' });
+  });
+});
+
+// AC: MTG8 — the destination is keyed by `owner`, so it is seat 0's Hand even though seat 1 has
+// been controlling the card. Resolving this through `controller` instead is the bug §4.3 exists to
+// make impossible to write by accident.
+it('MTG8: a card returned to its owner\'s hand after a controller change lands in the OWNER\'s hand', () => {
+  const [id] = h.state.zones[DECK0].cardIds.splice(0, 1);
+  h.state.zones[FIELD].cardIds.push(id);
+  expect(ownerOf(h.state, id)).toBe(0);
+
+  applyEffect(
+    {
+      kind: 'setController',
+      target: { kind: 'topOfZone', zone: { zoneId: BATTLEFIELD, seat: null }, count: lit(1) },
+      seat: seat(1),
+    },
+    h.ec
+  );
+  expect(controllerOf(h.state, id)).toBe(1);
+
+  const result = applyEffect(
+    {
+      kind: 'moveCards',
+      target: { kind: 'topOfZone', zone: { zoneId: BATTLEFIELD, seat: null }, count: lit(1) },
+      to: { zoneId: HAND, seat: { kind: 'owner', card: { kind: 'instance', id } } },
+      position: 'top',
+    },
+    h.ec
+  );
+
+  expect(result).toEqual({ ok: true });
+  expect(h.state.zones[HAND0].cardIds).toContain(id);
+  expect(h.state.zones[HAND1].cardIds).not.toContain(id);
+  // And the same ref spelled `controller` would have sent it the other way — asserted so the test
+  // fails loudly if the two ever collapse into one lookup.
+  expect(
+    applyEffect(
+      {
+        kind: 'moveCards',
+        target: { kind: 'topOfZone', zone: { zoneId: HAND, seat: seat(0) }, count: lit(1) },
+        to: { zoneId: HAND, seat: { kind: 'controller', card: { kind: 'instance', id } } },
+        position: 'top',
+      },
+      h.ec
+    )
+  ).toEqual({ ok: true });
+  expect(h.state.zones[HAND1].cardIds).toContain(id);
+});
 
 // ---------------------------------------------------------------------------
 // §5.12's other half: an ousted seat is unreachable as an effect's zone operand

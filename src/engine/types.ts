@@ -87,6 +87,13 @@ export type SeatRef =
   | { kind: 'triggeringSeat' }
   | { kind: 'seat'; index: SeatId }
   | { kind: 'relative'; from: SeatRef; offset: number }
+  /**
+   * §4.1, §4.3. These make `SeatRef` hold a `CardRef`, which holds a `ZoneRef`, which holds a
+   * `SeatRef` — the three unions are mutually recursive from here on, which is why their zod
+   * mirrors need `z.lazy` and why their resolvers all live in `seats.ts`.
+   */
+  | { kind: 'owner'; card: CardRef }
+  | { kind: 'controller'; card: CardRef }
   | { kind: 'all'; quantifier?: SeatQuantifier }; // default 'every' — §5.7
 
 /** seat is null iff the referenced zone/pool is Game/Shared scoped. */
@@ -295,7 +302,12 @@ export type Effect =
    * §5.12 — drops the seat from `seatOrder` and appends it to `eliminated`. Deletes NOTHING: pools,
    * zone instances and cards all stay, and `finished` is untouched. Elimination is not session end.
    */
-  | { kind: 'eliminateSeat'; seat: SeatRef };
+  | { kind: 'eliminateSeat'; seat: SeatRef }
+  /**
+   * §4.3 — overrides the holding zone's seat for `controllerOf`. `null` clears the override, so
+   * control reverts to being derived from wherever the card currently sits.
+   */
+  | { kind: 'setController'; target: TargetSelector; seat: SeatRef | null };
 
 export interface RuleSet {
   id: Id;

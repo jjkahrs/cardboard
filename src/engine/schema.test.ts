@@ -401,6 +401,27 @@ describe('the recursive relative SeatRef', () => {
   it('rejects an unknown kind inside `from`, so the recursion is really validated', () => {
     expect(failed(withSeat({ kind: 'relative', from: { kind: 'nobody' }, offset: 1 }))).not.toEqual([]);
   });
+
+  // §4.1's owner/controller close the loop: SeatRef -> CardRef -> ZoneRef -> SeatRef. The shape has
+  // to parse through `z.lazy` in both directions, and gate 4 has to descend the whole way, or a
+  // zone id reachable only through a SeatRef imports clean and dies at runtime instead.
+  it('parses owner/controller, which makes SeatRef -> CardRef -> ZoneRef -> SeatRef mutual', () => {
+    const owner = {
+      kind: 'owner',
+      card: { kind: 'zoneTop', zone: { zoneId: 'deck', seat: { kind: 'controller', card: { kind: 'triggering' } } } },
+    };
+    const def = imported(withSeat(owner));
+    expect(def.machine.states[2].entryCriteria).toMatchObject({ left: { seat: owner } });
+    expect(exportJson(imported(exportJson(def)))).toBe(exportJson(def));
+  });
+
+  it('catches a dangling zone id buried inside a SeatRef\'s card ref', () => {
+    expect(
+      failed(withSeat({ kind: 'owner', card: { kind: 'zoneTop', zone: { zoneId: 'nope', seat: null } } }))
+    ).toEqual([
+      'machine.states.2.entryCriteria.left.seat.card.zone.zoneId: Unknown zone id "nope"',
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------

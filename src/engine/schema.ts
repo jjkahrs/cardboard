@@ -18,6 +18,7 @@ import type {
   GameDefinition,
   SeatRef,
   TargetSelector,
+  ZoneRef,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -71,6 +72,11 @@ export const PointPoolSchema = z.object({
  * `relative.from` is a SeatRef, so this is recursive — same `z.lazy` + explicit annotation
  * rationale as CriteriaNode and TargetSelector. `offset` is `.int()`: a fractional offset can only
  * come from a hand-edited file, and `resolveSeat` re-checks it at runtime for exactly that path.
+ *
+ * `owner`/`controller` make the recursion MUTUAL as of §4.1: SeatRef -> CardRef -> ZoneRef ->
+ * SeatRef. The explicit annotation here is what breaks the inference cycle for all three, so
+ * `CardRefSchema` and `ZoneRefSchema` below still infer normally; the forward reference to
+ * `CardRefSchema` is deferred with `z.lazy` because it is declared after this.
  */
 export const SeatRefSchema: z.ZodType<SeatRef, z.ZodTypeDef, SeatRef> = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('active') }),
@@ -83,6 +89,8 @@ export const SeatRefSchema: z.ZodType<SeatRef, z.ZodTypeDef, SeatRef> = z.discri
     from: z.lazy(() => SeatRefSchema),
     offset: z.number().int(),
   }),
+  z.object({ kind: z.literal('owner'), card: z.lazy(() => CardRefSchema) }),
+  z.object({ kind: z.literal('controller'), card: z.lazy(() => CardRefSchema) }),
   /** §4.1's `sum` is admitted by SHAPE here; `checkValueRef` below is what refuses it over a
    *  boolean pool, because only the referential-integrity pass knows a pool's declared type. */
   z.object({ kind: z.literal('all'), quantifier: z.enum(['every', 'some', 'sum']).optional() }),
@@ -258,6 +266,12 @@ export const EffectSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('fireEvent'), name: z.string() }),
   z.object({ kind: z.literal('forceTransition'), toStateId: IdSchema }),
   z.object({ kind: z.literal('eliminateSeat'), seat: SeatRefSchema }),
+  z.object({
+    kind: z.literal('setController'),
+    target: TargetSelectorSchema,
+    /** null clears the override back to zone-derived control (§4.3). */
+    seat: SeatRefSchema.nullable(),
+  }),
 ]);
 
 export const RuleSetSchema = z.object({
@@ -360,8 +374,29 @@ function known(r: Refs, set: Set<string>, id: string, path: Path, label: string)
   if (!set.has(id)) bad(r, path, `Unknown ${label} id "${id}"`);
 }
 
-function checkZoneRef(ref: { zoneId: string }, p: Path, r: Refs): void {
+/**
+ * §4.1 made `SeatRef` the first ref that can carry an authored id: `owner`/`controller` hold a
+ * `CardRef`, which can hold a `ZoneRef`. Gate 4 has to descend into it or a zone deleted from under
+ * `SeatRef{kind:'owner'}.card.zone` imports cleanly and fails as a runtime MISSING_REFERENT later.
+ */
+function checkSeatRef(ref: SeatRef, p: Path, r: Refs): void {
+  switch (ref.kind) {
+    case 'owner':
+    case 'controller':
+      checkCardRef(ref.card, [...p, 'card'], r);
+      break;
+    case 'relative':
+      checkSeatRef(ref.from, [...p, 'from'], r);
+      break;
+    default:
+      // active / next / previous / triggeringSeat / seat / all carry no id.
+      break;
+  }
+}
+
+function checkZoneRef(ref: ZoneRef, p: Path, r: Refs): void {
   known(r, r.zones, ref.zoneId, [...p, 'zoneId'], 'zone');
+  if (ref.seat !== null) checkSeatRef(ref.seat, [...p, 'seat'], r);
 }
 
 function checkCardRef(ref: z.infer<typeof CardRefSchema>, p: Path, r: Refs): void {
@@ -375,6 +410,7 @@ function checkValueRef(v: z.infer<typeof ValueRefSchema>, p: Path, r: Refs): voi
       // §4.1: `sum` is an arithmetic total, so it is legal only where the ref is consumed as a
       // number. A boolean pool has no total. This is the author-time half of the pair — the
       // runtime half lives in `resolveValueRef` and covers imported JSON that never met the editor.
+      if (v.seat !== null) checkSeatRef(v.seat, [...p, 'seat'], r);
       if (v.seat?.kind === 'all' && v.seat.quantifier === 'sum' && r.booleanPools.has(v.poolId)) {
         bad(
           r,
@@ -441,7 +477,12 @@ function checkEffect(e: Effect, p: Path, r: Refs): void {
       break;
     case 'changePool':
       known(r, r.pools, e.poolId, [...p, 'poolId'], 'pool');
+      if (e.seat !== null) checkSeatRef(e.seat, [...p, 'seat'], r);
       checkValueRef(e.amount, [...p, 'amount'], r);
+      break;
+    case 'setController':
+      checkSelector(e.target, [...p, 'target'], r);
+      if (e.seat !== null) checkSeatRef(e.seat, [...p, 'seat'], r);
       break;
     case 'setCardIndex':
       checkSelector(e.target, [...p, 'target'], r);
@@ -462,9 +503,10 @@ function checkEffect(e: Effect, p: Path, r: Refs): void {
       known(r, r.states, e.toStateId, [...p, 'toStateId'], 'state');
       break;
     // `fireEvent.name` is free-form by design (§4.6) — custom events need no declaration.
-    // `eliminateSeat.seat` is a pure SeatRef, which carries no authored id to check (§4.1).
     case 'fireEvent':
+      break;
     case 'eliminateSeat':
+      checkSeatRef(e.seat, [...p, 'seat'], r);
       break;
   }
 }

@@ -14,18 +14,30 @@
  * This module must NOT import `valueRef.ts` — `valueRef.ts` imports it, and the cycle would be a
  * real one (both are loaded at module-eval time by `effects.ts` and `targets.ts`).
  *
+ * That constraint is why `zoneKey`/`parseZoneKey`/`resolveZoneKeys`/`resolveCardRef` live here as
+ * of step 17 rather than in `valueRef.ts`. §4.1's `owner`/`controller` make `SeatRef` hold a
+ * `CardRef`, which holds a `ZoneRef`, which holds a `SeatRef`: the three are now ONE mutually
+ * recursive cluster and cannot be split across two files at all. They sit at the base of the
+ * dependency graph, and `valueRef.ts` re-exports the two public names so every existing call site
+ * is unchanged. Nothing about their behaviour moved with them.
+ *
  * Pure and never throws, like everything it was extracted from: a malformed ref resolves to a
  * typed failure instead of bricking the session.
  */
 
 import {
   ACTIVE_PLAYER_POOL_ID,
+  type CardInstance,
+  type CardRef,
+  type Id,
   type PlayState,
   type RejectReason,
   type SeatId,
   type SeatQuantifier,
   type SeatRef,
   type TriggerContext,
+  type ZoneKey,
+  type ZoneRef,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -162,5 +174,140 @@ export function resolveSeat(ref: SeatRef, state: PlayState, ctx: TriggerContext)
     // The ring is the only truth about who is still at the table.
     case 'all':
       return ok([...state.seatOrder], ref.quantifier ?? 'every');
+    // §4.1, §4.3. The three-way owner/controller/holder split is what makes "return it to its
+    // OWNER's hand after its CONTROLLER changed" resolve to the right zone instance.
+    case 'owner':
+    case 'controller': {
+      const res = resolveCardRef(ref.card, state, ctx);
+      if (!res.ok) return res;
+      const seat = ref.kind === 'owner' ? ownerOf(state, res.card.id) : controllerOf(state, res.card.id);
+      if (seat === null) {
+        // A card in a shared zone with no `owner` genuinely has no seat. Failing beats defaulting
+        // to `active`, which would silently retarget the effect at whoever's turn it happens to be.
+        return fail(
+          'MISSING_REFERENT',
+          `Player ref "${ref.kind}": card "${res.card.id}" has no ${ref.kind} (it is unowned or in a shared zone).`
+        );
+      }
+      return live(seat, state, ref.kind);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Owner / controller / holder — §4.3
+// ---------------------------------------------------------------------------
+
+/**
+ * The seat of the zone instance currently holding `cardId`, or null for a shared zone (or a card
+ * that is in no zone at all, which a mid-effect destroyed card briefly is).
+ *
+ * ponytail: linear scan of every zone, matching `effects.ts`'s `zoneKeyOf` for the same reason —
+ * a `cardId -> ZoneKey` index would have to live inside `PlayState` to survive rewind, i.e. a
+ * second source of truth to keep in sync. Reads `ZoneInstance.seat` rather than parsing the key,
+ * so it costs nothing to be correct about zoneIds that contain `#`.
+ */
+function seatOfZoneHolding(state: PlayState, cardId: Id): SeatId | null {
+  for (const key of Object.keys(state.zones)) {
+    const inst = state.zones[key];
+    if (inst.cardIds.includes(cardId)) return inst.seat;
+  }
+  return null;
+}
+
+/** §4.3 — set once at creation and never changed. Null for a card dealt into a shared zone. */
+export function ownerOf(state: PlayState, cardId: Id): SeatId | null {
+  return state.cards[cardId]?.owner ?? null;
+}
+
+/**
+ * §4.3 — `card.controller ?? seatOfZoneHolding(card)`. The override wins over the holding zone,
+ * which is the whole point: a contested unique changes hands without changing zones, and a stolen
+ * creature is controlled from across the table while it sits on a shared battlefield.
+ */
+export function controllerOf(state: PlayState, cardId: Id): SeatId | null {
+  const card = state.cards[cardId];
+  if (!card) return null;
+  return card.controller ?? seatOfZoneHolding(state, cardId);
+}
+
+// ---------------------------------------------------------------------------
+// Zone keys and card refs — §4.2, §4.5. Here rather than in valueRef.ts because of the
+// SeatRef -> CardRef -> ZoneRef -> SeatRef recursion; see the file header.
+// ---------------------------------------------------------------------------
+
+export function zoneKey(zoneId: Id, seat: number | null): ZoneKey {
+  return seat === null ? zoneId : `${zoneId}#${seat}`;
+}
+
+/**
+ * Splits on a trailing `#<digits>`. A zoneId that itself ends in that exact shape (e.g. `"z#3"`)
+ * and is used seatless is genuinely ambiguous with a seated key for the shorter zoneId `"z"` —
+ * both produce the string `"z#3"`. Authored zoneIds should avoid ending in `#<digits>`; any other
+ * zoneId, including one containing `#` elsewhere (`"z#one"`), round-trips correctly.
+ */
+export function parseZoneKey(key: ZoneKey): { zoneId: Id; seat: number | null } {
+  const match = /^(.*)#(\d+)$/.exec(key);
+  if (match) {
+    return { zoneId: match[1], seat: Number(match[2]) };
+  }
+  return { zoneId: key, seat: null };
+}
+
+export function resolveZoneKeys(
+  zone: ZoneRef,
+  state: PlayState,
+  ctx: TriggerContext
+): { ok: true; keys: ZoneKey[]; quantifier: SeatQuantifier } | ResolutionFail {
+  if (zone.seat === null) {
+    return { ok: true, keys: [zoneKey(zone.zoneId, null)], quantifier: 'every' };
+  }
+  const seatRes = resolveSeat(zone.seat, state, ctx);
+  if (!seatRes.ok) return seatRes;
+  return { ok: true, keys: seatRes.seats.map((s) => zoneKey(zone.zoneId, s)), quantifier: seatRes.quantifier };
+}
+
+export type CardResolution = { ok: true; card: CardInstance } | ResolutionFail;
+
+/** Convention: index 0 is the TOP of a zone (last index is the bottom). InsertPosition 'top'
+ * means insert-at-front; effects.ts and rendering must follow this same convention. */
+export function resolveCardRef(ref: CardRef, state: PlayState, ctx: TriggerContext): CardResolution {
+  switch (ref.kind) {
+    case 'triggering': {
+      if (ctx.triggeringCardId === null) {
+        return fail('UNBOUND_REF', 'Ref "triggeringCard" is unbound.');
+      }
+      const card = state.cards[ctx.triggeringCardId];
+      return card ? { ok: true, card } : fail('TARGET_GONE', `Card "${ctx.triggeringCardId}" no longer exists.`);
+    }
+    case 'zoneTop': {
+      const zr = resolveZoneKeys(ref.zone, state, ctx);
+      if (!zr.ok) return zr;
+      if (zr.keys.length !== 1) {
+        return fail(
+          'INVALID_SEAT',
+          `Zone ref for "zoneTop" resolved to ${zr.keys.length} seats; expected exactly one.`
+        );
+      }
+      const key = zr.keys[0];
+      const zoneInst = state.zones[key];
+      if (!zoneInst) return fail('MISSING_REFERENT', `Zone "${key}" does not exist in this definition.`);
+      const topId = zoneInst.cardIds[0];
+      if (topId === undefined) return fail('TARGET_GONE', `Zone "${key}" is empty; no top card.`);
+      const card = state.cards[topId];
+      return card ? { ok: true, card } : fail('TARGET_GONE', `Card "${topId}" no longer exists.`);
+    }
+    case 'promptAnswer': {
+      const id = ctx.promptAnswers[ref.promptId]?.[ref.ordinal];
+      if (id === undefined) {
+        return fail('MISSING_REFERENT', `Prompt answer "${ref.promptId}"[${ref.ordinal}] is not available.`);
+      }
+      const card = state.cards[id];
+      return card ? { ok: true, card } : fail('TARGET_GONE', `Card "${id}" no longer exists.`);
+    }
+    case 'instance': {
+      const card = state.cards[ref.id];
+      return card ? { ok: true, card } : fail('TARGET_GONE', `Card "${ref.id}" no longer exists.`);
+    }
   }
 }
