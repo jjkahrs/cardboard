@@ -6,3 +6,6 @@ coverage
 
 # transient agent worktrees
 .claude/worktrees
+
+# tsc incremental build artifact
+tsconfig.tsbuildinfo
