@@ -823,6 +823,33 @@ describe('resolveValueRef', () => {
       expect(result).toMatchObject({ ok: false, reason: 'UNBOUND_REF' });
     });
   });
+
+  // -------------------------------------------------------------------------
+  // v2 §4.2, §8 step 28 — the `chooseNumber` design-slip closure. `dispatch.ts`'s `runEffect` writes
+  // the answer into `ctx.promptAnswers[effect.key]` once `answerNumber` resolves it (see
+  // `dispatch.test.ts`'s "promptNumber" describe block for that end-to-end path); this is just the
+  // ValueRef read, same level `actionField`'s own "wiring" tests sit at above.
+  // -------------------------------------------------------------------------
+
+  describe('promptNumber', () => {
+    it('resolves to the number stored under ctx.promptAnswers[key]', () => {
+      const ctx = makeCtx({ promptAnswers: { x: ['7'] } });
+      const result = resolveValueRef({ kind: 'promptNumber', key: 'x' }, makeState(2, 0), ctx, makeDef());
+      expect(result).toEqual({ ok: true, values: [7], quantifier: 'every' });
+    });
+
+    // Same discipline as `replacedAmount` — a dangling read must not read as a plausible number.
+    it('is UNBOUND_REF when nothing has answered under that key yet', () => {
+      const result = resolveValueRef({ kind: 'promptNumber', key: 'x' }, makeState(2, 0), makeCtx(), makeDef());
+      expect(result).toMatchObject({ ok: false, reason: 'UNBOUND_REF' });
+    });
+
+    it('a DIFFERENT key answered does not satisfy this one', () => {
+      const ctx = makeCtx({ promptAnswers: { y: ['7'] } });
+      const result = resolveValueRef({ kind: 'promptNumber', key: 'x' }, makeState(2, 0), ctx, makeDef());
+      expect(result).toMatchObject({ ok: false, reason: 'UNBOUND_REF' });
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

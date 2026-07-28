@@ -185,6 +185,8 @@ export const ValueRefSchema = z.discriminatedUnion('kind', [
     action: ActionRefSchema,
     field: z.enum(['controller', 'targetCount']),
   }),
+  /** v2 §4.2, §8 step 28 — the `chooseNumber` design-slip closure; `key` names nothing declared. */
+  z.object({ kind: z.literal('promptNumber'), key: z.string() }),
 ]);
 
 // ---------------------------------------------------------------------------

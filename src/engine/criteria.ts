@@ -114,6 +114,9 @@ function labelOf(ref: ValueRef, def: GameDefinition): string {
     // v2 §4.2, §4.8 — reads a PendingAction field, resolved by `pending.ts` (step 23).
     case 'actionField':
       return `${ref.field}(${ref.action.kind})`;
+    // v2 §4.2, §8 step 28 — the chooseNumber design-slip closure.
+    case 'promptNumber':
+      return `number "${ref.key}"`;
   }
 }
 

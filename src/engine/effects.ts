@@ -21,7 +21,7 @@
 
 import { parseZoneKey, resolveCardRef, resolvePoolDef, resolveSeat, resolveValueRef, zoneKey } from './valueRef';
 import type { ResolutionFail } from './valueRef';
-import { type CandidateLog, resolveTargets, type TargetResult } from './targets';
+import { CHOSEN_PROMPT_KEY, type CandidateLog, resolveTargets, type TargetResult } from './targets';
 // Cyclic with `modifiers.ts` (it imports `clampValue` from here) by design (§5.4). Both directions
 // are function-body calls only, so module evaluation order never matters.
 import { effectiveIndex, invalidateEffective } from './modifiers';
@@ -1088,10 +1088,75 @@ function applyEffectInner(effect: Effect, ec: EffectContext): EffectResult {
     // behaviour belongs to the step named per kind below.
     case 'openPriority':
       return reject(ec, effect, 'NOT_ACTIVATABLE', `${effect.kind}: not yet implemented — v2 step 24.`);
-    case 'chooseMode':
-    case 'chooseNumber':
-      return reject(ec, effect, 'NOT_ACTIVATABLE', `${effect.kind}: not yet implemented — v2 step 28.`);
+
+    // -----------------------------------------------------------------------
+    // v2 §4.5, §5.11, step 29 — `dispatch.ts`'s `runEffect` owns the ENTIRE lifecycle: resolving
+    // `effect.seats`, pushing the `sealed` frame, raising `Interaction{kind:'sealed'}`, and (via
+    // `submitSealed`) recording submissions, revealing, clearing, and popping. All of that is
+    // frame-level control this module is deliberately forbidden from touching (file header: "never
+    // dispatches"), and `sealedChoice` has no per-instance mutation of its own the way `chooseNumber`
+    // has "persist the answer" — there is nothing left for this arm to do on the normal top-level
+    // path, and `runEffect` never calls `applyEffect` for this kind there.
+    //
+    // This arm IS reached from one place: a `sealedChoice` authored inside a `chooseMode` branch (see
+    // that case below), which runs its effects synchronously via a recursive `applyEffect` call with
+    // no frame to suspend. Failing here, loudly and by name, is correct — not a workaround — because
+    // a sealed choice genuinely cannot open without the frame-level machinery only a rule's own
+    // top-level effect list has access to.
     case 'sealedChoice':
-      return reject(ec, effect, 'NOT_ACTIVATABLE', `${effect.kind}: not yet implemented — v2 step 29.`);
+      return reject(
+        ec,
+        effect,
+        'AWAITING_PROMPT',
+        `sealedChoice "${effect.choiceId}": cannot open here — a sealed choice may only be authored as ` +
+          `a rule's own top-level effect, never nested inside a chooseMode branch or similar.`
+      );
+
+    // -----------------------------------------------------------------------
+    // v2 §4.5, §5.11 (via §5.5's suspension discipline), step 28 — `dispatch.ts`'s `runEffect` raises
+    // the `chooseOption` interaction and holds the cursor (§3.3's raise-before-mutate); this arm runs
+    // only once answered, with the chosen mode's index in `ec.ctx.promptAnswers[CHOSEN_PROMPT_KEY]` —
+    // the SAME handoff `targets.ts`'s `prompt` selector already uses for a card-target answer.
+    case 'chooseMode': {
+      const answer = ec.ctx.promptAnswers[CHOSEN_PROMPT_KEY];
+      if (answer === undefined) {
+        // Reached only from a nested context (a chooseMode branch containing another chooseMode) —
+        // `dispatch.ts` never calls this arm before an answer exists at the top level.
+        return reject(ec, effect, 'AWAITING_PROMPT', `chooseMode "${effect.promptText}": no answer bound.`);
+      }
+      const index = Number(answer[0]);
+      const mode = effect.modes[index];
+      if (!mode) {
+        return reject(ec, effect, 'TYPE_MISMATCH', `chooseMode "${effect.promptText}": answer "${answer[0]}" does not name a mode.`);
+      }
+      emit(ec, effect, 'info', `Mode "${mode.label}" chosen.`, null, 'prompt');
+      // ponytail: the chosen branch's effects run synchronously, inline, in order — correct for the
+      // AC's own scenario (a mode of plain mutating effects) but a branch effect that itself needs a
+      // FRESH Interaction (a target prompt, a nested chooseMode/chooseNumber/sealedChoice) fails
+      // AWAITING_PROMPT rather than suspending re-entrantly, because there is no frame slot tracking
+      // "which branch effect was mid-flight" the way a rule frame's own cursor does. Upgrade this to
+      // a frame-level effects queue on `RuleFrame` if a branch ever needs to suspend for real.
+      // `effectIndex: undefined` — a branch effect is not the announced action's frozen target at
+      // THIS effect's index; leaving it defined would let two branch effects alias one frozen key.
+      for (const sub of mode.effects) {
+        const result = applyEffect(sub, { ...ec, effectIndex: undefined });
+        if (!result.ok) return result;
+      }
+      return { ok: true };
+    }
+
+    // -----------------------------------------------------------------------
+    // v2 §4.2, §4.5, step 28 — same raise/hold split as `chooseMode` above. `dispatch.ts` already
+    // persisted the answer under `effect.key` (in the RULE FRAME's own `ctx.promptAnswers`, not the
+    // per-call copy `ec.ctx` may be here — see `runEffect`'s `effectCtx` construction) so a LATER
+    // effect's `ValueRef{kind:'promptNumber', key}` can read it; this arm only confirms and logs it.
+    case 'chooseNumber': {
+      const answer = ec.ctx.promptAnswers[CHOSEN_PROMPT_KEY];
+      if (answer === undefined) {
+        return reject(ec, effect, 'AWAITING_PROMPT', `chooseNumber "${effect.promptText}": no answer bound.`);
+      }
+      emit(ec, effect, 'info', `Number chosen for "${effect.key}": ${answer[0]}.`, null, 'prompt');
+      return { ok: true };
+    }
   }
 }

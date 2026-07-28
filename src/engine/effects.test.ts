@@ -1416,38 +1416,106 @@ describe('module boundaries', () => {
 });
 
 // ---------------------------------------------------------------------------
-// v2 §4.5 — four phase-2 effect kinds are still STUBS this wave: nothing runs, and the rejection
-// names the step that replaces the stub. `announceAction`/`counterAction` graduated out of this
-// table in step 22/23 — see `pending.test.ts` for their real behaviour.
+// v2 §4.5 — `openPriority` is still a STUB this wave (step 24, out of this task's file ownership):
+// nothing runs, and the rejection names the step that replaces the stub. `announceAction`/
+// `counterAction` graduated out of this table in step 22/23; `chooseMode`/`chooseNumber`/
+// `sealedChoice` graduate out of it in step 28/29 — see the describe blocks below for their real
+// behaviour, and `dispatch.test.ts` for the full raise/suspend/answer/resume flow `applyEffect`
+// alone cannot exercise (that machinery lives in `dispatch.ts`'s `runEffect`/`raiseChoice`).
 // ---------------------------------------------------------------------------
 
 describe('phase-2 effect kinds — stubbed, rejecting NOT_ACTIVATABLE with the owning step named', () => {
-  it.each([
-    ['openPriority', { kind: 'openPriority', window: 'w1' } as Effect, '24'],
-    [
-      'chooseMode',
-      { kind: 'chooseMode', promptText: 'Pick', seat: seat(0), modes: [] } as Effect,
-      '28',
-    ],
-    [
-      'chooseNumber',
-      { kind: 'chooseNumber', promptText: 'Pick', seat: seat(0), min: lit(0), max: lit(1), key: 'k' } as Effect,
-      '28',
-    ],
-    [
-      'sealedChoice',
-      { kind: 'sealedChoice', choiceId: 'c', seats: { kind: 'all' }, options: [] } as Effect,
-      '29',
-    ],
-  ])('%s rejects NOT_ACTIVATABLE, naming step %s, and mutates nothing', (kind, effect, step) => {
-    const before = JSON.stringify(h.state);
-    const result = applyEffect(effect, h.ec);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toBe('NOT_ACTIVATABLE');
-      expect(result.detail).toContain(`step ${step}`);
-      expect(result.detail).toContain(kind);
+  it.each([['openPriority', { kind: 'openPriority', window: 'w1' } as Effect, '24']])(
+    '%s rejects NOT_ACTIVATABLE, naming step %s, and mutates nothing',
+    (kind, effect, step) => {
+      const before = JSON.stringify(h.state);
+      const result = applyEffect(effect, h.ec);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe('NOT_ACTIVATABLE');
+        expect(result.detail).toContain(`step ${step}`);
+        expect(result.detail).toContain(kind);
+      }
+      expect(JSON.stringify(h.state)).toBe(before);
     }
+  );
+});
+
+// ---------------------------------------------------------------------------
+// v2 §4.5, §5.11, step 28/29 — `chooseMode`/`chooseNumber`/`sealedChoice` at the `applyEffect` unit
+// level. All three RAISE via `dispatch.ts`'s `runEffect`, not `effects.ts` — this module never
+// touches frames or `state.interaction` (file header). What `applyEffectInner` owns, and what these
+// tests cover, is: (a) the defensive "no answer bound" rejection `runEffect` never actually triggers
+// in the normal top-level flow, and (b) `chooseMode`'s real job once answered — running the chosen
+// branch's effects in order. The full suspend → answer → resume loop is `dispatch.test.ts`'s (AC:
+// SP10 lives there, tagged).
+// ---------------------------------------------------------------------------
+
+describe('chooseMode / chooseNumber / sealedChoice — applyEffect unit level', () => {
+  it('chooseMode rejects AWAITING_PROMPT and mutates nothing when no answer is bound', () => {
+    const before = JSON.stringify(h.state);
+    const effect: Effect = { kind: 'chooseMode', promptText: 'Pick', seat: seat(0), modes: [] };
+    const result = applyEffect(effect, h.ec);
+    expect(result).toEqual({ ok: false, reason: 'AWAITING_PROMPT', detail: expect.stringContaining('no answer bound') });
+    expect(JSON.stringify(h.state)).toBe(before);
+  });
+
+  it('chooseMode runs the chosen branch\'s effects, in order, once an answer is bound', () => {
+    const effect: Effect = {
+      kind: 'chooseMode',
+      promptText: 'Pick',
+      seat: seat(0),
+      modes: [
+        { label: 'Heal', effects: [{ kind: 'changePool', poolId: HP, seat: seat(0), op: 'add', amount: lit(1) } as Effect] },
+        {
+          label: 'Hurt then heal',
+          effects: [
+            { kind: 'changePool', poolId: HP, seat: seat(0), op: 'subtract', amount: lit(5) } as Effect,
+            { kind: 'changePool', poolId: HP, seat: seat(0), op: 'add', amount: lit(1) } as Effect,
+          ],
+        },
+      ],
+    };
+    // Mode index 1 ("Hurt then heal") — proves ORDER, not just "some branch ran": -5 then +1 nets -4,
+    // whereas running the two effects in the wrong order (or only one of them) would not.
+    h.ec.ctx.promptAnswers['@chosen'] = ['1'];
+    const result = applyEffect(effect, h.ec);
+    expect(result).toEqual({ ok: true });
+    expect(h.state.playerPools[HP][0]).toBe(16);
+  });
+
+  it('chooseMode rejects TYPE_MISMATCH for an answer naming no mode, and mutates nothing', () => {
+    const before = JSON.stringify(h.state);
+    const effect: Effect = { kind: 'chooseMode', promptText: 'Pick', seat: seat(0), modes: [{ label: 'Only', effects: [] }] };
+    h.ec.ctx.promptAnswers['@chosen'] = ['7'];
+    const result = applyEffect(effect, h.ec);
+    expect(result).toEqual({ ok: false, reason: 'TYPE_MISMATCH', detail: expect.stringContaining('does not name a mode') });
+    expect(JSON.stringify(h.state)).toBe(before);
+  });
+
+  it('chooseNumber rejects AWAITING_PROMPT and mutates nothing when no answer is bound', () => {
+    const before = JSON.stringify(h.state);
+    const effect: Effect = { kind: 'chooseNumber', promptText: 'Pick', seat: seat(0), min: lit(0), max: lit(10), key: 'k' };
+    const result = applyEffect(effect, h.ec);
+    expect(result).toEqual({ ok: false, reason: 'AWAITING_PROMPT', detail: expect.stringContaining('no answer bound') });
+    expect(JSON.stringify(h.state)).toBe(before);
+  });
+
+  it('chooseNumber succeeds once an answer is bound, logging the resolved value — it does not itself write state (dispatch.ts persists the key)', () => {
+    const before = JSON.stringify(h.state);
+    const effect: Effect = { kind: 'chooseNumber', promptText: 'Pick', seat: seat(0), min: lit(0), max: lit(10), key: 'k' };
+    h.ec.ctx.promptAnswers['@chosen'] = ['7'];
+    const result = applyEffect(effect, h.ec);
+    expect(result).toEqual({ ok: true });
+    expect(JSON.stringify(h.state)).toBe(before);
+    expect(h.lines.some((l) => l.message.includes('"k": 7'))).toBe(true);
+  });
+
+  it('sealedChoice always rejects AWAITING_PROMPT from applyEffect — it can only open via dispatch.ts\'s frame-level machinery', () => {
+    const before = JSON.stringify(h.state);
+    const effect: Effect = { kind: 'sealedChoice', choiceId: 'c', seats: { kind: 'all' }, options: [] };
+    const result = applyEffect(effect, h.ec);
+    expect(result).toEqual({ ok: false, reason: 'AWAITING_PROMPT', detail: expect.stringContaining('cannot open here') });
     expect(JSON.stringify(h.state)).toBe(before);
   });
 });

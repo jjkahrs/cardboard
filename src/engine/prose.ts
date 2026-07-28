@@ -211,6 +211,9 @@ export function describeValueRef(ref: ValueRef, def: GameDefinition): string {
     // v2 §4.2 — reads a characteristic off a pending action rather than off a card.
     case 'actionField':
       return `the ${ref.field} of ${describeActionRef(ref.action)}`;
+    // v2 §4.2, §8 step 28 — the chooseNumber design-slip closure.
+    case 'promptNumber':
+      return `the number chosen for "${ref.key}"`;
   }
 }
 

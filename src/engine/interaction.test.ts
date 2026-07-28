@@ -99,7 +99,17 @@ describe('isResuming', () => {
     submitSealed: { kind: 'submitSealed', seat: 0, optionId: 'opt' },
   };
 
-  const RESUMING: PlayAction['kind'][] = ['answerPrompt', 'cancelPrompt'];
+  // v2 §8 steps 28/29 — `answerOption`/`answerNumber`/`answerSeat`/`submitSealed` resume their own
+  // interaction kinds exactly as `answerPrompt` resumes `chooseCards` (see `isResuming`'s own doc
+  // comment for why `activate`/`passPriority` are deliberately NOT here — step 24, out of scope).
+  const RESUMING: PlayAction['kind'][] = [
+    'answerPrompt',
+    'cancelPrompt',
+    'answerOption',
+    'answerNumber',
+    'answerSeat',
+    'submitSealed',
+  ];
 
   for (const [kind, action] of Object.entries(ACTIONS)) {
     const expected = RESUMING.includes(kind as PlayAction['kind']);

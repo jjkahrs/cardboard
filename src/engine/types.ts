@@ -167,7 +167,15 @@ export type ValueRef =
    * closed to the two `PendingAction` properties a criterion plausibly needs; widening it to the
    * whole record is deferred until a third one is.
    */
-  | { kind: 'actionField'; action: ActionRef; field: 'controller' | 'targetCount' };
+  | { kind: 'actionField'; action: ActionRef; field: 'controller' | 'targetCount' }
+  /**
+   * v2 §4.2, §4.5, §8 step 28 — closes a gap between §4.2 and §4.5: the `chooseNumber` effect's own
+   * comment says its answer is readable as `ValueRef{kind:'promptNumber'}`, but that kind did not
+   * exist. `key` is `chooseNumber.key` verbatim — resolves to the number answered under that key
+   * (§5.9's `UNBOUND_REF` when nothing has answered it yet, the same discipline `replacedAmount` and
+   * `replacedTarget` already use for "bound nowhere else").
+   */
+  | { kind: 'promptNumber'; key: string };
 
 // ---------------------------------------------------------------------------
 // §4.3 Criteria

@@ -67,6 +67,9 @@ export function ValueRefPicker({ value, onChange, definition, ariaLabel }: Value
         return { kind: 'replacedAmount' };
       case 'actionField':
         return { kind: 'actionField', action: { kind: 'topOfStack' }, field: 'controller' };
+      // v2 §4.2, §8 step 28 — same reasoning: not offered here, arm exists for exhaustiveness only.
+      case 'promptNumber':
+        return { kind: 'promptNumber', key: '' };
     }
   };
 
