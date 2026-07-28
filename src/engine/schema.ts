@@ -13,6 +13,7 @@
 import { z } from 'zod';
 import { ACTIVE_PLAYER_POOL_ID, SCHEMA_VERSION } from './types';
 import type {
+  ActionSelector,
   CriteriaNode,
   Effect,
   GameDefinition,
@@ -599,6 +600,7 @@ interface Refs {
   indexes: Set<string>;
   ruleSets: Set<string>;
   states: Set<string>;
+  priorityWindows: Set<string>;
 }
 
 function bad(r: Refs, path: Path, message: string): void {
@@ -768,7 +770,45 @@ function checkEffect(e: Effect, p: Path, r: Refs): void {
     case 'eliminateSeat':
       checkSeatRef(e.seat, [...p, 'seat'], r);
       break;
+    // §4.5 — the only effect carrying two authored ids at once.
+    case 'announceAction':
+      known(r, r.ruleSets, e.ruleId, [...p, 'ruleId'], 'rule set');
+      if (e.window !== null) {
+        known(r, r.priorityWindows, e.window, [...p, 'window'], 'priority window');
+      }
+      break;
+    case 'counterAction':
+      checkActionSelector(e.action, [...p, 'action'], r);
+      break;
+    case 'openPriority':
+      known(r, r.priorityWindows, e.window, [...p, 'window'], 'priority window');
+      break;
+    // `choiceId`/`key`/option ids and labels name nothing declared — they are free-form like
+    // `fireEvent.name` (§4.6). Only the seat refs and the nested effects can dangle.
+    case 'sealedChoice':
+      checkSeatRef(e.seats, [...p, 'seats'], r);
+      break;
+    case 'chooseMode':
+      checkSeatRef(e.seat, [...p, 'seat'], r);
+      e.modes.forEach((m, i) =>
+        m.effects.forEach((inner, j) => checkEffect(inner, [...p, 'modes', i, 'effects', j], r))
+      );
+      break;
+    case 'chooseNumber':
+      checkSeatRef(e.seat, [...p, 'seat'], r);
+      checkValueRef(e.min, [...p, 'min'], r);
+      checkValueRef(e.max, [...p, 'max'], r);
+      break;
   }
+}
+
+/**
+ * §4.4. An `ActionRef` addresses a PendingAction, whose ids are minted at runtime (`a${nextSeq}`)
+ * and so name nothing in the definition — but `allOnStack.where` is a full CriteriaNode and dangles
+ * exactly like a rule's `condition` does.
+ */
+function checkActionSelector(s: ActionSelector, p: Path, r: Refs): void {
+  if (s.kind === 'allOnStack' && s.where !== null) checkCriteria(s.where, [...p, 'where'], r);
 }
 
 function checkReferences(d: GameDefinition, ctx: z.RefinementCtx): void {
@@ -784,6 +824,7 @@ function checkReferences(d: GameDefinition, ctx: z.RefinementCtx): void {
     indexes: new Set(d.templates.flatMap((t) => t.indexes.map((i) => i.id))),
     ruleSets: new Set(d.ruleSets.map((s) => s.id)),
     states: new Set(d.machine.states.map((s) => s.id)),
+    priorityWindows: new Set(d.priorityWindows.map((w) => w.id)),
   };
 
   const seenNames = new Set<string>();
@@ -813,6 +854,28 @@ function checkReferences(d: GameDefinition, ctx: z.RefinementCtx): void {
     }
     if (rs.condition !== null) checkCriteria(rs.condition, ['ruleSets', i, 'condition'], r);
     rs.effects.forEach((e, j) => checkEffect(e, ['ruleSets', i, 'effects', j], r));
+
+    // §4.5's four sub-trees. `modifier` has been unchecked here since step 13 — the walker sees it
+    // (delete-protection works), but gate 4 did not, so imported JSON could dangle a scope zone or a
+    // deleted index and only fail later as a runtime MISSING_REFERENT.
+    if (rs.modifier !== null) {
+      const m: Path = ['ruleSets', i, 'modifier'];
+      checkSelector(rs.modifier.scope, [...m, 'scope'], r);
+      known(r, r.indexes, rs.modifier.indexId, [...m, 'indexId'], 'card index');
+      checkValueRef(rs.modifier.amount, [...m, 'amount'], r);
+      rs.modifier.activeZones.forEach((z, j) => known(r, r.zones, z, [...m, 'activeZones', j], 'zone'));
+    }
+    if (rs.replaces !== null && rs.replaces.match !== null) {
+      checkCriteria(rs.replaces.match, ['ruleSets', i, 'replaces', 'match'], r);
+    }
+    if (rs.activation !== null) {
+      const a: Path = ['ruleSets', i, 'activation'];
+      if (rs.activation.costCheck !== null) checkCriteria(rs.activation.costCheck, [...a, 'costCheck'], r);
+      rs.activation.cost.forEach((e, j) => checkEffect(e, [...a, 'cost', j], r));
+      if (rs.activation.window !== null) {
+        known(r, r.priorityWindows, rs.activation.window, [...a, 'window'], 'priority window');
+      }
+    }
   });
 
   d.globalRuleSetIds.forEach((id, i) => {

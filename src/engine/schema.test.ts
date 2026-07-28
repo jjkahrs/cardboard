@@ -336,6 +336,38 @@ describe('gate 4: referential integrity', () => {
     expect(failed(JSON.stringify(d))).toContain(expected);
   });
 
+  // v2 §4.5 — the four RuleSet sub-trees and the six new effect kinds. Gate 4 saw none of them
+  // before this: the WALKER did (so delete-protection worked), which is exactly what makes the gap
+  // easy to miss — an id deleted through the UI was blocked, but the same definition hand-edited or
+  // round-tripped through JSON imported clean and failed later as a runtime MISSING_REFERENT.
+  // `modifier` is the pre-existing half of the gap, unchecked here since step 13.
+  const withRule = (patch: Record<string, unknown>) => (d: any) => Object.assign(d.ruleSets[0], patch);
+  const withEffect = (effect: unknown) => (d: any) => (d.ruleSets[0].effects = [effect]);
+  const activationOf = (patch: Record<string, unknown>) => ({
+    costCheck: null, cost: [], window: null, perInstance: false, label: 'Activate', ...patch,
+  });
+
+  it.each([
+    ['modifier scope zone', withRule({ modifier: { scope: { kind: 'allInZone', zone: { zoneId: 'nope', seat: null } }, indexId: 'power', op: 'set', amount: { kind: 'literal', value: 1 }, activeZones: [] } }), 'ruleSets.0.modifier.scope.zone.zoneId: Unknown zone id "nope"'],
+    ['modifier indexId', withRule({ modifier: { scope: { kind: 'triggeringCard' }, indexId: 'nope', op: 'set', amount: { kind: 'literal', value: 1 }, activeZones: [] } }), 'ruleSets.0.modifier.indexId: Unknown card index id "nope"'],
+    ['modifier activeZones entry', withRule({ modifier: { scope: { kind: 'triggeringCard' }, indexId: 'power', op: 'set', amount: { kind: 'literal', value: 1 }, activeZones: ['nope'] } }), 'ruleSets.0.modifier.activeZones.0: Unknown zone id "nope"'],
+    ['replaces.match pool', withRule({ replaces: { effectKind: 'drawCards', match: { kind: 'criteria', left: { kind: 'pool', poolId: 'nope', seat: null }, op: '=', right: { kind: 'literal', value: 1 } } } }), 'ruleSets.0.replaces.match.left.poolId: Unknown pool id "nope"'],
+    ['activation.costCheck pool', withRule({ activation: activationOf({ costCheck: { kind: 'criteria', left: { kind: 'pool', poolId: 'nope', seat: null }, op: '>=', right: { kind: 'literal', value: 2 } } }) }), 'ruleSets.0.activation.costCheck.left.poolId: Unknown pool id "nope"'],
+    ['activation.cost effect zone', withRule({ activation: activationOf({ cost: [{ kind: 'shuffleZone', zone: { zoneId: 'nope', seat: null } }] }) }), 'ruleSets.0.activation.cost.0.zone.zoneId: Unknown zone id "nope"'],
+    ['activation.window', withRule({ activation: activationOf({ window: 'nope' }) }), 'ruleSets.0.activation.window: Unknown priority window id "nope"'],
+    ['announceAction ruleId', withEffect({ kind: 'announceAction', ruleId: 'nope', window: null }), 'ruleSets.0.effects.0.ruleId: Unknown rule set id "nope"'],
+    ['announceAction window', withEffect({ kind: 'announceAction', ruleId: 'rs-pool', window: 'nope' }), 'ruleSets.0.effects.0.window: Unknown priority window id "nope"'],
+    ['openPriority window', withEffect({ kind: 'openPriority', window: 'nope' }), 'ruleSets.0.effects.0.window: Unknown priority window id "nope"'],
+    ['counterAction allOnStack.where', withEffect({ kind: 'counterAction', action: { kind: 'allOnStack', where: { kind: 'criteria', left: { kind: 'pool', poolId: 'nope', seat: null }, op: '=', right: { kind: 'literal', value: 1 } } } }), 'ruleSets.0.effects.0.action.where.left.poolId: Unknown pool id "nope"'],
+    ['chooseNumber bounds', withEffect({ kind: 'chooseNumber', promptText: 'How many', seat: { kind: 'active' }, min: { kind: 'literal', value: 0 }, max: { kind: 'pool', poolId: 'nope', seat: null }, key: 'x' }), 'ruleSets.0.effects.0.max.poolId: Unknown pool id "nope"'],
+    ['chooseMode nested effect', withEffect({ kind: 'chooseMode', promptText: 'Pick', seat: { kind: 'active' }, modes: [{ label: 'A', effects: [{ kind: 'shuffleZone', zone: { zoneId: 'nope', seat: null } }] }] }), 'ruleSets.0.effects.0.modes.0.effects.0.zone.zoneId: Unknown zone id "nope"'],
+    ['sealedChoice seat ref', withEffect({ kind: 'sealedChoice', choiceId: 'strike', seats: { kind: 'owner', card: { kind: 'zoneTop', zone: { zoneId: 'nope', seat: null } } }, options: [] }), 'ruleSets.0.effects.0.seats.card.zone.zoneId: Unknown zone id "nope"'],
+  ])('rejects a dangling %s', (_name, mutate, expected) => {
+    const d = clone();
+    mutate(d);
+    expect(failed(JSON.stringify(d))).toContain(expected);
+  });
+
   // §5.6 author-time. The End rule is what closed the runtime repro in stateMachine.test.ts.
   it('rejects a non-empty exitableTo on the End state', () => {
     const d = clone();
@@ -622,8 +654,11 @@ describe('v2 §5.8: activation.cost may not suspend', () => {
   });
 
   it('rejects openPriority', () => {
+    // Two independent failures, both genuine: the §5.8 suspend rule, and — since gate 4 now
+    // descends into `activation.cost` — the window id, which this fixture never declared.
     expect(failed(withCost({ kind: 'openPriority', window: 'w1' }))).toEqual([
       'ruleSets.0.activation.cost.0: Cost effect 0 (openPriority) may suspend (it is a "openPriority" effect) — a cost effect must not raise an Interaction (§5.8).',
+      'ruleSets.0.activation.cost.0.window: Unknown priority window id "w1"',
     ]);
   });
 
