@@ -83,7 +83,9 @@ export const SeatRefSchema: z.ZodType<SeatRef, z.ZodTypeDef, SeatRef> = z.discri
     from: z.lazy(() => SeatRefSchema),
     offset: z.number().int(),
   }),
-  z.object({ kind: z.literal('all'), quantifier: z.enum(['every', 'some']).optional() }),
+  /** §4.1's `sum` is admitted by SHAPE here; `checkValueRef` below is what refuses it over a
+   *  boolean pool, because only the referential-integrity pass knows a pool's declared type. */
+  z.object({ kind: z.literal('all'), quantifier: z.enum(['every', 'some', 'sum']).optional() }),
 ]);
 
 export const ZoneRefSchema = z.object({
@@ -103,6 +105,7 @@ export const ValueRefSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('pool'), poolId: IdSchema, seat: SeatRefSchema.nullable() }),
   z.object({ kind: z.literal('cardIndex'), card: CardRefSchema, indexId: IdSchema }),
   z.object({ kind: z.literal('zoneCount'), zone: ZoneRefSchema }),
+  z.object({ kind: z.literal('activeSeatCount') }),
 ]);
 
 // ---------------------------------------------------------------------------
@@ -254,6 +257,7 @@ export const EffectSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('destroyCards'), target: TargetSelectorSchema }),
   z.object({ kind: z.literal('fireEvent'), name: z.string() }),
   z.object({ kind: z.literal('forceTransition'), toStateId: IdSchema }),
+  z.object({ kind: z.literal('eliminateSeat'), seat: SeatRefSchema }),
 ]);
 
 export const RuleSetSchema = z.object({
@@ -338,6 +342,8 @@ interface Refs {
   ctx: z.RefinementCtx;
   zones: Set<string>;
   pools: Set<string>;
+  /** The subset of `pools` declared `type: 'boolean'`. Only §4.1's `sum` refinement reads it. */
+  booleanPools: Set<string>;
   templates: Set<string>;
   /** Union of every template's index ids. Indexes are per-template, but an effect's `indexId` is
    *  not statically bound to a template, so a global set is the only check available here. */
@@ -366,6 +372,16 @@ function checkValueRef(v: z.infer<typeof ValueRefSchema>, p: Path, r: Refs): voi
   switch (v.kind) {
     case 'pool':
       known(r, r.pools, v.poolId, [...p, 'poolId'], 'pool');
+      // §4.1: `sum` is an arithmetic total, so it is legal only where the ref is consumed as a
+      // number. A boolean pool has no total. This is the author-time half of the pair — the
+      // runtime half lives in `resolveValueRef` and covers imported JSON that never met the editor.
+      if (v.seat?.kind === 'all' && v.seat.quantifier === 'sum' && r.booleanPools.has(v.poolId)) {
+        bad(
+          r,
+          [...p, 'seat', 'quantifier'],
+          `Pool "${v.poolId}" is a boolean; the "sum" quantifier needs a numeric pool`
+        );
+      }
       break;
     case 'cardIndex':
       checkCardRef(v.card, [...p, 'card'], r);
@@ -375,6 +391,7 @@ function checkValueRef(v: z.infer<typeof ValueRefSchema>, p: Path, r: Refs): voi
       checkZoneRef(v.zone, [...p, 'zone'], r);
       break;
     case 'literal':
+    case 'activeSeatCount':
       break;
   }
 }
@@ -445,7 +462,9 @@ function checkEffect(e: Effect, p: Path, r: Refs): void {
       known(r, r.states, e.toStateId, [...p, 'toStateId'], 'state');
       break;
     // `fireEvent.name` is free-form by design (§4.6) — custom events need no declaration.
+    // `eliminateSeat.seat` is a pure SeatRef, which carries no authored id to check (§4.1).
     case 'fireEvent':
+    case 'eliminateSeat':
       break;
   }
 }
@@ -458,6 +477,7 @@ function checkReferences(d: GameDefinition, ctx: z.RefinementCtx): void {
     // export), but setup.ts seeds it and authored effects are its only legal writers. Omitting it
     // here rejects every definition that authors turn structure the documented way.
     pools: new Set([ACTIVE_PLAYER_POOL_ID, ...d.pools.map((p) => p.id)]),
+    booleanPools: new Set(d.pools.filter((p) => p.value.type === 'boolean').map((p) => p.id)),
     templates: new Set(d.templates.map((t) => t.id)),
     indexes: new Set(d.templates.flatMap((t) => t.indexes.map((i) => i.id))),
     ruleSets: new Set(d.ruleSets.map((s) => s.id)),

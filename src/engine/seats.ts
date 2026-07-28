@@ -23,6 +23,7 @@ import {
   type PlayState,
   type RejectReason,
   type SeatId,
+  type SeatQuantifier,
   type SeatRef,
   type TriggerContext,
 } from './types';
@@ -43,7 +44,7 @@ export interface SeatResolutionOk {
   /** Length 1 for every SeatRef except `all`, which returns `seatOrder` — ring order, not indices. */
   seats: SeatId[];
   /** Only meaningful when `seats.length > 1` (the `all` case). Defaults to 'every' — §5.7. */
-  quantifier: 'every' | 'some';
+  quantifier: SeatQuantifier;
 }
 
 export type SeatResolution = SeatResolutionOk | ResolutionFail;
@@ -52,8 +53,26 @@ export function fail(reason: RejectReason, message: string): ResolutionFail {
   return { ok: false, reason, message };
 }
 
-function ok(seats: SeatId[], quantifier: 'every' | 'some' = 'every'): SeatResolutionOk {
+function ok(seats: SeatId[], quantifier: SeatQuantifier = 'every'): SeatResolutionOk {
   return { ok: true, seats, quantifier };
+}
+
+/**
+ * §5.12: a ref that RESOLVES TO an eliminated seat fails `SEAT_ELIMINATED`.
+ *
+ * Only three kinds of ref can produce one. `relative`, `next`, `previous` and `all` never can —
+ * they only ever return members of `seatOrder` — and `{kind:'seat', index}` is the one documented
+ * exception, kept readable for forensics. That leaves the refs that read a seat out of the state or
+ * off a card: `active`, `triggeringSeat`, and §4.3's `owner`/`controller`.
+ *
+ * Note the deliberate asymmetry with `stepRing` below, which fails `INVALID_SEAT` when its BASE is
+ * eliminated: §4.1 pins that case to `INVALID_SEAT` by name, because "the seat after an ousted
+ * seat" is a broken question rather than an ousted answer.
+ */
+function live(seat: SeatId, state: PlayState, label: string): SeatResolution {
+  return state.eliminated.includes(seat)
+    ? fail('SEAT_ELIMINATED', `Player ref "${label}": seat ${seat} has been eliminated.`)
+    : ok([seat]);
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +121,7 @@ export function resolveSeat(ref: SeatRef, state: PlayState, ctx: TriggerContext)
   switch (ref.kind) {
     case 'active': {
       const err = requireActiveInRange('active');
-      return err ?? ok([A]);
+      return err ?? live(A, state, 'active');
     }
     // Sugar for relative(active, ±1) — §3.5. Identical to v1's modular arithmetic while nothing is
     // eliminated, and correct rather than off-by-one once something is.
@@ -130,7 +149,7 @@ export function resolveSeat(ref: SeatRef, state: PlayState, ctx: TriggerContext)
     case 'triggeringSeat':
       return ctx.triggeringSeat === null
         ? fail('UNBOUND_REF', 'Ref "triggeringSeat" is unbound.')
-        : ok([ctx.triggeringSeat]);
+        : live(ctx.triggeringSeat, state, 'triggeringSeat');
     // Deliberately resolves for an ELIMINATED seat too, as long as the index was ever a seat:
     // §5.12 keeps `{kind:'seat', index}` working for forensics. Rejecting it as a move or target
     // destination is a separate check, not this one's job.

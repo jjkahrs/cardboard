@@ -142,6 +142,8 @@ export function describeValueRef(ref: ValueRef, def: GameDefinition): string {
       return `${indexName(def, ref.indexId)} of ${describeCardRef(def, ref.card)}`;
     case 'zoneCount':
       return `the number of cards in ${zonePhrase(def, ref.zone)}`;
+    case 'activeSeatCount':
+      return 'the number of players still in the game';
   }
 }
 
@@ -225,6 +227,10 @@ export function describeEffect(effect: Effect, def: GameDefinition): string {
       return `fire the "${effect.name}" event`;
     case 'forceTransition':
       return `transition to ${stateName(def, effect.toStateId)}`;
+    // Minimum arm to keep the card face and the rule-editor preview non-blank. Step 19 owns the
+    // real prose pass, including `sum` / `relative` / the rest of §4.1's new vocabulary.
+    case 'eliminateSeat':
+      return `eliminate ${seatNoun(effect.seat)}`;
   }
 }
 

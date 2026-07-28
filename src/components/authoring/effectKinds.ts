@@ -76,6 +76,11 @@ export function defaultEffect(
     // `machine.states` always holds the reserved Start and End, so this one can never be null.
     case 'forceTransition':
       return { kind, toStateId: definition.machine.endStateId };
+    // Deliberately absent from EFFECT_KINDS above: the authoring UI for §4's new unions is phase 4
+    // (§6.10). This arm exists so the exhaustiveness check keeps the build honest, not so the
+    // picker offers it.
+    case 'eliminateSeat':
+      return { kind, seat: { kind: 'active' } };
   }
 }
 

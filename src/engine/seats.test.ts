@@ -13,7 +13,20 @@
 
 import { describe, expect, it } from 'vitest';
 import { resolveSeat } from './seats';
-import { ACTIVE_PLAYER_POOL_ID, type PlayState, type SeatRef, type TriggerContext } from './types';
+import { applyEffect, type EffectContext } from './effects';
+import { resolveValueRef } from './valueRef';
+import { evalCriteriaBool } from './criteria';
+import { createPlayState } from './setup';
+import { duel } from '../test/fixtures/duel';
+import {
+  ACTIVE_PLAYER_POOL_ID,
+  type CriteriaNode,
+  type GameDefinition,
+  type LogLine,
+  type PlayState,
+  type SeatRef,
+  type TriggerContext,
+} from './types';
 
 function makeState(playerCount: number, activePlayer: number, overrides: Partial<PlayState> = {}): PlayState {
   return {
@@ -55,6 +68,38 @@ function seatOf(ref: SeatRef, state: PlayState): number | string {
 
 const relative = (from: SeatRef, offset: number): SeatRef => ({ kind: 'relative', from, offset });
 const seat = (index: number): SeatRef => ({ kind: 'seat', index });
+
+/** `duel` at an arbitrary table size. Only `playerCount` differs, so V10's threshold is identical. */
+const table = (playerCount: number): GameDefinition => ({ ...duel, playerCount });
+
+/**
+ * Runs the real `eliminateSeat` effect against `state`, in place, and hands back its log lines.
+ * The tests below go through the effect rather than editing `seatOrder` by hand precisely because
+ * §5.12's guarantees are about what the effect does NOT touch as much as what it does.
+ */
+function eliminate(state: PlayState, def: GameDefinition, ref: SeatRef): LogLine[] {
+  const lines: LogLine[] = [];
+  const ec: EffectContext = {
+    state,
+    def,
+    ctx,
+    depth: 0,
+    override: false,
+    log: (line) => lines.push(line),
+    fireEvent: () => {
+      throw new Error('eliminateSeat must not fire events — §5.12 names no event for elimination');
+    },
+  };
+  const res = applyEffect({ kind: 'eliminateSeat', seat: ref }, ec);
+  if (!res.ok) throw new Error(`eliminateSeat rejected: ${res.reason} — ${res.detail ?? ''}`);
+  return lines;
+}
+
+const activeSeatCount = (state: PlayState, def: GameDefinition): number | boolean => {
+  const res = resolveValueRef({ kind: 'activeSeatCount' }, state, ctx, def);
+  if (!res.ok) throw new Error(`activeSeatCount failed: ${res.reason}`);
+  return res.values[0];
+};
 
 // ---------------------------------------------------------------------------
 // relative — §4.1
@@ -160,12 +205,24 @@ describe('a seat removed from seatOrder', () => {
     }
   });
 
-  it('fails next/previous when the ACTIVE seat is the eliminated one', () => {
+  it('fails active/next/previous when the ACTIVE seat is the eliminated one', () => {
     const state = ousted(3);
-    // `active` itself still resolves: 3 is in range, and §5.12 keeps the raw index readable.
-    expect(seatOf({ kind: 'active' }, state)).toBe(3);
+    // Two different refusals, and the split is deliberate. `active` RESOLVES TO the ousted seat, so
+    // §5.12's rule applies: SEAT_ELIMINATED. `next`/`previous` are sugar for relative(active, ±1),
+    // whose BASE is ousted — §4.1 pins that case to INVALID_SEAT by name, because "the seat after
+    // an ousted seat" is a broken question rather than an ousted answer.
+    expect(seatOf({ kind: 'active' }, state)).toBe('SEAT_ELIMINATED');
     expect(seatOf({ kind: 'next' }, state)).toBe('INVALID_SEAT');
     expect(seatOf({ kind: 'previous' }, state)).toBe('INVALID_SEAT');
+  });
+
+  it('fails triggeringSeat when the seat that fired the event has since been eliminated', () => {
+    const res = resolveSeat({ kind: 'triggeringSeat' }, ousted(0), { ...ctx, triggeringSeat: 3 });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toBe('SEAT_ELIMINATED');
+      expect(res.message).toContain('seat 3');
+    }
   });
 
   it('still resolves {kind:"seat", index} for the eliminated seat — forensics (§5.12)', () => {
@@ -203,4 +260,142 @@ describe('all', () => {
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.seats).not.toBe(state.seatOrder);
   });
+
+  it('carries `sum` through untouched — collapsing it is valueRef.ts\'s job, not the ring\'s', () => {
+    const state = makeState(3, 0);
+    expect(resolveSeat({ kind: 'all', quantifier: 'sum' }, state, ctx)).toEqual({
+      ok: true,
+      seats: [0, 1, 2],
+      quantifier: 'sum',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The eliminateSeat effect — §5.12
+// ---------------------------------------------------------------------------
+
+describe('eliminateSeat', () => {
+  const def = table(5);
+
+  it('moves the seat from seatOrder to eliminated and logs ONE change line', () => {
+    const state = createPlayState(def, 'oust');
+    const lines = eliminate(state, def, seat(3));
+
+    expect(state.seatOrder).toEqual([0, 1, 2, 4]);
+    expect(state.eliminated).toEqual([3]);
+    const changes = lines.filter((l) => l.kind === 'change');
+    expect(changes).toHaveLength(1);
+    expect(changes[0].change).toEqual({ path: 'seatOrder', before: [0, 1, 2, 3, 4], after: [0, 1, 2, 4] });
+    expect(changes[0].effectKind).toBe('eliminateSeat');
+  });
+
+  it('deletes no storage — pools, zone instances and cards all survive (§3.5)', () => {
+    const state = createPlayState(def, 'oust');
+    const zonesBefore = Object.keys(state.zones).length;
+    const cardsBefore = Object.keys(state.cards).length;
+    const hpBefore = state.playerPools.pool_hp?.slice();
+
+    eliminate(state, def, seat(3));
+
+    expect(Object.keys(state.zones)).toHaveLength(zonesBefore);
+    expect(Object.keys(state.cards)).toHaveLength(cardsBefore);
+    expect(state.playerPools.pool_hp).toEqual(hpBefore);
+    expect(state.zones['zone_hand#3']).toBeDefined();
+    expect(state.playerCount).toBe(5); // the INITIAL count, deliberately unchanged (§3.5)
+  });
+
+  it('refuses to eliminate a seat that is already out, rather than double-appending it', () => {
+    const state = createPlayState(def, 'oust');
+    eliminate(state, def, seat(3));
+    const lines: LogLine[] = [];
+    const res = applyEffect(
+      { kind: 'eliminateSeat', seat: seat(3) },
+      { state, def, ctx, depth: 0, override: false, log: (l) => lines.push(l), fireEvent: () => {} }
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'SEAT_ELIMINATED' });
+    expect(state.eliminated).toEqual([3]);
+  });
+
+  it('an `all` ref containing an already-ousted seat eliminates NOBODY (§5.3 atomicity)', () => {
+    // `all` walks seatOrder, so it can never contain an ousted seat; the reachable version of this
+    // is the same seat named twice, which is what an authored "eliminate everyone at 0 HP" loop
+    // produces on a second pass. Assert the plan-then-mutate split holds either way.
+    const state = createPlayState(def, 'oust');
+    state.seatOrder = [0, 1, 2, 4];
+    state.eliminated = [3];
+    const lines: LogLine[] = [];
+    const res = applyEffect(
+      { kind: 'eliminateSeat', seat: { kind: 'relative', from: seat(4), offset: -1 } },
+      { state, def, ctx, depth: 0, override: false, log: (l) => lines.push(l), fireEvent: () => {} }
+    );
+    expect(res.ok).toBe(true); // relative(4, -1) is seat 2 — live, so this one goes through
+    expect(state.seatOrder).toEqual([0, 1, 4]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §9.1 acceptance criteria
+// ---------------------------------------------------------------------------
+
+// AC: SP11 — the three consequences of one oust, asserted together because §5.12's claim is that
+// they follow from a single `seatOrder` splice with nothing else in the engine aware of it.
+it('SP11: 5 seats, seat 3 eliminated — the ring closes, the count drops, the session continues', () => {
+  const def = table(5);
+  const state = createPlayState(def, 'sp11');
+  expect(activeSeatCount(state, def)).toBe(5);
+
+  eliminate(state, def, seat(3));
+
+  expect(seatOf(relative(seat(2), 1), state)).toBe(4); // the seat after 2 is now 4, not 3
+  expect(activeSeatCount(state, def)).toBe(4);
+  expect(state.finished).toBe(false); // elimination is NOT session end (§5.12)
+});
+
+// AC: V2 — one session, one createPlayState. The point is that nothing had to be rebuilt: the
+// post-oust ring is the same object the pre-oust references were resolved against.
+it('V2: a seat ousted mid-session makes its former neighbours adjacent, with no restart', () => {
+  const def = table(5);
+  const state = createPlayState(def, 'v2');
+
+  // Pre-oust: 2 -> 3 -> 4, and 4's predecessor is 3.
+  expect(seatOf(relative(seat(2), 1), state)).toBe(3);
+  expect(seatOf(relative(seat(4), -1), state)).toBe(3);
+
+  eliminate(state, def, seat(3));
+
+  // Post-oust, same state object: 2 and 4 are neighbours in both directions...
+  expect(seatOf(relative(seat(2), 1), state)).toBe(4);
+  expect(seatOf(relative(seat(4), -1), state)).toBe(2);
+  // ...and the ring is genuinely shorter, so a full lap is one step less than it was.
+  expect(seatOf(relative(seat(0), 4), state)).toBe(0);
+  // The ousted seat's own index stays readable for forensics, but is no longer walked past.
+  expect(seatOf(seat(3), state)).toBe(3);
+  expect(seatOf(relative(seat(3), 1), state)).toBe('INVALID_SEAT');
+});
+
+// AC: V10 — the same authored criterion, two table sizes, no per-game configuration. The threshold
+// is a single frozen CriteriaNode shared by both sessions on purpose: if `activeSeatCount` needed
+// tuning per table size, this could not be one object.
+it('V10: one authored threshold reads the correct table size at 4 and at 5 seats', () => {
+  const fiveOrMore: CriteriaNode = {
+    kind: 'criteria',
+    left: { kind: 'activeSeatCount' },
+    op: '>=',
+    right: { kind: 'literal', value: 5 },
+  };
+
+  const four = table(4);
+  const five = table(5);
+  const stateOf4 = createPlayState(four, 'v10');
+  const stateOf5 = createPlayState(five, 'v10');
+
+  expect(activeSeatCount(stateOf4, four)).toBe(4);
+  expect(activeSeatCount(stateOf5, five)).toBe(5);
+  expect(evalCriteriaBool(fiveOrMore, stateOf4, ctx, four)).toBe(false);
+  expect(evalCriteriaBool(fiveOrMore, stateOf5, ctx, five)).toBe(true);
+
+  // And it keeps tracking: ousting one seat at the 5-seat table flips the same criterion.
+  eliminate(stateOf5, five, seat(1));
+  expect(evalCriteriaBool(fiveOrMore, stateOf5, ctx, five)).toBe(false);
 });

@@ -20,5 +20,8 @@ export function isDangling(ref: ValueRef, def: GameDefinition): boolean {
       return !def.zones.some((z) => z.id === ref.zone.zoneId);
     case 'cardIndex':
       return !allIndexes(def).some(({ index }) => index.id === ref.indexId);
+    // Reads `seatOrder.length` — no authored id, so it can never dangle.
+    case 'activeSeatCount':
+      return false;
   }
 }

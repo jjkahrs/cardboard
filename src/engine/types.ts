@@ -62,6 +62,15 @@ export const ACTIVE_PLAYER_POOL: PointPool = {
 export type SeatId = number;
 
 /**
+ * §4.1. `every` and `some` fold the per-seat values into a boolean; `sum` does not fold at all — it
+ * collapses them into one arithmetic TOTAL, which is why it is legal only where a `ValueRef` is
+ * consumed as a number (effect amounts, comparison operands). `schema.ts` rejects it over a boolean
+ * pool at author time and `valueRef.ts` re-checks at runtime; both are required, because imported
+ * JSON never passed through the editor.
+ */
+export type SeatQuantifier = 'every' | 'some' | 'sum';
+
+/**
  * `all` in an *effect* applies to every seat. In a *criteria* it quantifies.
  * `triggeringSeat` is the seat that owns the card or zone that fired the event — required because
  * `next`/`previous` are only correct when the acting player is `activePlayer`, which any
@@ -78,7 +87,7 @@ export type SeatRef =
   | { kind: 'triggeringSeat' }
   | { kind: 'seat'; index: SeatId }
   | { kind: 'relative'; from: SeatRef; offset: number }
-  | { kind: 'all'; quantifier?: 'every' | 'some' }; // default 'every' — §5.7
+  | { kind: 'all'; quantifier?: SeatQuantifier }; // default 'every' — §5.7
 
 /** seat is null iff the referenced zone/pool is Game/Shared scoped. */
 export interface ZoneRef {
@@ -96,7 +105,13 @@ export type ValueRef =
   | { kind: 'literal'; value: number | boolean }
   | { kind: 'pool'; poolId: Id; seat: SeatRef | null }
   | { kind: 'cardIndex'; card: CardRef; indexId: Id }
-  | { kind: 'zoneCount'; zone: ZoneRef };
+  | { kind: 'zoneCount'; zone: ZoneRef }
+  /**
+   * §4.2 — `seatOrder.length`, NOT `playerCount`. Storage stays dense and full-length (§3.5), so
+   * this is the only reading of "table size" that is still correct after an oust, and it needs no
+   * per-game configuration to be so.
+   */
+  | { kind: 'activeSeatCount' };
 
 // ---------------------------------------------------------------------------
 // §4.3 Criteria
@@ -275,7 +290,12 @@ export type Effect =
   | { kind: 'createCard'; templateId: Id; zone: ZoneRef; position: InsertPosition; count: ValueRef }
   | { kind: 'destroyCards'; target: TargetSelector }
   | { kind: 'fireEvent'; name: string }
-  | { kind: 'forceTransition'; toStateId: Id };
+  | { kind: 'forceTransition'; toStateId: Id }
+  /**
+   * §5.12 — drops the seat from `seatOrder` and appends it to `eliminated`. Deletes NOTHING: pools,
+   * zone instances and cards all stay, and `finished` is untouched. Elimination is not session end.
+   */
+  | { kind: 'eliminateSeat'; seat: SeatRef };
 
 export interface RuleSet {
   id: Id;
@@ -568,7 +588,9 @@ export type RejectReason =
   | 'PROMPT_CANCELED'
   | 'SESSION_FINISHED'
   /** v2 §4.12 — the continuous/auto-transition fixpoint hit `limits.maxSettleIterations`. */
-  | 'SETTLE_DIVERGED';
+  | 'SETTLE_DIVERGED'
+  /** v2 §4.12, §5.12 — a target or destination belongs to an ousted seat. */
+  | 'SEAT_ELIMINATED';
 
 /** Uniform result for anything that can refuse. */
 export type EffectResult =

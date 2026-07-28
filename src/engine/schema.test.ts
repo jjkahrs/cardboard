@@ -403,6 +403,46 @@ describe('the recursive relative SeatRef', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// §4.1's `sum` refinement. The fixture's End-state entryCriteria is `hp(all) <= 0` — the one
+// authored ValueRef with a seat on it — so `sum` goes there, over `hp` (integer) or `firstBlood`
+// (boolean) by turn.
+// ---------------------------------------------------------------------------
+
+// AC: SP6
+describe('SP6: the `sum` quantifier is refused over a boolean pool', () => {
+  const withPoolAndQuantifier = (poolId: string, quantifier: string): string => {
+    const d = clone();
+    d.machine.states[2].entryCriteria.left.poolId = poolId;
+    d.machine.states[2].entryCriteria.left.seat = { kind: 'all', quantifier };
+    return JSON.stringify(d);
+  };
+
+  it('rejects it at the schema level, naming the quantifier and the pool', () => {
+    expect(failed(withPoolAndQuantifier('firstBlood', 'sum'))).toEqual([
+      'machine.states.2.entryCriteria.left.seat.quantifier: Pool "firstBlood" is a boolean; the "sum" quantifier needs a numeric pool',
+    ]);
+  });
+
+  it('admits the identical shape over an integer pool — the refinement is about the pool TYPE', () => {
+    const def = imported(withPoolAndQuantifier('hp', 'sum'));
+    expect(def.machine.states[2].entryCriteria).toMatchObject({
+      left: { seat: { kind: 'all', quantifier: 'sum' } },
+    });
+    // §7.2: the new quantifier survives the round trip byte for byte.
+    expect(exportJson(imported(exportJson(def)))).toBe(exportJson(def));
+  });
+
+  it('still admits `every` and `some` over the boolean pool — only `sum` is type-restricted', () => {
+    expect(validateDefinition(imported(withPoolAndQuantifier('firstBlood', 'every')))).toEqual([]);
+    expect(validateDefinition(imported(withPoolAndQuantifier('firstBlood', 'some')))).toEqual([]);
+  });
+
+  it('rejects a quantifier that is not one of the three', () => {
+    expect(failed(withPoolAndQuantifier('hp', 'product'))).not.toEqual([]);
+  });
+});
+
 describe('P2: canonical export', () => {
   /** Reverse every object's key order, recursively. Arrays keep their order. */
   const scramble = (v: unknown): unknown => {

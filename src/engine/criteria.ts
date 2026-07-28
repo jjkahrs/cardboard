@@ -60,7 +60,7 @@ function seatLabel(seat: SeatRef | null): string {
     case 'seat':
       return `(seat ${seat.index})`;
     case 'all':
-      return seat.quantifier === 'some' ? '(any)' : '(all)';
+      return seat.quantifier === 'some' ? '(any)' : seat.quantifier === 'sum' ? '(total)' : '(all)';
     default:
       return `(${seat.kind})`;
   }
@@ -95,6 +95,8 @@ function labelOf(ref: ValueRef, def: GameDefinition): string {
       const zone = def.zones.find((z) => z.id === ref.zone.zoneId);
       return `count(${zone?.name ?? ref.zone.zoneId}${seatLabel(ref.zone.seat)})`;
     }
+    case 'activeSeatCount':
+      return 'active seats';
   }
 }
 

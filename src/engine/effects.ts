@@ -84,6 +84,8 @@ const LEVEL_OF: Record<RejectReason, LogLevel> = {
   // The fixpoint failed to converge — that is a broken game, not a rule-legal refusal, so it sits
   // with RULE_LOOP rather than with the rejections (v2 §4.12, §5.3).
   SETTLE_DIVERGED: 'error',
+  // Rule-legal: acting on an ousted seat is a refusal, not a broken game (§5.12).
+  SEAT_ELIMINATED: 'reject',
 };
 
 /**
@@ -128,6 +130,18 @@ function keysOf(
   if (zone.seat === null) return { ok: true, keys: [zoneKey(zone.zoneId, null)] };
   const seats = resolveSeat(zone.seat, state, ctx);
   if (!seats.ok) return seats;
+  // §5.12's other half. `{kind:'seat', index}` deliberately still RESOLVES for an ousted seat so the
+  // log and the UI can name it, but an effect may not move cards into or out of that seat's zones.
+  // `resolveSeat` cannot make the call — it is not told whether its caller is reading or writing —
+  // so the refusal lives here, on the one path every effect's zone operand goes through.
+  const ousted = seats.seats.find((s) => state.eliminated.includes(s));
+  if (ousted !== undefined) {
+    return {
+      ok: false,
+      reason: 'SEAT_ELIMINATED',
+      message: `Zone "${zone.zoneId}" (seat ${ousted}): that seat has been eliminated.`,
+    };
+  }
   return { ok: true, keys: seats.seats.map((s) => zoneKey(zone.zoneId, s)) };
 }
 
@@ -744,5 +758,36 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
       // applyTransition owns legality, the End handling and its own logging, and enqueues
       // onStateExit/onStateEnter to the tail — exactly what §5.6 describes.
       return applyTransition(ec, effect.toStateId, { forced: true });
+
+    // -----------------------------------------------------------------------
+    case 'eliminateSeat': {
+      const seats = resolveSeat(effect.seat, state, ctx);
+      if (!seats.ok) return failed(ec, effect, seats);
+      // Plan before mutating (§5.3 atomicity). An `all` ref that includes one already-ousted seat
+      // rejects the whole effect rather than eliminating the rest and leaving a half-closed ring.
+      for (const s of seats.seats) {
+        if (!state.seatOrder.includes(s)) {
+          return reject(ec, effect, 'SEAT_ELIMINATED', `Eliminate seat ${s}: that seat is already eliminated.`);
+        }
+      }
+      for (const s of seats.seats) {
+        const before = [...state.seatOrder];
+        state.seatOrder.splice(state.seatOrder.indexOf(s), 1);
+        state.eliminated.push(s);
+        // §5.12, and every clause of it is a deliberate omission: pools, zone instances and cards
+        // are NOT deleted (storage stays dense and full-length — §3.5), cards owned by the seat are
+        // not cascaded, and `finished` is untouched. Elimination is not session end; ending the
+        // session is still the End state's job. One change line per seat.
+        emit(
+          ec,
+          effect,
+          'info',
+          `Seat ${s} eliminated. ${state.seatOrder.length} ${state.seatOrder.length === 1 ? 'seat' : 'seats'} remain.`,
+          { path: 'seatOrder', before, after: [...state.seatOrder] },
+          'change'
+        );
+      }
+      return { ok: true };
+    }
   }
 }

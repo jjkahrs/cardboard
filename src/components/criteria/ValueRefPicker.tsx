@@ -55,6 +55,10 @@ export function ValueRefPicker({ value, onChange, definition, ariaLabel }: Value
           zone: { zoneId: zone.id, seat: zone.scope === 'player' ? { kind: 'active' } : null },
         };
       }
+      // Not offered in VALUE_REF_KINDS — authoring for §4's new refs is phase 4 (§6.10). The arm is
+      // here for the exhaustiveness check alone.
+      case 'activeSeatCount':
+        return { kind: 'activeSeatCount' };
     }
   };
 

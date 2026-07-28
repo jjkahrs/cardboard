@@ -14,6 +14,7 @@ import {
   type Id,
   type PlayState,
   type PointPool,
+  type SeatQuantifier,
   type TriggerContext,
   type ValueRef,
   type ZoneKey,
@@ -35,10 +36,37 @@ export interface ValueResolutionOk {
   ok: true;
   /** Ascending seat order when the ref resolved to multiple seats (`all`); length 1 otherwise. */
   values: (number | boolean)[];
+  /**
+   * Never `'sum'`: `quantified()` collapses that to a single value before it can leave this module,
+   * so no consumer has to know the third quantifier exists. Deliberately NARROWER than
+   * `SeatResolutionOk.quantifier`, which forces the compiler to point at any future return path
+   * that forgets to collapse.
+   */
   quantifier: 'every' | 'some';
 }
 
 export type ValueResolution = ValueResolutionOk | ResolutionFail;
+
+/**
+ * §4.1's `sum`. Unlike `every`/`some` this is not a fold to a boolean — it collapses the per-seat
+ * values into ONE arithmetic total, which is exactly why the ref is then usable anywhere a single
+ * number is (effect amounts, comparison operands) and nowhere else.
+ *
+ * A boolean operand has no total, so it evaluates `TYPE_MISMATCH` here. `schema.ts` rejects the
+ * same shape at author time; neither check substitutes for the other, because imported JSON never
+ * passed through the editor and an authored definition never reaches this line.
+ */
+function quantified(
+  values: (number | boolean)[],
+  quantifier: 'every' | 'some' | 'sum',
+  label: string
+): ValueResolution {
+  if (quantifier !== 'sum') return { ok: true, values, quantifier };
+  if (values.some((v) => typeof v !== 'number')) {
+    return fail('TYPE_MISMATCH', `${label}: the "sum" quantifier needs numbers; this resolved to a boolean.`);
+  }
+  return { ok: true, values: [(values as number[]).reduce((a, b) => a + b, 0)], quantifier: 'every' };
+}
 
 // ---------------------------------------------------------------------------
 // zoneKey / parseZoneKey — §4.5
@@ -70,7 +98,7 @@ function resolveZoneKeys(
   zone: ZoneRef,
   state: PlayState,
   ctx: TriggerContext
-): { ok: true; keys: ZoneKey[]; quantifier: 'every' | 'some' } | ResolutionFail {
+): { ok: true; keys: ZoneKey[]; quantifier: SeatQuantifier } | ResolutionFail {
   if (zone.seat === null) {
     return { ok: true, keys: [zoneKey(zone.zoneId, null)], quantifier: 'every' };
   }
@@ -178,7 +206,9 @@ export function resolveValueRef(
       if (values.some((v) => v === undefined)) {
         return fail('MISSING_REFERENT', `Pool "${ref.poolId}" is missing a value for one or more seats.`);
       }
-      return { ok: true, values, quantifier: seatRes.quantifier };
+      // `seatRes.seats` is the RING, never `perSeat`'s indices — an eliminated seat's stale value is
+      // still sitting in the dense array and would otherwise be summed into every vote tally (§4.1).
+      return quantified(values, seatRes.quantifier, `Pool "${ref.poolId}"`);
     }
 
     case 'cardIndex': {
@@ -207,7 +237,12 @@ export function resolveValueRef(
         }
         values.push(zoneInst.cardIds.length);
       }
-      return { ok: true, values, quantifier: zr.quantifier };
+      return quantified(values, zr.quantifier, `Zone "${ref.zone.zoneId}"`);
     }
+
+    // §3.5 — the live ring's length. `playerCount` survives only as the initial seat count and the
+    // bound on a valid SeatId, so it is the wrong number to read the moment anyone is ousted.
+    case 'activeSeatCount':
+      return { ok: true, values: [state.seatOrder.length], quantifier: 'every' };
   }
 }

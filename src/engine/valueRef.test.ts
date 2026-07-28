@@ -291,6 +291,71 @@ describe('resolveValueRef', () => {
       expect(res).toEqual({ ok: true, values: [10, 20, 30], quantifier: 'some' });
     });
 
+    // AC: SP6 — §4.1. `sum` is the one quantifier that does not fold to a boolean: it collapses the
+    // per-seat values into ONE arithmetic total, which is what makes a vote tally authorable. It
+    // must resolve, not report TYPE_MISMATCH the way a multi-value amount otherwise would.
+    it('sum collapses a per-player pool to one arithmetic total', () => {
+      const def = makeDef({
+        pools: [{ id: 'votes', scope: 'player', value: { type: 'integer', name: 'Votes', defaultValue: 0, min: 0, max: null } }],
+      });
+      const state = makeState(3, 0, { playerPools: { votes: [1, 2, 1] } });
+      const res = resolveValueRef(
+        { kind: 'pool', poolId: 'votes', seat: { kind: 'all', quantifier: 'sum' } },
+        state,
+        makeCtx(),
+        def
+      );
+      // One value, and quantifier 'every': every consumer downstream sees a plain single number,
+      // so `sum` needs no special case in criteria.ts or in effects.ts's singleAmount.
+      expect(res).toEqual({ ok: true, values: [4], quantifier: 'every' });
+    });
+
+    it('sum sums only the LIVE ring — the ousted seat\'s stale pool value is still in storage', () => {
+      const def = makeDef({
+        pools: [{ id: 'votes', scope: 'player', value: { type: 'integer', name: 'Votes', defaultValue: 0, min: 0, max: null } }],
+      });
+      const state = makeState(3, 0, { seatOrder: [0, 2], eliminated: [1], playerPools: { votes: [1, 99, 1] } });
+      const res = resolveValueRef(
+        { kind: 'pool', poolId: 'votes', seat: { kind: 'all', quantifier: 'sum' } },
+        state,
+        makeCtx(),
+        def
+      );
+      expect(res).toEqual({ ok: true, values: [2], quantifier: 'every' });
+    });
+
+    it('sum over a BOOLEAN pool is TYPE_MISMATCH at runtime — the import path bypasses the editor', () => {
+      const def = makeDef({
+        pools: [{ id: 'ready', scope: 'player', value: { type: 'boolean', name: 'Ready', defaultValue: false } }],
+      });
+      const state = makeState(2, 0, { playerPools: { ready: [true, false] } });
+      const res = resolveValueRef(
+        { kind: 'pool', poolId: 'ready', seat: { kind: 'all', quantifier: 'sum' } },
+        state,
+        makeCtx(),
+        def
+      );
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toBe('TYPE_MISMATCH');
+        expect(res.message).toContain('sum');
+      }
+    });
+
+    it('sum over a single seat is that seat\'s value — the quantifier only bites on `all`', () => {
+      const def = makeDef({
+        pools: [{ id: 'votes', scope: 'player', value: { type: 'integer', name: 'Votes', defaultValue: 0, min: 0, max: null } }],
+      });
+      const state = makeState(3, 0, { playerPools: { votes: [1, 2, 1] } });
+      const res = resolveValueRef(
+        { kind: 'pool', poolId: 'votes', seat: { kind: 'seat', index: 1 } },
+        state,
+        makeCtx(),
+        def
+      );
+      expect(res).toEqual({ ok: true, values: [2], quantifier: 'every' });
+    });
+
     it('pool absent from the definition is MISSING_REFERENT', () => {
       const def = makeDef();
       const state = makeState(2, 0);
@@ -507,6 +572,28 @@ describe('resolveValueRef', () => {
       expect(res).toEqual({ ok: true, values: [1, 0, 2], quantifier: 'every' });
     });
 
+    it('sums across the RING, not the dense storage — an eliminated seat is not counted', () => {
+      const def = makeDef({
+        zones: [{ id: 'hand', name: 'Hand', scope: 'player', visibility: 'faceUp', layout: 'fan', ordered: true, maxCapacity: null }],
+      });
+      const state = makeState(3, 0, {
+        seatOrder: [0, 2],
+        eliminated: [1],
+        zones: {
+          'hand#0': zoneInst('hand', 0, ['c1']),
+          'hand#1': zoneInst('hand', 1, ['c2', 'c3', 'c4']), // still instantiated (§3.5)
+          'hand#2': zoneInst('hand', 2, ['c5', 'c6']),
+        },
+      });
+      const res = resolveValueRef(
+        { kind: 'zoneCount', zone: { zoneId: 'hand', seat: { kind: 'all', quantifier: 'sum' } } },
+        state,
+        makeCtx(),
+        def
+      );
+      expect(res).toEqual({ ok: true, values: [3], quantifier: 'every' });
+    });
+
     it('zone absent from the definition is MISSING_REFERENT', () => {
       const def = makeDef();
       const state = makeState(2, 0);
@@ -523,6 +610,31 @@ describe('resolveValueRef', () => {
       const res = resolveValueRef({ kind: 'zoneCount', zone: { zoneId: 'discard', seat: null } }, state, makeCtx(), def);
       expect(res.ok).toBe(false);
       if (!res.ok) expect(res.reason).toBe('MISSING_REFERENT');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // activeSeatCount — §3.5, §4.2
+  // -------------------------------------------------------------------------
+
+  describe('activeSeatCount', () => {
+    it('reads seatOrder.length, NOT playerCount', () => {
+      // The distinction is the whole point: storage stays dense and full-length, so `playerCount`
+      // is still 5 here and reading it would report a table that no longer exists.
+      const state = makeState(5, 0, { seatOrder: [0, 1, 2, 4], eliminated: [3] });
+      expect(resolveValueRef({ kind: 'activeSeatCount' }, state, makeCtx(), makeDef())).toEqual({
+        ok: true,
+        values: [4],
+        quantifier: 'every',
+      });
+    });
+
+    it('needs no pool, zone or template to resolve — it is pure state', () => {
+      expect(resolveValueRef({ kind: 'activeSeatCount' }, makeState(2, 0), makeCtx(), makeDef())).toEqual({
+        ok: true,
+        values: [2],
+        quantifier: 'every',
+      });
     });
   });
 });

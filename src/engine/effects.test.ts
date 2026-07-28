@@ -861,6 +861,52 @@ describe('prompt selectors', () => {
 // Cross-cutting: nothing here dispatches, and every rejection leaves state alone
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// §5.12's other half: an ousted seat is unreachable as an effect's zone operand
+// ---------------------------------------------------------------------------
+
+describe('an eliminated seat as a zone operand', () => {
+  beforeEach(() => {
+    // `duel` is a two-seat game; oust seat 1 the way the effect would leave it.
+    h.state.seatOrder = [0];
+    h.state.eliminated = [1];
+  });
+
+  it('rejects SEAT_ELIMINATED as a move destination', () => {
+    const before = h.state.zones[HAND1].cardIds.slice();
+    const result = applyEffect(
+      {
+        kind: 'moveCards',
+        target: { kind: 'topOfZone', zone: { zoneId: DECK, seat: seat(0) }, count: lit(1) },
+        to: { zoneId: HAND, seat: seat(1) },
+        position: 'top',
+      },
+      h.ec
+    );
+    expect(result).toMatchObject({ ok: false, reason: 'SEAT_ELIMINATED' });
+    expect(h.state.zones[HAND1].cardIds).toEqual(before);
+    expect(h.state.zones[DECK0].cardIds).toHaveLength(40); // nothing left the source either
+  });
+
+  it('rejects it as a draw source too — the guard is on the zone operand, not the direction', () => {
+    const result = applyEffect(
+      { kind: 'drawCards', from: { zoneId: DECK, seat: seat(1) }, to: { zoneId: HAND, seat: seat(0) }, count: lit(1) },
+      h.ec
+    );
+    expect(result).toMatchObject({ ok: false, reason: 'SEAT_ELIMINATED' });
+  });
+
+  it('logs it as a REJECT, not an ERROR — acting on an ousted seat is rule-legal refusal', () => {
+    applyEffect({ kind: 'shuffleZone', zone: { zoneId: DECK, seat: seat(1) } }, h.ec);
+    expect(h.lines.at(-1)?.level).toBe('reject');
+  });
+
+  it('still counts the ousted seat\'s cards through a ValueRef — reading is forensics, not action', () => {
+    // The asymmetry is the point of §5.12: storage is unreachable through *effects*, not invisible.
+    expect(h.state.zones[zoneKey(DECK, 1)].cardIds).toHaveLength(40);
+  });
+});
+
 describe('module boundaries', () => {
   it('never mutates seat 1 while acting on seat 0', () => {
     applyEffect(draw(3), h.ec);

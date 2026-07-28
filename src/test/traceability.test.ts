@@ -79,6 +79,12 @@ const IN_SCOPE: Criterion[] = [
   // v2 §9.1 — the modifier rows, provable headlessly the moment step 13's modifiers.ts exists.
   { id: 'MTG6', prose: 'Static +1/+1 rule; new creature entering the zone reads the bonus immediately, no recalculation action', expected: 'modifiers.test.ts' },
   { id: 'MTG7', prose: '`set` modifier before `adjust` regardless of authoring order', expected: 'modifiers.test.ts' },
+  // v2 §9.1 — the seat-ring rows. A criterion joins this list only once its primitive exists, so
+  // an id here is always a claim that the proof is written, never that it is planned.
+  { id: 'SP6', prose: '`sum` over a per-player pool resolves to one arithmetic total; a boolean pool with `sum` is rejected by the schema', expected: 'valueRef.test.ts, schema.test.ts' },
+  { id: 'SP11', prose: '5 seats, seat 3 eliminated -> the seat after 2 resolves to 4, activeSeatCount reads 4, finished stays false', expected: 'seats.test.ts' },
+  { id: 'V2', prose: 'Seat ousted -> leaves the order, former neighbours become adjacent, later refs correct with no restart', expected: 'seats.test.ts' },
+  { id: 'V10', prose: '4-seat and 5-seat sessions both read the correct table size from one authored threshold, no config', expected: 'seats.test.ts' },
 ];
 
 // Every criterion in §9.1 now has a home: step 25 landed the play screen, which was the last one
