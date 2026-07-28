@@ -117,7 +117,12 @@ export function CardAppearanceForm({ template, onChange }: CardAppearanceFormPro
             onChange({ tags: parseTags(e.target.value) });
           }}
         />
-        <span className="cb-hint">Comma separated. Rules can target "all cards tagged X".</span>
+        {/* §4.3 — these seed each copy; `setTag` then edits that copy's list, not this one. */}
+        <span className="cb-hint">
+          Comma separated. Rules can target "all cards tagged X". Every copy dealt into play starts
+          with these tags and keeps its own list from then on, so a rule can tag or untag one copy
+          without touching the others.
+        </span>
       </div>
     </>
   );
