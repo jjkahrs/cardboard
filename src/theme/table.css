@@ -1,0 +1,443 @@
+/* The play table. TECHNICAL_DESIGN.md §6.4 (bands, zone layouts, capacity), §6.6 (log), §6.7
+   (prompt mode). No raw hex — every colour is a token (theme.test.ts enforces it). */
+
+/* ── Screen frame ────────────────────────────────────────────────────────────────────────────── */
+
+.cb-play {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  block-size: 100vh;
+  overflow: hidden;
+}
+
+.cb-play__main {
+  display: grid;
+  grid-template-columns: 1fr minmax(240px, 22vw);
+  gap: var(--cb-s3);
+  min-block-size: 0;
+  padding: var(--cb-s3);
+}
+
+/* ── Toolbar (§6.4) ──────────────────────────────────────────────────────────────────────────── */
+
+.cb-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cb-s2) var(--cb-s4);
+  padding: var(--cb-s2) var(--cb-s3);
+  border-block-end: 2px dashed var(--cb-kraft-400);
+}
+
+.cb-toolbar__group {
+  display: flex;
+  align-items: center;
+  gap: var(--cb-s2);
+}
+
+.cb-toolbar__label {
+  color: var(--cb-ink-500);
+  font-size: 0.85em;
+}
+
+/* The seat switcher: the seat you are viewing as is the pressed one. */
+.cb-seat-switch[aria-pressed="true"] {
+  --cb-surface: var(--cb-kraft-300);
+  --cb-edge: var(--cb-accent);
+}
+
+/* ── Bands (§6.4) ────────────────────────────────────────────────────────────────────────────── */
+
+/* One rule for 2–4 seats: the viewing seat is always the bottom band, every other seat shares the
+   top band as equal columns, shared zones sit between them. Nothing special-cases seat count, so
+   switching who "you" are re-keys the bands and never re-lays-out. */
+.cb-table {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: var(--cb-s3);
+  min-block-size: 0;
+  overflow: auto;
+}
+
+.cb-band {
+  display: grid;
+  gap: var(--cb-s2);
+  padding: var(--cb-s2);
+}
+
+.cb-band--opponents {
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  --cb-card-w: 92px;
+}
+
+.cb-band--shared {
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  --cb-card-w: 116px;
+}
+
+.cb-band--own {
+  --cb-card-w: 132px;
+}
+
+.cb-band__title {
+  color: var(--cb-ink-700);
+  font-size: 0.9em;
+}
+
+.cb-seat {
+  display: grid;
+  gap: var(--cb-s2);
+  padding: var(--cb-s2);
+}
+
+/* A seat's zones sit SIDE BY SIDE (§6.4's sketch: `Board ▤▤▤   Hand ⟨── fan ──⟩`). Stacked, four
+   zones per seat push the bottom band off a laptop screen — the one thing the band layout exists
+   to prevent. */
+.cb-seat__zones {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: var(--cb-s2);
+}
+
+.cb-seat[data-active="true"] .cb-seat__title::after {
+  content: " ← active";
+  color: var(--cb-ink-green);
+}
+
+/* ── Pool readout (§6.4) ─────────────────────────────────────────────────────────────────────── */
+
+.cb-pools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cb-s1) var(--cb-s3);
+}
+
+.cb-pool {
+  display: inline-flex;
+  gap: var(--cb-s1);
+}
+
+.cb-pool__name {
+  color: var(--cb-ink-500);
+}
+
+/* ── Zones ───────────────────────────────────────────────────────────────────────────────────── */
+
+.cb-zone {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: var(--cb-s1);
+  padding: var(--cb-s2);
+  border: 2px dashed var(--cb-kraft-400);
+}
+
+.cb-zone__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--cb-s2);
+  font-size: 0.85em;
+}
+
+/* Capacity: `count` or `count/max`. At max it is red AND double-underlined AND the zone edge takes
+   a slash — colour is never the sole carrier (§6.9). */
+.cb-zone__count[data-full="true"] {
+  color: var(--cb-ink-red);
+  text-decoration: underline double;
+}
+
+.cb-zone[data-full="true"] {
+  border-color: var(--cb-ink-red);
+  border-style: solid;
+}
+
+.cb-zone__cards {
+  display: flex;
+  gap: var(--cb-s1);
+  align-items: flex-start;
+  min-block-size: calc(var(--cb-card-w) * 7 / 5);
+}
+
+.cb-zone__empty {
+  color: var(--cb-ink-500);
+  font-size: 0.8em;
+}
+
+/* stack — only the top three nodes exist; the badge carries the real count. */
+.cb-zone__cards[data-layout="stack"] {
+  position: relative;
+  display: block;
+  inline-size: var(--cb-card-w);
+}
+
+.cb-zone__cards[data-layout="stack"] > .cb-card-slot {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  translate: var(--cb-stack-x, 0) var(--cb-stack-y, 0);
+}
+
+/* fan — overlap plus the per-card rotation and lift from layout.ts */
+.cb-zone__cards[data-layout="fan"] > .cb-card-slot {
+  rotate: var(--cb-fan-rot, 0deg);
+  translate: 0 var(--cb-fan-lift, 0px);
+  transition: translate var(--cb-dur) ease-out;
+}
+
+.cb-zone__cards[data-layout="fan"] > .cb-card-slot:hover {
+  translate: 0 calc(var(--cb-fan-lift, 0px) - 14px);
+  z-index: var(--cb-z-card-raised);
+}
+
+/* row — shingled by --cb-overlap rather than scrolled; see the `~` rule in the drag section */
+
+/* grid — the one layout that scrolls, because a collection zone genuinely can be unbounded */
+.cb-zone__cards[data-layout="grid"] {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--cb-card-w), 1fr));
+  max-block-size: 46vh;
+  overflow-y: auto;
+}
+
+.cb-card-slot {
+  position: relative;
+  z-index: var(--cb-z-card);
+}
+
+/* ── Drag and drop (§6.5) ────────────────────────────────────────────────────────────────────── */
+
+/* The moving card is the <DragOverlay>; the source stays where it was, faded. */
+.cb-card-slot[data-dragging] {
+  opacity: 0.35;
+}
+
+/* Picked up by click-to-place: the same "this is in my hand" reading, without a pointer. */
+.cb-card-slot[data-held] .cb-card__rough {
+  outline: 3px solid var(--cb-accent);
+  outline-offset: 4px;
+}
+
+/* Gaps live between the card slots, so overlap must be "every slot with an earlier slot" rather
+   than an adjacent-sibling rule — a gap between two cards would otherwise cancel the fan. */
+.cb-zone__cards[data-layout="fan"] > .cb-card-slot ~ .cb-card-slot {
+  margin-inline-start: calc(-0.45 * var(--cb-card-w));
+}
+
+.cb-zone__cards[data-layout="row"] > .cb-card-slot ~ .cb-card-slot {
+  margin-inline-start: var(--cb-overlap, 0px);
+}
+
+/* 10px, growing a 22px marker caret under the pointer — the drop point is stated, never guessed.
+   The caret is absolutely positioned and the box itself NEVER resizes: dnd-kit measures every
+   droppable once at drag start, so a gap that widened on hover would shove its neighbours out from
+   under their own measured rects, and the drop would silently land at the wrong index (observed —
+   it fell through `pointerWithin` to the rect fallback and inserted at 0). */
+.cb-gap {
+  position: relative;
+  flex: 0 0 10px;
+  align-self: stretch;
+  min-block-size: calc(var(--cb-card-w) * 7 / 5);
+}
+
+.cb-gap[data-over]::before {
+  content: "";
+  position: absolute;
+  inset-block: -6px;
+  inset-inline-start: 50%;
+  inline-size: 22px;
+  translate: -50%;
+  border-inline-start: 3px dashed var(--cb-accent);
+  border-inline-end: 3px dashed var(--cb-accent);
+}
+
+/* A stack shows one pile, so its two gaps are its top and bottom EDGES rather than columns. */
+.cb-zone__cards[data-layout="stack"] > .cb-gap {
+  position: absolute;
+  inset-inline: 0;
+  block-size: 26px;
+  min-block-size: 0;
+  z-index: var(--cb-z-card-raised);
+}
+
+.cb-zone__cards[data-layout="stack"] > .cb-gap[data-gap-index="0"] {
+  inset-block-start: -10px;
+}
+
+.cb-zone__cards[data-layout="stack"] > .cb-gap:not([data-gap-index="0"]) {
+  inset-block-end: -10px;
+}
+
+.cb-zone__cards[data-layout="stack"] > .cb-gap[data-over]::before {
+  inset-block: auto 50%;
+  inset-inline: -6px;
+  inline-size: auto;
+  translate: none;
+  border-inline: 0;
+  border-block-end: 3px dashed var(--cb-accent);
+}
+
+/* Legal, refused and override-able drops each get their own dash pattern as well as their own
+   colour — colour is never the sole carrier (§6.9). */
+.cb-zone__cards[data-drop] {
+  outline-offset: 4px;
+}
+
+.cb-zone__cards[data-drop="ok"] {
+  outline: 3px dashed var(--cb-ok);
+}
+
+.cb-zone__cards[data-drop="reject"] {
+  outline: 3px dotted var(--cb-ink-red);
+  cursor: not-allowed;
+}
+
+.cb-zone__cards[data-drop="override"] {
+  outline: 3px solid var(--cb-ink-amber);
+}
+
+/* The numbered click-to-place badge — the keyboard and single-pointer route to the same move
+   (WCAG 2.2 SC 2.5.7). Its number is also its digit shortcut. */
+.cb-drop-badge {
+  min-inline-size: 1.6em;
+  padding: 0 var(--cb-s1);
+  border: 2px dashed var(--cb-accent);
+  background: none;
+  color: var(--cb-accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cb-drop-badge[data-drop="override"] {
+  border-color: var(--cb-ink-amber);
+  border-style: solid;
+  color: var(--cb-ink-amber);
+}
+
+.cb-drop-badge[data-drop="reject"] {
+  border-color: var(--cb-ink-red);
+  border-style: dotted;
+  color: var(--cb-ink-red);
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
+
+
+/* ── Prompt mode (§6.7) ──────────────────────────────────────────────────────────────────────── */
+
+/* The targetable flag sits on the SLOT, not on <Card>: the card renderer takes no play concepts at
+   all, which is what keeps the catalog rendering the identical component (§6.3). */
+[data-cb-prompt="1"] .cb-card-slot:not([data-legal-target]) .cb-card {
+  filter: grayscale(1);
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.cb-card-slot[data-legal-target] .cb-card__rough {
+  outline: 3px dashed var(--cb-accent);
+  outline-offset: 4px;
+  animation: cb-pulse 1.4s ease-in-out infinite;
+}
+
+.cb-card-slot[data-chosen="true"] .cb-card__rough {
+  outline-style: solid;
+  outline-color: var(--cb-ok);
+}
+
+@keyframes cb-pulse {
+  50% {
+    outline-offset: 8px;
+  }
+}
+
+/* The pulse must have a static substitute, not simply be removed — the outline is what marks a
+   legal target, and reduced motion must not cost that information (§6.9). */
+@media (prefers-reduced-motion: reduce) {
+  .cb-card-slot[data-legal-target] .cb-card__rough {
+    animation: none;
+    outline-offset: 6px;
+  }
+}
+
+.cb-prompt-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--cb-s3);
+  padding: var(--cb-s2) var(--cb-s3);
+  border-block-start: 3px dashed var(--cb-accent);
+  z-index: var(--cb-z-prompt);
+}
+
+/* ── Event log (§6.6) ────────────────────────────────────────────────────────────────────────── */
+
+.cb-log {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: var(--cb-s2);
+  min-block-size: 0;
+  padding: var(--cb-s2);
+}
+
+.cb-log__entries {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-s2);
+  overflow-y: auto;
+}
+
+.cb-log__entry {
+  display: grid;
+  gap: var(--cb-s1);
+  padding-block-end: var(--cb-s1);
+  border-block-end: 1px dashed var(--cb-kraft-400);
+  font-size: 0.85em;
+}
+
+/* The live preview of what a rewind would discard: every later entry dims and strikes through
+   while the pointer (or focus) is on the rewind control (§6.6). */
+.cb-log__entry[data-doomed="true"] {
+  opacity: 0.3;
+  text-decoration: line-through;
+}
+
+.cb-log__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--cb-s2);
+}
+
+.cb-log__seq {
+  color: var(--cb-ink-500);
+}
+
+.cb-log__line {
+  display: flex;
+  gap: var(--cb-s1);
+  padding-inline-start: var(--cb-s3);
+}
+
+.cb-log__line[data-level="reject"] {
+  color: var(--cb-ink-red);
+}
+
+.cb-log__line[data-level="warn"],
+.cb-log__line[data-level="override"] {
+  color: var(--cb-ink-amber);
+}
+
+.cb-log__line[data-level="error"] {
+  color: var(--cb-ink-red);
+  text-decoration: underline;
+}
+
+.cb-log__marker {
+  color: var(--cb-ink-500);
+  font-size: 0.85em;
+}
+
+.cb-log__empty {
+  color: var(--cb-ink-500);
+  font-size: 0.85em;
+}

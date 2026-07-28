@@ -1,0 +1,9 @@
+/* The single entry point main.tsx imports. TECHNICAL_DESIGN.md §6.9.
+   Order is load-bearing: tokens define the custom properties everything else reads, base sets the
+   document floor, components and card layer on top and are allowed to override it. */
+
+@import "./tokens.css";
+@import "./base.css";
+@import "./components.css";
+@import "./card.css";
+@import "./table.css";

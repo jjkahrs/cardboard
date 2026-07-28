@@ -1,0 +1,88 @@
+/* Reset + document chrome + the accessibility floor. TECHNICAL_DESIGN.md §6.9. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body,
+h1,
+h2,
+h3,
+h4,
+p,
+figure,
+blockquote,
+dl,
+dd,
+ul,
+ol {
+  margin: 0;
+}
+
+ul,
+ol {
+  padding: 0;
+  list-style: none;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  min-height: 100vh;
+  background: var(--cb-bg);
+  color: var(--cb-fg);
+  font-family: var(--cb-font-marker);
+  font-size: 15px;
+  line-height: 1.4;
+  text-rendering: optimizeLegibility;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--cb-accent);
+  text-underline-offset: 3px;
+}
+
+/* Dashed reads as marker, so it fits the theme without being an affordance anyone has to learn.
+   NEVER `outline: none` — there is no rule anywhere in this theme that removes an outline. */
+:focus-visible {
+  outline: 3px dashed var(--cb-focus);
+  outline-offset: 3px;
+}
+
+/* --cb-ink-red on kraft is ~4.5:1 — fine for borders, marginal for 12px copy. So error text is
+   full-strength ink + a red underline + a ✖ glyph: colour is never the sole carrier of meaning.
+   §3 of the UI contract names no class for this; `.cb-error` is the one name added here. */
+.cb-error {
+  color: var(--cb-ink-900);
+  text-decoration: underline;
+  text-decoration-color: var(--cb-ink-red);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.cb-error::before {
+  content: "✖";
+  margin-inline-end: var(--cb-s1);
+}
+
+[hidden] {
+  display: none !important;
+}

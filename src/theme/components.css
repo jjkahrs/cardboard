@@ -1,0 +1,703 @@
+/* Shared chrome. TECHNICAL_DESIGN.md §6.9; class names frozen by §3 of the UI contract.
+   No raw hex in this file — every colour is a token (theme.test.ts enforces it). */
+
+/* ── The rough-surface machinery ────────────────────────────────────────────────────────────────
+   Structural rule: the filter NEVER goes on a content element. `filter` creates a containing block,
+   forces its own raster layer, and clips `outline`. So every rough surface is two boxes: a clean
+   content element, and a pointer-events:none filtered sibling behind it.
+   Three properties fall out — hit-testing stays rectangular (dnd-kit's getBoundingClientRect is
+   exact), focus outlines survive, and text is never displaced (an 11px marker face would smear). */
+
+.cb-panel,
+.cb-btn,
+.cb-chip,
+.cb-card {
+  position: relative;
+  background: none;
+  border: 0;
+}
+
+.cb-card > .cb-card__tilt > .cb-card__rough,
+.cb-panel > .cb-rough,
+.cb-btn::before,
+.cb-chip::before {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  z-index: -1;
+  background: var(--cb-surface, var(--cb-kraft-200));
+  border: 3px solid var(--cb-edge, var(--cb-ink-900));
+  filter: var(--cb-rough);
+  pointer-events: none;
+}
+
+/* ── Panel ───────────────────────────────────────────────────────────────────────────────────── */
+
+.cb-panel {
+  --cb-rough: var(--cb-rough-lg);
+  --cb-surface: var(--cb-kraft-100);
+  padding: var(--cb-s4);
+  color: var(--cb-fg);
+}
+
+/* ── Button ──────────────────────────────────────────────────────────────────────────────────── */
+
+.cb-btn {
+  --cb-surface: var(--cb-kraft-100);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cb-s2);
+  padding: var(--cb-s2) var(--cb-s3);
+  color: var(--cb-fg);
+  font-family: inherit;
+  cursor: pointer;
+  transform: rotate(var(--cb-jitter, 0deg));
+  transition: transform var(--cb-dur-fast) ease-out;
+}
+
+.cb-btn:hover:not(:disabled) {
+  --cb-surface: var(--cb-kraft-50);
+}
+
+.cb-btn:active:not(:disabled) {
+  transform: rotate(var(--cb-jitter, 0deg)) translateY(1px);
+}
+
+.cb-btn:disabled {
+  color: var(--cb-ink-500);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.cb-btn[data-variant="danger"] {
+  --cb-edge: var(--cb-danger);
+  color: var(--cb-ink-900);
+}
+
+/* The file input inside the import button is visually hidden, and so would its focus ring be.
+   Move the ring onto the label the user can actually see — never remove it (base.css). */
+.cb-btn:has(> input[type="file"]:focus-visible) {
+  outline: 3px dashed var(--cb-focus);
+  outline-offset: 3px;
+}
+
+.cb-btn[data-variant="ghost"]::before {
+  background: none;
+  border-style: dashed;
+}
+
+/* ── Chip — the inline "sentence part" button of the rule editor (§6.8) ──────────────────────── */
+
+.cb-chip {
+  --cb-rough: var(--cb-rough-sm);
+  --cb-surface: var(--cb-kraft-100);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cb-s1);
+  padding: 0 var(--cb-s2);
+  color: var(--cb-fg);
+  font: inherit;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.cb-chip::before {
+  inset: -2px;
+  border-width: 2px;
+}
+
+.cb-chip:hover:not(:disabled) {
+  --cb-surface: var(--cb-kraft-50);
+}
+
+/* A chip pointing at a deleted pool: red + strikethrough, never colour alone (§6.8). */
+.cb-chip[data-danger="1"],
+.cb-chip:disabled {
+  --cb-edge: var(--cb-danger);
+  color: var(--cb-ink-900);
+  text-decoration: line-through;
+}
+
+/* ── Form field ──────────────────────────────────────────────────────────────────────────────── */
+
+.cb-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-s1);
+  margin-block-end: var(--cb-s3);
+}
+
+.cb-field > label {
+  color: var(--cb-ink-700);
+  font-size: 0.85em;
+}
+
+/* No rough filter here. §6.9's structural rule wins over its "cb-rough-sm for chips and inputs"
+   aside: a replaced element has no pseudo-element to hang a filtered sibling on, and filtering the
+   field itself would smear the user's own typing. Marker feel comes from the border alone. */
+.cb-input,
+.cb-select {
+  padding: var(--cb-s2);
+  background: var(--cb-kraft-50);
+  border: 2px solid var(--cb-ink-700);
+  border-radius: 2px;
+  color: var(--cb-fg);
+}
+
+.cb-input[aria-invalid="true"],
+.cb-select[aria-invalid="true"] {
+  border-color: var(--cb-danger);
+  border-bottom-width: 4px;
+}
+
+/* ── Badge — the rail's per-surface count / error marker (§6.1) ──────────────────────────────── */
+
+.cb-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: 1.5em;
+  padding: 0 var(--cb-s1);
+  background: var(--cb-kraft-300);
+  border: 2px solid var(--cb-ink-700);
+  border-radius: 999px;
+  color: var(--cb-ink-900);
+  font-size: 0.75em;
+  line-height: 1.5;
+}
+
+/* Not colour alone: the error badge also takes the red marker slash. */
+.cb-badge--error {
+  position: relative;
+  border-color: var(--cb-danger);
+  overflow: hidden;
+}
+
+.cb-badge--error::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom right,
+    transparent calc(50% - 1px),
+    var(--cb-danger) calc(50% - 1px),
+    var(--cb-danger) calc(50% + 1px),
+    transparent calc(50% + 1px)
+  );
+}
+
+/* ── App shell (§6.1) — persistent rail plus the routed outlet ───────────────────────────────── */
+
+.cb-shell {
+  display: grid;
+  grid-template-columns: minmax(11rem, max-content) 1fr;
+  align-items: start;
+  min-block-size: 100vh;
+}
+
+.cb-screen {
+  padding: var(--cb-s5);
+}
+
+.cb-screen__head {
+  display: flex;
+  align-items: center;
+  gap: var(--cb-s4);
+  margin-block-end: var(--cb-s4);
+}
+
+.cb-game-list__name {
+  flex: 1;
+  font-size: 1.1em;
+}
+
+.cb-game-list__meta {
+  color: var(--cb-ink-500);
+  font-size: 0.8em;
+}
+
+/* Reachable by screen readers, invisible on screen. The badge count alone reads identically
+   whether or not the surface is broken, so the word "problem" has to exist somewhere. */
+.cb-visually-hidden {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ── Left rail (§6.1) ────────────────────────────────────────────────────────────────────────── */
+
+.cb-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-s1);
+  padding: var(--cb-s3);
+  z-index: var(--cb-z-rail);
+}
+
+.cb-rail__home {
+  color: var(--cb-ink-700);
+  font-size: 0.85em;
+}
+
+.cb-rail__title {
+  margin-block: var(--cb-s2) var(--cb-s3);
+  font-size: 1.15em;
+  overflow-wrap: anywhere;
+}
+
+.cb-rail__link {
+  display: flex;
+  align-items: center;
+  gap: var(--cb-s2);
+  padding: var(--cb-s2) var(--cb-s3);
+  color: var(--cb-fg);
+  text-decoration: none;
+  border-inline-start: 3px solid transparent;
+}
+
+.cb-rail__link .cb-badge {
+  margin-inline-start: auto;
+}
+
+.cb-rail__link[aria-current="page"] {
+  border-inline-start-color: var(--cb-accent);
+  background: var(--cb-kraft-100);
+}
+
+.cb-rail__link:hover {
+  background: var(--cb-kraft-100);
+}
+
+/* ── Popover (§6.6 / §6.8 — never a modal) ───────────────────────────────────────────────────── */
+
+.cb-popover {
+  position: absolute;
+  z-index: var(--cb-z-modal);
+  min-inline-size: 12rem;
+  max-block-size: 60vh;
+  padding: var(--cb-s2);
+  overflow-y: auto;
+  background: var(--cb-kraft-50);
+  border: 3px solid var(--cb-ink-900);
+  box-shadow: 3px 4px 0 var(--cb-ink-700);
+}
+
+/* ── List ────────────────────────────────────────────────────────────────────────────────────── */
+
+.cb-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.cb-list__row {
+  display: flex;
+  align-items: center;
+  gap: var(--cb-s2);
+  padding: var(--cb-s2);
+  border-block-end: 2px dashed var(--cb-kraft-400);
+}
+
+.cb-list__row:hover {
+  background: var(--cb-kraft-100);
+}
+
+/* ── Chip popover wrapper — the positioning context for .cb-popover ─────────────────────────── */
+
+.cb-chip-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+/* Anchored under its own chip. Without this the popover takes its static position — inline, after
+   the chip — and lands on top of the rest of the sentence it is supposed to be editing. */
+.cb-chip-wrap > .cb-popover {
+  inset-block-start: calc(100% + var(--cb-s1));
+  inset-inline-start: 0;
+  display: block;
+}
+
+.cb-fieldset {
+  margin: 0 0 var(--cb-s2);
+  padding: var(--cb-s2);
+  border: 2px dashed var(--cb-kraft-400);
+}
+
+.cb-radio {
+  display: flex;
+  align-items: center;
+  gap: var(--cb-s2);
+  padding-block: 2px;
+}
+
+.cb-hint {
+  color: var(--cb-ink-500);
+  font-size: 0.85em;
+}
+
+/* ── Entity list (§6.2) ─────────────────────────────────────────────────────────────────────── */
+
+.cb-entity-list__head {
+  display: flex;
+  align-items: center;
+  gap: var(--cb-s4);
+  margin-block-end: var(--cb-s3);
+}
+
+.cb-entity-list__name {
+  flex: 1;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+/* ── Authoring screens (§8 step 21) — master list on the left, the selected entity on the right.
+   One column below 60rem: the pane is a form, and a form squeezed into a third of a laptop is
+   worse than one you scroll to. ──────────────────────────────────────────────────────────────── */
+
+.cb-master-detail {
+  display: grid;
+  grid-template-columns: minmax(16rem, 24rem) 1fr;
+  gap: var(--cb-s5);
+  align-items: start;
+}
+
+@media (max-width: 60rem) {
+  .cb-master-detail {
+    grid-template-columns: 1fr;
+  }
+}
+
+.cb-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-s3);
+}
+
+/* ── Rule editor (§6.8) — effects are SENTENCES, so their controls sit in the text flow: inline,
+   baseline-aligned, sized from the surrounding copy. A control that breaks the line breaks the
+   whole premise, which is why these are inline-size:auto and never full-width. ───────────────── */
+
+.cb-inline-select,
+.cb-inline-number,
+.cb-inline-input {
+  display: inline-block;
+  margin-inline: var(--cb-s1);
+  padding: 1px var(--cb-s1);
+  background: var(--cb-kraft-50);
+  border: 2px solid var(--cb-ink-700);
+  color: var(--cb-fg);
+  font: inherit;
+}
+
+.cb-inline-number {
+  inline-size: 5ch;
+}
+
+.cb-inline-input {
+  inline-size: 16ch;
+}
+
+.cb-rule {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-s4);
+}
+
+/* WHEN / IF / THEN, each a labelled band — the three questions a rule answers, in order. */
+.cb-rule__band {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cb-s3);
+}
+
+.cb-rule__band > h3 {
+  flex: 0 0 5rem;
+  text-transform: uppercase;
+  font-size: 0.8em;
+  letter-spacing: 0.08em;
+  color: var(--cb-ink-500);
+}
+
+/* The effect list is the only part that must stack, so it takes the whole row. */
+.cb-rule__band > .cb-list {
+  flex: 1 0 100%;
+}
+
+.cb-rule__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cb-s2);
+}
+
+.cb-effect {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cb-s2);
+  padding-block: var(--cb-s2);
+}
+
+.cb-effect__ordinal {
+  color: var(--cb-ink-500);
+}
+
+.cb-effect__sentence {
+  flex: 1;
+  line-height: 2;
+}
+
+/* The one genuinely surprising behaviour in the engine, marked at the point of AUTHORING rather
+   than the point of failure (§6.8). Amber + the ⏸ glyph in the text — colour carries nothing alone. */
+.cb-effect__pause {
+  flex: 1 0 100%;
+  color: var(--cb-warn);
+  font-size: 0.85em;
+}
+
+.cb-effect__actions {
+  display: inline-flex;
+  gap: var(--cb-s1);
+}
+
+.cb-prose__text {
+  font-size: 1.05em;
+  line-height: 1.5;
+}
+
+/* ── Card editor (step 23) ───────────────────────────────────────────────────────────────────── */
+
+/* The one place a card is shown at authoring size. Size comes from the container, never a prop. */
+.cb-card-preview {
+  --cb-card-w: 260px;
+  position: sticky;
+  inset-block-start: var(--cb-s4);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--cb-s3);
+}
+
+.cb-catalog-grid {
+  --cb-card-w: 96px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, max-content));
+  gap: var(--cb-s4);
+  list-style: none;
+  padding: 0;
+}
+
+.cb-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cb-s3);
+}
+
+.cb-swatch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cb-s1);
+  cursor: pointer;
+}
+
+.cb-swatch__chip {
+  inline-size: 1.1em;
+  block-size: 1.1em;
+  background: var(--cb-swatch);
+  border: 2px solid var(--cb-ink-900);
+}
+
+/* The chosen swatch is marked by weight and a ring, not by colour — the colour IS the option. */
+.cb-swatch:has(:checked) {
+  font-weight: 700;
+}
+
+.cb-swatch:has(:checked) .cb-swatch__chip {
+  outline: 2px solid var(--cb-focus);
+  outline-offset: 2px;
+}
+
+.cb-swatch:has(:focus-visible) .cb-swatch__chip {
+  outline: 3px dashed var(--cb-focus);
+  outline-offset: 3px;
+}
+
+.cb-index {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-s2);
+  padding-block: var(--cb-s3);
+  border-block-end: 2px dashed var(--cb-kraft-400);
+}
+
+.cb-index__head {
+  display: flex;
+  align-items: center;
+  gap: var(--cb-s2);
+}
+
+/* ── State machine canvas (§4.8, step 23) ────────────────────────────────────────────────────── */
+
+.cb-state-canvas__scroll {
+  overflow: auto;
+  max-block-size: 70vh;
+  border: 2px dashed var(--cb-kraft-400);
+}
+
+.cb-state-canvas {
+  position: relative;
+  min-inline-size: 100%;
+  min-block-size: 24rem;
+}
+
+.cb-state-canvas__edges {
+  position: absolute;
+  inset: 0;
+  color: var(--cb-ink-500);
+  stroke: var(--cb-ink-500);
+  stroke-width: 2;
+  pointer-events: none;
+}
+
+.cb-state-node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--cb-s1);
+  inline-size: 148px;
+  block-size: 60px;
+  padding: var(--cb-s2);
+  background: var(--cb-kraft-50);
+  border: 3px solid var(--cb-ink-900);
+  color: var(--cb-fg);
+  font: inherit;
+  text-align: start;
+  cursor: grab;
+  /* The node follows the pointer; the browser must not claim the gesture for scrolling first. */
+  touch-action: none;
+}
+
+.cb-state-node[data-reserved='1'] {
+  border-style: double;
+  border-width: 5px;
+}
+
+.cb-state-node[aria-pressed='true'] {
+  background: var(--cb-kraft-100);
+  box-shadow: 0 0 0 3px var(--cb-accent);
+}
+
+/* Amber plus the word "warning" in the list's own label — never colour alone (§6.9). */
+.cb-warning {
+  color: var(--cb-warn);
+}
+
+/* ── Criteria tree (§6.8) — edge colour alternates by depth parity so bracket structure is
+   scannable; indent stops growing past depth 3, which is why this is parity and not a scale. ─── */
+
+.cb-crit {
+  padding-inline-start: var(--cb-s3);
+}
+
+/* Depth 0 sits flush; the cap at 3 is applied by the component, which passes the clamped depth. */
+.cb-crit[data-depth="0"] {
+  padding-inline-start: 0;
+}
+
+.cb-crit__head,
+.cb-crit__row,
+.cb-crit__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--cb-s2);
+  padding-block: var(--cb-s1);
+  flex-wrap: wrap;
+}
+
+.cb-crit__edge {
+  border-inline-start: 3px solid var(--cb-accent);
+  padding-inline-start: var(--cb-s2);
+}
+
+.cb-crit .cb-crit .cb-crit__edge {
+  border-inline-start-color: var(--cb-warn);
+}
+
+.cb-crit .cb-crit .cb-crit .cb-crit__edge {
+  border-inline-start-color: var(--cb-accent);
+}
+
+/* ── Icon (step 17 renders these) ────────────────────────────────────────────────────────────── */
+
+.cb-icon {
+  display: inline-block;
+  inline-size: 1em;
+  block-size: 1em;
+  flex: none;
+  fill: currentColor;
+  vertical-align: -0.125em;
+}
+
+/* ── Icon picker (step 17) ───────────────────────────────────────────────────────────────────── */
+
+.cb-icon-picker__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: var(--cb-s2);
+  max-block-size: 42vh;
+  overflow-y: auto;
+  /* ~300 cells, each an SVG <use>: skip the ones scrolled out of view. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 42vh;
+}
+
+.cb-icon-picker__cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--cb-s1);
+  inline-size: 100%;
+  padding: var(--cb-s2) var(--cb-s1);
+  background: none;
+  border: 2px dashed transparent;
+  border-radius: 3px;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1.6em;
+}
+
+.cb-icon-picker__cell:hover {
+  border-color: var(--cb-kraft-500);
+}
+
+/* Chosen is a solid border plus a filled ground — not colour alone (§6.9). */
+.cb-icon-picker__cell[aria-pressed="true"] {
+  border-style: solid;
+  border-color: var(--cb-accent);
+  background: var(--cb-kraft-100);
+}
+
+.cb-icon-picker__name {
+  font-size: 0.42em;
+  line-height: 1.2;
+  color: var(--cb-ink-700);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.cb-icon-picker__empty,
+.cb-icon-picker__credit {
+  margin-block-start: var(--cb-s2);
+  color: var(--cb-ink-700);
+  font-size: 0.8em;
+}

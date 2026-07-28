@@ -1,0 +1,171 @@
+/* The Card. TECHNICAL_DESIGN.md §6.3 (structure + scaling), §6.7 (prompt mode), §6.9 (roughness).
+   No raw hex in this file — every colour is a token (theme.test.ts enforces it).
+
+   Size and detail level come ENTIRELY from the container. There is no size/variant/mode prop, which
+   is what structurally guarantees "catalog and play render identically" (AC: L2) instead of leaving
+   it to a convention someone breaks later. Contexts set --cb-card-w on the container:
+   catalog 96px · table zone 116px · own hand 132px · opponent bands 92px · editor 260px · zoom 420px. */
+
+/* ── §6.3 scaling block, verbatim ────────────────────────────────────────────────────────────── */
+
+.cb-card { inline-size: var(--cb-card-w, 132px); aspect-ratio: var(--cb-card-ar, 5/7);
+           container-type: inline-size; font-size: 9cqw; }
+.cb-card__marquee { font-size: 1.05em; }
+.cb-card__rules   { font-size: 0.62em; line-height: 1.25; }
+@container (max-width: 118px) { .cb-card__rules   { display: none; } }
+@container (max-width: 88px)  { .cb-card__tagline { display: none; } }
+@container (max-width: 64px)  { .cb-pip b         { display: none; } }
+
+/* `cqw` on .cb-card itself resolves against the nearest ANCESTOR container (an element is not its
+   own container), so restate it one level down where it actually means "9% of this card's width".
+   The rule above stays as written; this is the line that makes it do what it says. */
+.cb-card__tilt { font-size: 9cqw; }
+
+/* ── Structure ───────────────────────────────────────────────────────────────────────────────── */
+
+.cb-card {
+  /* §6.3 calls the border colour --cb-card-border; the shared rough-sibling rule reads --cb-edge. */
+  --cb-edge: var(--cb-card-border, var(--cb-ink-900));
+  --cb-surface: var(--cb-kraft-100);
+  color: var(--cb-fg);
+  z-index: var(--cb-z-card);
+}
+
+/* Jitter lives HERE, never on the dnd-kit node: dnd-kit writes transform: translate3d(...) onto the
+   draggable's node and would clobber any rotation on the same element (§6.9). Zone and gap
+   droppables carry no jitter at all, so drop geometry stays exactly rectangular. */
+.cb-card__tilt {
+  position: relative;
+  block-size: 100%;
+  transform: rotate(var(--cb-jitter, 0deg));
+  transition: transform var(--cb-dur) ease-out;
+}
+
+/* Rotating never reflows neighbours: the slot keeps the unrotated footprint and the card overhangs. */
+.cb-card[data-rotated="true"] > .cb-card__tilt {
+  transform: rotate(calc(90deg + var(--cb-jitter, 0deg)));
+}
+
+.cb-card__body {
+  display: grid;
+  grid-template-rows: auto auto auto 1fr;
+  block-size: 100%;
+  padding: var(--cb-s1);
+  overflow: hidden;
+}
+
+.cb-card__marquee {
+  padding: 0 var(--cb-s1);
+  background: var(--cb-kraft-300);
+  border-block-end: 2px solid var(--cb-ink-700);
+  color: var(--cb-ink-900);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cb-card__face {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  color: var(--cb-ink-700);
+}
+
+.cb-card__face .cb-icon {
+  inline-size: 62%;
+  block-size: auto;
+  aspect-ratio: 1;
+  fill: currentColor;
+}
+
+.cb-card__tagline {
+  color: var(--cb-ink-500);
+  font-size: 0.6em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cb-card__rules {
+  overflow: hidden;
+  color: var(--cb-ink-700);
+  /* The pips are an absolute overlay, so long rules text runs straight under the bottom two and the
+     number becomes unreadable. Margin, not padding: it shrinks the box inside its 1fr row, so the
+     overflow clip moves up and the gutter actually stays empty. */
+  margin-block-end: 1.4em;
+}
+
+.cb-card__pips {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.cb-pip {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15em;
+  font-size: 0.7em;
+}
+
+.cb-pip[data-pos="topLeft"]     { inset-block-start: var(--cb-s1); inset-inline-start: var(--cb-s1); }
+.cb-pip[data-pos="topRight"]    { inset-block-start: var(--cb-s1); inset-inline-end: var(--cb-s1); }
+.cb-pip[data-pos="bottomLeft"]  { inset-block-end: var(--cb-s1);   inset-inline-start: var(--cb-s1); }
+.cb-pip[data-pos="bottomRight"] { inset-block-end: var(--cb-s1);   inset-inline-end: var(--cb-s1); }
+
+/* ── Back ────────────────────────────────────────────────────────────────────────────────────────
+   faceDown renders this INSTEAD of the body and pips — never render-then-hide, which would leak the
+   opponent's hand to Ctrl-F and devtools (§6.3). Pure CSS crosshatch, no asset. */
+
+.cb-card__back {
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(45deg, var(--cb-kraft-500) 0 2px, transparent 2px 8px),
+    repeating-linear-gradient(-45deg, var(--cb-kraft-500) 0 2px, transparent 2px 8px),
+    var(--cb-kraft-300);
+}
+
+/* ── §6.7 prompt mode, verbatim ──────────────────────────────────────────────────────────────── */
+
+[data-cb-prompt="1"] .cb-card:not(.cb-card--targetable) {
+  filter: grayscale(1); opacity: .35; pointer-events: none;
+}
+.cb-card--targetable .cb-card__rough {
+  outline: 3px dashed var(--cb-accent); outline-offset: 4px;
+  animation: cb-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes cb-pulse {
+  0%, 100% { outline-offset: 4px; }
+  50%      { outline-offset: 9px; }
+}
+
+/* Reduced motion needs a STATIC SUBSTITUTE, not removal (§6.9) — the target still has to read as
+   "pick me" without moving. Thicker outline, wider offset, permanently at the pulse's peak. */
+@media (prefers-reduced-motion: reduce) {
+  .cb-card__tilt { transition: none; }
+  .cb-card--targetable .cb-card__rough {
+    animation: none;
+    outline-width: 5px;
+    outline-offset: 9px;
+  }
+}
+
+/* ── §6.9 performance escape hatches ─────────────────────────────────────────────────────────── */
+
+/* A catalog of a few hundred thumbnails is the one place the filter cost is visible. */
+.cb-catalog-grid .cb-card__rough { filter: none; }
+.cb-catalog-grid .cb-card {
+  content-visibility: auto;
+  contain-intrinsic-size: var(--cb-card-w, 132px) calc(var(--cb-card-w, 132px) * 7 / 5);
+}
+
+/* The DragOverlay card is repainted every frame; it also gets --cb-jitter: 0deg from §6.5.
+   `!important` because <Card> writes the jitter as an inline custom property, and the card under
+   the pointer must not be the one card on the table that reads as crooked. */
+.cb-drag-overlay .cb-card__rough { filter: none; }
+.cb-drag-overlay .cb-card { --cb-jitter: 0deg !important; }
+.cb-drag-overlay { z-index: var(--cb-z-drag); }

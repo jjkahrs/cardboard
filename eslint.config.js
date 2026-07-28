@@ -1,0 +1,71 @@
+import js from '@eslint/js';
+import globals from 'globals';
+import reactHooks from 'eslint-plugin-react-hooks';
+import reactRefresh from 'eslint-plugin-react-refresh';
+import tseslint from 'typescript-eslint';
+
+export default tseslint.config(
+  { ignores: ['dist', 'coverage'] },
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [js.configs.recommended, ...tseslint.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 2022,
+      globals: globals.browser,
+    },
+    plugins: {
+      'react-hooks': reactHooks,
+      'react-refresh': reactRefresh,
+    },
+    rules: {
+      ...reactHooks.configs.recommended.rules,
+      'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+    },
+  },
+
+  // The engine boundary is lint-enforced, not conventional. TECHNICAL_DESIGN.md §3.2
+  {
+    files: ['src/engine/**'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        { patterns: ['react', 'react-*', 'zustand*', 'immer', '../stores/*', '../components/*'] },
+      ],
+    },
+  },
+
+  {
+    files: ['src/engine/**', 'src/stores/**'],
+    rules: {
+      'no-restricted-properties': [
+        'error',
+        {
+          object: 'Math',
+          property: 'random',
+          message: 'Use the seeded PRNG (src/engine/rng.ts). Math.random breaks replay and rewind.',
+        },
+      ],
+      'no-restricted-globals': [
+        'error',
+        { name: 'crypto', message: 'crypto.randomUUID is nondeterministic — use the seeded id counter.' },
+      ],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "CallExpression[callee.object.name='Date'][callee.property.name='now']",
+          message: 'Date.now breaks byte-identical export — inject a clock if you truly need time.',
+        },
+      ],
+    },
+  },
+
+  // Tests legitimately stub Date.now / crypto to assert they are never called.
+  {
+    files: ['**/*.test.{ts,tsx}', 'src/test/**'],
+    rules: {
+      'no-restricted-syntax': 'off',
+      'no-restricted-globals': 'off',
+      '@typescript-eslint/no-explicit-any': 'off',
+    },
+  },
+);

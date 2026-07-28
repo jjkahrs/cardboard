@@ -1,0 +1,56 @@
+/* Design tokens. TECHNICAL_DESIGN.md §6.9.
+   This is the ONLY stylesheet allowed to contain a raw hex — theme.test.ts enforces that,
+   because a hard-coded colour in a component file is exactly the drift that never gets noticed. */
+
+:root {
+  /* The kraft palette IS the product; there is no dark variant of a paper prototype. Declaring the
+     scheme stops Chrome's auto-dark-mode from inverting every token (observed: black page, white
+     marker text) on a machine whose OS is set to dark. */
+  color-scheme: light;
+  --cb-kraft-50:#f4e9d6; --cb-kraft-100:#ead7b8; --cb-kraft-200:#dcc298;
+  --cb-kraft-300:#c9a87a; --cb-kraft-400:#ae8b5f; --cb-kraft-500:#8d6d47; --cb-kraft-700:#5b452c;
+  --cb-ink-900:#241c14; --cb-ink-700:#3f3225; --cb-ink-500:#6d5b45;
+  --cb-ink-red:#9e2f26; --cb-ink-blue:#26467f; --cb-ink-green:#2b6034; --cb-ink-amber:#9a6a12;
+  --cb-fg:var(--cb-ink-900); --cb-bg:var(--cb-kraft-200);
+  --cb-danger:var(--cb-ink-red); --cb-ok:var(--cb-ink-green); --cb-warn:var(--cb-ink-amber);
+  --cb-accent:var(--cb-ink-blue); --cb-focus:var(--cb-ink-blue);
+  --cb-s1:4px; --cb-s2:8px; --cb-s3:12px; --cb-s4:16px; --cb-s5:24px; --cb-s6:32px; --cb-s7:48px;
+  --cb-jitter-sm:0.6deg; --cb-jitter-md:1.4deg; --cb-jitter-lg:2.5deg; --cb-jitter:0deg;
+  --cb-card-w:132px; --cb-card-ar:5/7;
+  --cb-rough:url(#cb-rough-md);
+  --cb-font-marker:"Shantell Sans","Comic Sans MS","Segoe Print","Bradley Hand",cursive,sans-serif;
+  --cb-z-table:0; --cb-z-zone:10; --cb-z-card:20; --cb-z-card-raised:30;
+  --cb-z-prompt:800; --cb-z-drag:900; --cb-z-rail:1000; --cb-z-modal:1100; --cb-z-toast:1200;
+  --cb-dur-fast:120ms; --cb-dur:180ms; --cb-dur-slow:320ms;
+}
+
+/* §6.9 names cb-rough-sm/-lg but only tokenises the md one. They need tokens too, otherwise a chip
+   that hard-codes `filter:url(#cb-rough-sm)` survives the plain-mode kill switch below. Every rough
+   surface reads a token; plain mode blanks all three in one place. */
+:root {
+  --cb-rough-sm:url(#cb-rough-sm);
+  --cb-rough-lg:url(#cb-rough-lg);
+}
+
+/* --cb-font-marker is a FALLBACK STACK ONLY. There is deliberately no @font-face and no vendored
+   woff2 — the binding scope decision is that nothing is ever downloaded. Shantell Sans stays first
+   so a locally-installed copy still wins, and a later vendoring is a one-rule change. AC: L1. */
+
+/* data-cb-plain="1" on <html>: system font, zero jitter, lighter palette, every filter off.
+   One opt-in attribute, four problems (§6.9). */
+[data-cb-plain="1"] {
+  --cb-font-marker:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --cb-jitter-sm:0deg; --cb-jitter-md:0deg; --cb-jitter-lg:0deg; --cb-jitter:0deg;
+  --cb-rough:none; --cb-rough-sm:none; --cb-rough-lg:none;
+  --cb-bg:var(--cb-kraft-50);
+  --cb-surface:var(--cb-kraft-50);
+  --cb-edge:var(--cb-ink-700);
+}
+
+/* Separate from plain mode on purpose: this must apply with no opt-in (§6.9). Durations collapse;
+   the target pulse gets a *static substitute* in card.css rather than simply vanishing. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --cb-dur-fast:1ms; --cb-dur:1ms; --cb-dur-slow:1ms;
+  }
+}
