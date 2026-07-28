@@ -1416,30 +1416,13 @@ describe('module boundaries', () => {
 });
 
 // ---------------------------------------------------------------------------
-// v2 §4.5 — `openPriority` is still a STUB this wave (step 24, out of this task's file ownership):
-// nothing runs, and the rejection names the step that replaces the stub. `announceAction`/
-// `counterAction` graduated out of this table in step 22/23; `chooseMode`/`chooseNumber`/
-// `sealedChoice` graduate out of it in step 28/29 — see the describe blocks below for their real
-// behaviour, and `dispatch.test.ts` for the full raise/suspend/answer/resume flow `applyEffect`
-// alone cannot exercise (that machinery lives in `dispatch.ts`'s `runEffect`/`raiseChoice`).
+// v2 §4.5 — the phase-2 stub table that used to live here is GONE, and its absence is the point:
+// every kind that was stubbed in step 21/31 now has real behaviour. `announceAction`/
+// `counterAction` graduated in step 22/23 (`pending.test.ts`), `openPriority` in step 24 (the
+// `openPriority — wiring` block below, plus `priority.test.ts`), and `chooseMode`/`chooseNumber`/
+// `sealedChoice` in step 28/29 (the block below, plus `dispatch.test.ts` for the full
+// raise/suspend/answer/resume loop `applyEffect` alone cannot exercise).
 // ---------------------------------------------------------------------------
-
-describe('phase-2 effect kinds — stubbed, rejecting NOT_ACTIVATABLE with the owning step named', () => {
-  it.each([['openPriority', { kind: 'openPriority', window: 'w1' } as Effect, '24']])(
-    '%s rejects NOT_ACTIVATABLE, naming step %s, and mutates nothing',
-    (kind, effect, step) => {
-      const before = JSON.stringify(h.state);
-      const result = applyEffect(effect, h.ec);
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.reason).toBe('NOT_ACTIVATABLE');
-        expect(result.detail).toContain(`step ${step}`);
-        expect(result.detail).toContain(kind);
-      }
-      expect(JSON.stringify(h.state)).toBe(before);
-    }
-  );
-});
 
 // ---------------------------------------------------------------------------
 // v2 §4.5, §5.11, step 28/29 — `chooseMode`/`chooseNumber`/`sealedChoice` at the `applyEffect` unit
@@ -1517,5 +1500,46 @@ describe('chooseMode / chooseNumber / sealedChoice — applyEffect unit level', 
     const result = applyEffect(effect, h.ec);
     expect(result).toEqual({ ok: false, reason: 'AWAITING_PROMPT', detail: expect.stringContaining('cannot open here') });
     expect(JSON.stringify(h.state)).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2 §4.5, §4.6, §5.5 — step 24. `openPriority`'s own wiring only: MISSING_REFERENT for a bad
+// window, and a real window pushes a `priority` frame. §5.5's own semantics (order, passes,
+// eliminated-seat skipping, PRIORITY_EXHAUSTED, ...) live in `priority.test.ts`.
+// ---------------------------------------------------------------------------
+
+describe('openPriority — wiring (§8 step 24)', () => {
+  it('rejects MISSING_REFERENT for a window that does not exist in this definition, mutating nothing', () => {
+    const before = JSON.stringify(h.state);
+    const result = applyEffect({ kind: 'openPriority', window: 'w1' }, h.ec);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('MISSING_REFERENT');
+      expect(result.detail).toContain('w1');
+    }
+    expect(JSON.stringify(h.state)).toBe(before);
+  });
+
+  it('pushes a priority frame ordered from the active seat, over the LIVE seatOrder at push time', () => {
+    const def = {
+      ...duel,
+      priorityWindows: [
+        { id: 'w1', name: 'Test Window', start: 'active' as const, direction: 'forward' as const, includeStart: true, passesToClose: null, collapseEmptyOffers: true as const },
+      ],
+    };
+    h.ec.def = def;
+    const result = applyEffect({ kind: 'openPriority', window: 'w1' }, h.ec);
+    expect(result.ok).toBe(true);
+    expect(h.state.stack).toHaveLength(1);
+    const frame = h.state.stack[0];
+    expect(frame.kind).toBe('priority');
+    if (frame.kind === 'priority') {
+      expect(frame.windowId).toBe('w1');
+      expect(frame.actionId).toBeNull();
+      expect(frame.order).toEqual([0, 1]); // duel is 2 seats, active is seat 0 (§9.2)
+      expect(frame.cursor).toBe(0);
+      expect(frame.consecutivePasses).toBe(0);
+    }
   });
 });

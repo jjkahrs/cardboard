@@ -14,6 +14,7 @@ import {
   type CriteriaNode,
   type EngineInput,
   type LogLine,
+  type PlayAction,
   type PlayState,
   type RuleSet,
   type StepResult,
@@ -479,5 +480,104 @@ describe('§9.5 edge case 3 — an eliminated seat still holding a pending actio
       lines.some((l) => l.level === 'reject' && l.message.toLowerCase().includes('eliminated'))
     ).toBe(true);
     expect(state.playerPools[HP][1]).toBe(20); // the subtract never applied
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §4.8's carried-over fix (§8 step 24) — a target selector that resolves to an unanswered PROMPT at
+// announce time suspends `announceAction` itself, rather than being left unfrozen. Driven through the
+// REAL `step()`/`dispatch.ts` machinery (unlike every other test above) because that is the only way
+// to exercise the raise/resume cycle honestly — `announceAction` called directly, once, cannot show
+// that it re-enters correctly.
+// ---------------------------------------------------------------------------
+
+describe('announceAction — the announce-time prompt suspend (§4.8 carried-over fix)', () => {
+  const RS_PROMPT_TARGET = 'rs_pending_promptTarget';
+  const RS_ANNOUNCE_PROMPT = 'rs_pending_announcePrompt';
+
+  const rsPromptTarget: RuleSet = {
+    ...baseRule,
+    id: RS_PROMPT_TARGET,
+    name: 'Prompt Target',
+    effects: [
+      {
+        kind: 'destroyCards',
+        target: {
+          kind: 'prompt',
+          from: { kind: 'allInZone', zone: { zoneId: BATTLEFIELD, seat: null } },
+          count: lit(1),
+          promptText: 'Choose a target',
+        },
+      },
+    ],
+  };
+
+  const rsAnnouncePrompt: RuleSet = {
+    ...baseRule,
+    id: RS_ANNOUNCE_PROMPT,
+    name: 'Announce Prompt Target',
+    trigger: 'doAnnouncePrompt',
+    effects: [{ kind: 'announceAction', ruleId: RS_PROMPT_TARGET, window: null }],
+  };
+
+  function promptDef() {
+    return {
+      ...pendingDef([rsPromptTarget, rsAnnouncePrompt]),
+      globalRuleSetIds: [RS_ANNOUNCE_PROMPT],
+    };
+  }
+
+  function drive2(state: PlayState, def: GameDefinition, action: PlayAction, lines: LogLine[]) {
+    let input: EngineInput = { kind: 'action', action, override: false };
+    let result = step(state, input, lines, def);
+    let guard = 0;
+    while (!result.done) {
+      if (++guard > 100_000) throw new Error('drive2 runaway');
+      input = CONTINUE;
+      result = step(state, input, lines, def);
+    }
+    return result;
+  }
+
+  it('suspends at announce time with nothing mutated, then freezes the answer into PendingAction.targets on resume', () => {
+    const def = promptDef();
+    const state = emptyBoard(def);
+    const battlefield = zoneKey(BATTLEFIELD, null);
+    const g1 = place(state, def, battlefield, GRUNT, 'g1');
+    const g2 = place(state, def, battlefield, GRUNT, 'g2');
+    const lines: LogLine[] = [];
+
+    const result = drive2(state, def, { kind: 'fireEvent', name: 'doAnnouncePrompt', seat: 0 }, lines);
+
+    expect(result.suspended).toBe(true);
+    expect(state.interaction).toMatchObject({ kind: 'chooseCards', candidates: [g1, g2], min: 1, max: 1 });
+    // Nothing was mutated by the raise — no PendingAction exists yet (§3.3's raise-before-mutate,
+    // reused here rather than just claimed).
+    expect(state.pendingActions).toEqual({});
+    expect(state.actionStack).toEqual([]);
+
+    const answer = drive2(state, def, { kind: 'answerPrompt', chosen: [g1] }, lines);
+    expect(answer.suspended).toBe(false);
+    expect(state.interaction).toBeNull();
+    expect(state.actionStack).toHaveLength(1);
+    const id = state.actionStack[0];
+    expect(state.pendingActions[id].targets).toEqual({ '0': [g1] });
+
+    // A later "effect" moves the frozen target between announce and resolve — resolution must still
+    // destroy g1, not silently re-aim at whatever the live board now shows.
+    const battlefieldInst = state.zones[battlefield];
+    battlefieldInst.cardIds = battlefieldInst.cardIds.filter((c) => c !== g1);
+
+    const resolveLines: LogLine[] = [];
+    push(state, { kind: 'resolve', actionId: id, parentId: null, depth: 0 });
+    let resolveResult = step(state, CONTINUE, resolveLines, def);
+    let guard = 0;
+    while (!resolveResult.done) {
+      if (++guard > 100_000) throw new Error('resolve drive runaway');
+      resolveResult = step(state, CONTINUE, resolveLines, def);
+    }
+
+    expect(state.cards[g1]).toBeUndefined(); // destroyed — the FROZEN target, not a re-aimed one
+    expect(state.cards[g2]).toBeDefined(); // g2 was never the target and is untouched
   });
 });
