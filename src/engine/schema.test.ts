@@ -100,6 +100,9 @@ const valid: GameDefinition = {
       priority: 0,
       onRejection: 'continue',
       modifier: null,
+      continuous: false,
+      replaces: null,
+      activation: null,
     },
     {
       id: 'r-upkeep',
@@ -116,9 +119,13 @@ const valid: GameDefinition = {
       priority: 5,
       onRejection: 'abort',
       modifier: null,
+      continuous: false,
+      replaces: null,
+      activation: null,
     },
   ],
   globalRuleSetIds: ['r-upkeep'],
+  priorityWindows: [],
   machine: {
     states: [
       // exitableTo ['main','end'] and enterableFrom ['start','main'] are both non-alphabetical
@@ -501,6 +508,194 @@ describe('SP6: the `sum` quantifier is refused over a boolean pool', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// v2 §4.5 — RuleSet.continuous / .modifier / .replaces / .activation are mutually exclusive
+// ---------------------------------------------------------------------------
+
+describe('v2 §4.5: continuous / modifier / replaces / activation are mutually exclusive', () => {
+  const activation = { costCheck: null, cost: [], window: null, perInstance: false, label: 'Activate' };
+  const replaces = { effectKind: 'changePool', match: null };
+  const modifier = {
+    scope: { kind: 'triggeringCard' },
+    indexId: 'power',
+    op: 'set',
+    amount: { kind: 'literal', value: 1 },
+    activeZones: [],
+  };
+
+  it('rejects continuous: true together with a non-null modifier', () => {
+    const d = clone();
+    d.ruleSets[0].continuous = true;
+    d.ruleSets[0].modifier = modifier;
+    expect(failed(JSON.stringify(d))).toEqual([
+      'ruleSets.0.continuous: A RuleSet may be at most one of: continuous, modifier, replaces, activation — pick one.',
+    ]);
+  });
+
+  it('rejects replaces together with activation', () => {
+    const d = clone();
+    d.ruleSets[0].replaces = replaces;
+    d.ruleSets[0].activation = activation;
+    expect(failed(JSON.stringify(d))).toEqual([
+      'ruleSets.0.continuous: A RuleSet may be at most one of: continuous, modifier, replaces, activation — pick one.',
+    ]);
+  });
+
+  it('rejects all four set at once, same as any pair', () => {
+    const d = clone();
+    d.ruleSets[0].continuous = true;
+    d.ruleSets[0].modifier = modifier;
+    d.ruleSets[0].replaces = replaces;
+    d.ruleSets[0].activation = activation;
+    expect(failed(JSON.stringify(d))).toEqual([
+      'ruleSets.0.continuous: A RuleSet may be at most one of: continuous, modifier, replaces, activation — pick one.',
+    ]);
+  });
+
+  it('admits continuous alone', () => {
+    const d = clone();
+    d.ruleSets[0].continuous = true;
+    expect(validateDefinition(imported(JSON.stringify(d)))).toEqual([]);
+  });
+
+  it('admits replaces alone', () => {
+    const d = clone();
+    d.ruleSets[0].replaces = replaces;
+    expect(validateDefinition(imported(JSON.stringify(d)))).toEqual([]);
+  });
+
+  it('admits activation alone', () => {
+    const d = clone();
+    d.ruleSets[0].activation = activation;
+    expect(validateDefinition(imported(JSON.stringify(d)))).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2 §5.8 — a cost effect may not suspend
+// ---------------------------------------------------------------------------
+
+describe('v2 §5.8: activation.cost may not suspend', () => {
+  const withCost = (costEffect: unknown): string => {
+    const d = clone();
+    d.ruleSets[0].activation = {
+      costCheck: null,
+      cost: [costEffect],
+      window: null,
+      perInstance: false,
+      label: 'Activate',
+    };
+    return JSON.stringify(d);
+  };
+
+  it('rejects chooseMode', () => {
+    expect(
+      failed(withCost({ kind: 'chooseMode', promptText: 'Pick', seat: { kind: 'active' }, modes: [] }))
+    ).toEqual([
+      'ruleSets.0.activation.cost.0: Cost effect 0 (chooseMode) may suspend (it is a "chooseMode" effect) — a cost effect must not raise an Interaction (§5.8).',
+    ]);
+  });
+
+  it('rejects chooseNumber', () => {
+    expect(
+      failed(
+        withCost({
+          kind: 'chooseNumber',
+          promptText: 'Pick',
+          seat: { kind: 'active' },
+          min: { kind: 'literal', value: 0 },
+          max: { kind: 'literal', value: 1 },
+          key: 'k',
+        })
+      )
+    ).toEqual([
+      'ruleSets.0.activation.cost.0: Cost effect 0 (chooseNumber) may suspend (it is a "chooseNumber" effect) — a cost effect must not raise an Interaction (§5.8).',
+    ]);
+  });
+
+  it('rejects sealedChoice', () => {
+    expect(
+      failed(withCost({ kind: 'sealedChoice', choiceId: 'c', seats: { kind: 'all' }, options: [] }))
+    ).toEqual([
+      'ruleSets.0.activation.cost.0: Cost effect 0 (sealedChoice) may suspend (it is a "sealedChoice" effect) — a cost effect must not raise an Interaction (§5.8).',
+    ]);
+  });
+
+  it('rejects openPriority', () => {
+    expect(failed(withCost({ kind: 'openPriority', window: 'w1' }))).toEqual([
+      'ruleSets.0.activation.cost.0: Cost effect 0 (openPriority) may suspend (it is a "openPriority" effect) — a cost effect must not raise an Interaction (§5.8).',
+    ]);
+  });
+
+  it('rejects a `prompt` TargetSelector at the top level', () => {
+    const prompted = {
+      kind: 'destroyCards',
+      target: {
+        kind: 'prompt',
+        from: { kind: 'triggeringCard' },
+        count: { kind: 'literal', value: 1 },
+        promptText: 'Choose',
+      },
+    };
+    expect(failed(withCost(prompted))).toEqual([
+      'ruleSets.0.activation.cost.0: Cost effect 0 (destroyCards) may suspend (its target selector contains a prompt) — a cost effect must not raise an Interaction (§5.8).',
+    ]);
+  });
+
+  it('rejects a `prompt` nested inside a `matching`\'s `from` — depth does not shield it', () => {
+    const nested = {
+      kind: 'destroyCards',
+      target: {
+        kind: 'matching',
+        from: {
+          kind: 'prompt',
+          from: { kind: 'triggeringCard' },
+          count: { kind: 'literal', value: 1 },
+          promptText: 'Choose',
+        },
+        where: { kind: 'criteria', left: { kind: 'literal', value: 1 }, op: '=', right: { kind: 'literal', value: 1 } },
+      },
+    };
+    expect(failed(withCost(nested))).toEqual([
+      'ruleSets.0.activation.cost.0: Cost effect 0 (destroyCards) may suspend (its target selector contains a prompt) — a cost effect must not raise an Interaction (§5.8).',
+    ]);
+  });
+
+  it('admits an ordinary cost effect with no prompt', () => {
+    const plain = { kind: 'changePool', poolId: 'hp', seat: null, op: 'subtract', amount: { kind: 'literal', value: 1 } };
+    expect(validateDefinition(imported(withCost(plain)))).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2 §5.7 — replaces.effectKind is restricted to the five interceptable kinds
+// ---------------------------------------------------------------------------
+
+describe('v2 §5.7: replaces.effectKind is restricted to the five interceptable kinds', () => {
+  const withReplaces = (effectKind: string): string => {
+    const d = clone();
+    d.ruleSets[0].replaces = { effectKind, match: null };
+    return JSON.stringify(d);
+  };
+
+  it('rejects a non-interceptable kind, naming the field', () => {
+    expect(failed(withReplaces('fireEvent'))).toEqual([
+      'ruleSets.0.replaces.effectKind: "fireEvent" cannot be replaced; only drawCards, changePool, moveCards, destroyCards, setCardIndex are interceptable (§5.7).',
+    ]);
+  });
+
+  it.each(['drawCards', 'changePool', 'moveCards', 'destroyCards', 'setCardIndex'])(
+    'admits %s',
+    (kind) => {
+      expect(validateDefinition(imported(withReplaces(kind)))).toEqual([]);
+    }
+  );
+
+  it('rejects an id that is not any Effect kind at all — the shape gate, not just the refinement', () => {
+    expect(failed(withReplaces('notARealKind'))).not.toEqual([]);
+  });
+});
+
 describe('P2: canonical export', () => {
   /** Reverse every object's key order, recursively. Arrays keep their order. */
   const scramble = (v: unknown): unknown => {
@@ -533,6 +728,46 @@ describe('P2: canonical export', () => {
   it('keeps maxCapacity: null as a present key', () => {
     expect(canonical).toContain('"maxCapacity": null');
     expect(JSON.parse(canonical).zones[0]).toHaveProperty('maxCapacity');
+  });
+
+  // v2 §4.5, §4.6, §4.11, §7.2 — the new fields must be `.nullable()`-and-PRESENT, not `.optional()`:
+  // an `.optional()` there would turn `null` into an absent key and only fail on the SECOND round
+  // trip (the header note above). `priorityWindows` is checked at [] rather than null since it is an
+  // array field (always present, never nullable), same as every other top-level entity list.
+  it('keeps continuous/replaces/activation as present keys even when null/false, and priorityWindows present', () => {
+    expect(canonical).toContain('"continuous": false');
+    expect(canonical).toContain('"replaces": null');
+    expect(canonical).toContain('"activation": null');
+    expect(canonical).toContain('"priorityWindows": []');
+    const out = JSON.parse(canonical);
+    expect(out.ruleSets[0]).toHaveProperty('continuous');
+    expect(out.ruleSets[0]).toHaveProperty('replaces');
+    expect(out.ruleSets[0]).toHaveProperty('activation');
+    expect(out).toHaveProperty('priorityWindows');
+  });
+
+  it('is stable over a second round trip with a populated priorityWindows and a non-null replaces/activation', () => {
+    const d = clone();
+    d.priorityWindows = [
+      {
+        id: 'w1',
+        name: 'Response window',
+        start: 'active',
+        direction: 'forward',
+        includeStart: false,
+        passesToClose: null,
+        collapseEmptyOffers: true,
+      },
+    ];
+    d.ruleSets[1].replaces = { effectKind: 'drawCards', match: null };
+    d.ruleSets[1].activation = null; // replaces already set — mutually exclusive with activation
+    const text = JSON.stringify(d);
+    const once = exportJson(imported(text));
+    const twice = exportJson(imported(once));
+    expect(twice).toBe(once);
+    expect(once).toContain('"priorityWindows"');
+    expect(JSON.parse(once).priorityWindows).toEqual(d.priorityWindows);
+    expect(JSON.parse(once).ruleSets[1].replaces).toEqual({ effectKind: 'drawCards', match: null });
   });
 
   it('does not omit a 0 default as falsy', () => {

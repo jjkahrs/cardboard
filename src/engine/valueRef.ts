@@ -180,5 +180,18 @@ export function resolveValueRef(
     // bound on a valid SeatId, so it is the wrong number to read the moment anyone is ousted.
     case 'activeSeatCount':
       return { ok: true, values: [state.seatOrder.length], quantifier: 'every' };
+
+    // v2 §4.2, §5.7 — bound only inside a replacement rule's `replaces.match`, to the AMOUNT the
+    // intercepted effect was about to apply. `replacement.ts` (step 27) is the only writer of that
+    // binding. Final behaviour, not a stub — UNBOUND_REF is genuinely correct everywhere this wave
+    // can reach it, same discipline as `resolveCardRef`'s `replacedTarget` in seats.ts.
+    case 'replacedAmount':
+      return fail('UNBOUND_REF', 'Ref "replacedAmount" is unbound: it resolves only inside a replacement rule.');
+
+    // v2 §4.2 — reads a characteristic off a `PendingAction`. `state.pendingActions` exists (§4.10)
+    // but nothing resolves an `ActionRef` against it yet — that lands with `pending.ts` in step 23.
+    // STUB: rejects UNBOUND_REF rather than the wrong answer.
+    case 'actionField':
+      return fail('UNBOUND_REF', `Ref "actionField" (${ref.field}) is not resolvable yet — v2 step 23.`);
   }
 }

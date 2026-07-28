@@ -95,7 +95,10 @@ function makeState(cards: CardInstance[], zones: Record<string, Id[]>, over: Par
     stack: [],
     pending: [],
     interaction: null,
-    budget: { causalDepth: 0, effectsUsed: 0, settleIterations: 0 },
+    pendingActions: {},
+    actionStack: [],
+    continuousFired: {},
+    budget: { causalDepth: 0, effectsUsed: 0, settleIterations: 0, priorityRounds: 0 },
     ...over,
   };
 }

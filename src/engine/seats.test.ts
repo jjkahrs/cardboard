@@ -12,7 +12,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { resolveSeat } from './seats';
+import { resolveCardRef, resolveSeat } from './seats';
 import { applyEffect, type EffectContext } from './effects';
 import { resolveValueRef } from './valueRef';
 import { evalCriteriaBool } from './criteria';
@@ -48,7 +48,10 @@ function makeState(playerCount: number, activePlayer: number, overrides: Partial
     stack: [],
     pending: [],
     interaction: null,
-    budget: { causalDepth: 0, effectsUsed: 0, settleIterations: 0 },
+    pendingActions: {},
+    actionStack: [],
+    continuousFired: {},
+    budget: { causalDepth: 0, effectsUsed: 0, settleIterations: 0, priorityRounds: 0 },
     ...overrides,
   };
 }
@@ -469,4 +472,17 @@ it('V10: one authored threshold reads the correct table size at 4 and at 5 seats
   // And it keeps tracking: ousting one seat at the 5-seat table flips the same criterion.
   eliminate(stateOf5, five, seat(1));
   expect(evalCriteriaBool(fiveOrMore, stateOf5, ctx, five)).toBe(false);
+});
+
+// ---------------------------------------------------------------------------
+// v2 §4.2, §5.7 — CardRef{kind:'replacedTarget'}. Final behaviour, not a stub: outside a
+// replacement rule it is genuinely unbound — replacement.ts (step 27) is the only writer.
+// ---------------------------------------------------------------------------
+
+describe('resolveCardRef — replacedTarget', () => {
+  it('is UNBOUND_REF outside a replacement rule', () => {
+    const state = makeState(2, 0);
+    const result = resolveCardRef({ kind: 'replacedTarget' }, state, ctx);
+    expect(result).toMatchObject({ ok: false, reason: 'UNBOUND_REF' });
+  });
 });

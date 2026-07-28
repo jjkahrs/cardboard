@@ -120,7 +120,24 @@ export type CardRef =
    * the triggering card (or with anything else) would make the predicate quietly test the wrong
    * thing. It fails UNBOUND_REF like every other ref with nothing behind it.
    */
-  | { kind: 'candidate' };
+  | { kind: 'candidate' }
+  /**
+   * v2 §4.2, §5.7 — bound only inside a replacement rule's `replaces.match`, to the target the
+   * INTERCEPTED effect was about to touch. Unbound everywhere else, for the same reason
+   * `candidate` is: a criterion that reads it outside a replacement has no card to mean.
+   */
+  | { kind: 'replacedTarget' };
+
+/**
+ * v2 §4.2 — addresses a pending action (§4.8) the way `CardRef` addresses a card. `{kind:'action'}`
+ * names a runtime id no author can predict at edit time, so the editor offers only the first two
+ * (§6.10) — the schema admits all three because a rule can still be authored to react to a
+ * specific action once one exists, e.g. from a prior `announceAction` in the same effect list.
+ */
+export type ActionRef =
+  | { kind: 'triggeringAction' }
+  | { kind: 'topOfStack' }
+  | { kind: 'action'; id: Id };
 
 export type ValueRef =
   | { kind: 'literal'; value: number | boolean }
@@ -138,7 +155,19 @@ export type ValueRef =
    * this is the only reading of "table size" that is still correct after an oust, and it needs no
    * per-game configuration to be so.
    */
-  | { kind: 'activeSeatCount' };
+  | { kind: 'activeSeatCount' }
+  /**
+   * v2 §4.2, §5.7 — bound only inside a replacement rule's `replaces.match`, to the AMOUNT the
+   * intercepted effect was about to apply (a `drawCards.count`, a `changePool.amount`, …). Unbound
+   * everywhere else — same discipline as `replacedTarget` above.
+   */
+  | { kind: 'replacedAmount' }
+  /**
+   * v2 §4.2 — reads a characteristic off a pending action (§4.8) rather than off a card. `field` is
+   * closed to the two `PendingAction` properties a criterion plausibly needs; widening it to the
+   * whole record is deferred until a third one is.
+   */
+  | { kind: 'actionField'; action: ActionRef; field: 'controller' | 'targetCount' };
 
 // ---------------------------------------------------------------------------
 // §4.3 Criteria
@@ -323,6 +352,26 @@ export type TargetSelector =
    */
   | { kind: 'matching'; from: TargetSelector; where: CriteriaNode };
 
+/**
+ * v2 §4.4 — pending actions (§4.8) are selected separately from cards; they are not `CardInstance`s
+ * and have no zone, so nothing in `TargetSelector` above applies to them.
+ */
+export type ActionSelector =
+  | { kind: 'action'; ref: ActionRef }
+  | { kind: 'allOnStack'; where: CriteriaNode | null };
+
+/** v2 §4.5 — one option in a `sealedChoice`. */
+export interface ChoiceOption {
+  id: string;
+  label: string;
+}
+
+/** v2 §4.5 — one branch of a `chooseMode`. */
+export interface ChoiceMode {
+  label: string;
+  effects: Effect[];
+}
+
 export type Effect =
   | { kind: 'moveCards'; target: TargetSelector; to: ZoneRef; position: InsertPosition }
   | { kind: 'drawCards'; from: ZoneRef; to: ZoneRef; count: ValueRef }
@@ -355,7 +404,33 @@ export type Effect =
    * §4.3 — overrides the holding zone's seat for `controllerOf`. `null` clears the override, so
    * control reverts to being derived from wherever the card currently sits.
    */
-  | { kind: 'setController'; target: TargetSelector; seat: SeatRef | null };
+  | { kind: 'setController'; target: TargetSelector; seat: SeatRef | null }
+  /**
+   * v2 §4.5, §4.8 — creates a `PendingAction` from `ruleId`, freezing its targets at announce time,
+   * and pushes it onto `actionStack`. `window` opens a priority window over it immediately; `null`
+   * announces with no response opportunity (e.g. an ability that cannot be countered).
+   */
+  | { kind: 'announceAction'; ruleId: Id; window: Id | null }
+  /** v2 §4.5, §4.8 — removes the selected pending action(s) from the stack WITHOUT applying them. */
+  | { kind: 'counterAction'; action: ActionSelector }
+  /** v2 §4.5, §4.6 — opens a priority window with no pending action attached (e.g. "before combat"). */
+  | { kind: 'openPriority'; window: Id }
+  /**
+   * v2 §4.5, §5.11 — every seat in `seats` submits one option, hidden from everyone (including the
+   * log) until all have answered, then all resolve together in `seats` order. §5.11 covers why.
+   */
+  | { kind: 'sealedChoice'; choiceId: string; seats: SeatRef; options: ChoiceOption[] }
+  /** v2 §4.5 — the chosen mode's `effects` run in place of this one; the other modes never run. */
+  | { kind: 'chooseMode'; promptText: string; seat: SeatRef; modes: ChoiceMode[] }
+  | {
+      kind: 'chooseNumber';
+      promptText: string;
+      seat: SeatRef;
+      min: ValueRef;
+      max: ValueRef;
+      /** The answer is readable elsewhere as `ValueRef{kind:'promptNumber'}` keyed by this. */
+      key: string;
+    };
 
 export interface RuleSet {
   id: Id;
@@ -392,6 +467,72 @@ export interface RuleSet {
     /** Applies only while the source card is in one of these zones. Empty => wherever the source is. */
     activeZones: Id[];
   } | null;
+
+  /**
+   * v2 §4.5, §5.6 — true => `trigger` is IGNORED and `condition` is instead scanned at every settle
+   * point (§5.3 slot 1), firing on the false→true transition rather than while true.
+   *
+   * Mutually exclusive with `modifier`/`replaces`/`activation` — a zod refinement enforces it,
+   * because a rule that is simultaneously a trigger, a modifier and a replacement has no defensible
+   * evaluation order (§4.5).
+   */
+  continuous: boolean;
+
+  /**
+   * v2 §4.5, §5.7 — registers this rule against an effect about to apply, ahead of the mutation.
+   * `.nullable()`-and-PRESENT — same §7.2 rationale as `modifier`.
+   */
+  replaces: {
+    /** Restricted at authoring time and by a zod refinement to §5.7's five interceptable kinds. */
+    effectKind: Effect['kind'];
+    /** May read `ValueRef{kind:'replacedAmount'}` / `CardRef{kind:'replacedTarget'}`. */
+    match: CriteriaNode | null;
+  } | null;
+
+  /**
+   * v2 §4.5, §5.8 — cost-gated activation: a rule the tester triggers deliberately (an ability),
+   * rather than one the engine fires off an event. `.nullable()`-and-PRESENT — same §7.2 rationale.
+   */
+  activation: {
+    /** Evaluated before `cost` runs; false rejects COST_UNPAYABLE with nothing applied. */
+    costCheck: CriteriaNode | null;
+    /**
+     * Applied in a nested produce that is discarded on any rejection (§5.8) — the one place effects
+     * are all-or-nothing. May not raise an `Interaction` or contain `chooseMode` / `chooseNumber` /
+     * `sealedChoice` / `openPriority`, nor a `TargetSelector` of kind `prompt` at any depth — a zod
+     * refinement enforces both.
+     */
+    cost: Effect[];
+    /** Which priority window this may be activated in. `null` => only outside a window. */
+    window: Id | null;
+    /** true => rendered as a button on each card instance the rule is attached to (§5.8, §6.7). */
+    perInstance: boolean;
+    label: string;
+  } | null;
+}
+
+// ---------------------------------------------------------------------------
+// v2 §4.6 Priority windows
+// ---------------------------------------------------------------------------
+
+/** NEW — a top-level authored entity, edited in its own screen (§6.9). */
+export interface PriorityWindow {
+  id: Id;
+  name: string;
+  /** Where polling starts. */
+  start: 'active' | 'triggeringSeat' | 'controllerOfAction';
+  /** Ring direction. */
+  direction: 'forward' | 'backward';
+  /** false => the starting seat is skipped (VTES: you do not block your own action). */
+  includeStart: boolean;
+  /** Closes after this many consecutive passes. `null` => `activeSeatCount` (poll the whole table). */
+  passesToClose: number | null;
+  /**
+   * A seat with no legal response auto-passes and produces NO log entry — always true. Present as a
+   * field, not a hard-coded rule, only so the editor can show it as an explained, disabled checkbox
+   * (§6.9) rather than a behaviour with no visible authoring surface at all.
+   */
+  collapseEmptyOffers: true;
 }
 
 // ---------------------------------------------------------------------------
@@ -455,6 +596,8 @@ export interface GameDefinition {
   ruleSets: RuleSet[];
   /** game-level rules (onGameStart setup, win checks) */
   globalRuleSetIds: Id[];
+  /** v2 §4.6, §4.11 — top-level authored entities; `openPriority` and `activation.window` address one by id. */
+  priorityWindows: PriorityWindow[];
   machine: StateMachine;
   /** defaults from the DEFAULT_MAX_* constants above — v2 §4.11 */
   limits: {
@@ -516,8 +659,9 @@ export interface FrameBase {
  * - `transition`: it was already dead code in v1 — `forceTransition` applies inline via
  *   `applyTransition` (`effects.ts:730`) and nothing ever enqueued it. It gets no replacement.
  *
- * `resolve`, `priority` and `sealed` (§4.7) reference pending actions and priority windows, which
- * do not exist until phase 2; they land with the entities they address.
+ * `resolve`, `priority` and `sealed` land here in step 21/31 because the type has to exist for
+ * every other §4 union to compile against, but nothing in this wave can PUSH one — step() throws
+ * on all three (dispatch.ts), which is honest: they are genuinely unreachable until steps 22/24/29.
  */
 export type Frame =
   // `stateId` is set only for `onStateExit`: the transition has already landed by the time the
@@ -539,7 +683,24 @@ export type Frame =
       cursor: number;
       aborted: boolean;
     })
-  | (FrameBase & { kind: 'settle'; iteration: number });
+  | (FrameBase & { kind: 'settle'; iteration: number })
+  /** v2 §4.7, §4.8 — pops the top of `actionStack` and runs its rule's effects. Step 22. */
+  | (FrameBase & { kind: 'resolve'; actionId: Id })
+  /**
+   * v2 §4.7, §4.6, §5.5 — polls `order` from `cursor`, closing after `passesToClose` consecutive
+   * passes. `actionId` is `null` for a window opened with no pending action attached
+   * (`openPriority`). Step 24.
+   */
+  | (FrameBase & {
+      kind: 'priority';
+      windowId: Id;
+      actionId: Id | null;
+      order: SeatId[];
+      cursor: number;
+      consecutivePasses: number;
+    })
+  /** v2 §4.7, §5.11 — one open `sealedChoice`, keyed by its authored `choiceId`. Step 29. */
+  | (FrameBase & { kind: 'sealed'; choiceId: string });
 
 /** One matched rule inside an `event` frame's `bindings`, in §5.1 order. */
 export interface RuleBinding {
@@ -549,21 +710,70 @@ export interface RuleBinding {
 }
 
 /**
- * v2 §4.9 — replaces `PendingPrompt`. One suspension mechanism for every kind of pause.
- * Phase 0 produces only the `chooseCards` arm, which is v1's prompt behaviour verbatim under a
- * discriminant; the other five arms arrive with the primitives that raise them.
+ * v2 §4.8 — game state, addressable by criteria and selectors (`ActionRef`, `ActionSelector`) the
+ * way a `CardInstance` is addressable by `CardRef`/`TargetSelector`. Lands here in step 21/31
+ * because `ActionRef`/`ActionSelector`/`PlayState.pendingActions` all need the shape to exist; the
+ * primitives that actually create and consume one (`announceAction`, `resolve` frames,
+ * `counterAction`) are step 22/23.
  */
-export type Interaction = {
-  kind: 'chooseCards';
-  /** `${logSeq}:${ruleSetId}:${effectIndex}` — stable and reproducible */
-  promptId: string;
-  promptText: string;
-  seat: number;
-  /** FROZEN at prompt time, in zone order */
-  candidates: Id[];
-  min: number;
-  max: number;
-};
+export interface PendingAction {
+  /** `a${state.nextSeq++}` — deterministic, never a UUID, same discipline as every other id here. */
+  id: Id;
+  ruleId: Id;
+  sourceCardId: Id | null;
+  controller: SeatId;
+  ctx: TriggerContext;
+  /**
+   * Targets chosen at ANNOUNCE time and frozen, so a response that moves a card cannot silently
+   * re-aim the original action. Keyed the way a rule's authored targets are addressed; the key
+   * scheme itself is step 22's.
+   */
+  targets: Record<string, Id[]>;
+  /** Mutable per-action characteristics, so "this action is a spell" is authorable and testable. */
+  tags: string[];
+  countered: boolean;
+}
+
+/**
+ * v2 §4.9 — replaces `PendingPrompt`. One suspension mechanism for every kind of pause.
+ * Phase 0 produced only the `chooseCards` arm, which is v1's prompt behaviour verbatim under a
+ * discriminant. The five arms below land here in step 21/31 because `Interaction` has to be a
+ * closed union for `interaction.ts`'s `validateAnswer` (and every other exhaustive switch over it)
+ * to keep catching a forgotten arm at compile time — but nothing in this wave can RAISE one; that
+ * arrives with the primitive that does (steps 24/28/29).
+ */
+export type Interaction =
+  | {
+      kind: 'chooseCards';
+      /** `${logSeq}:${ruleSetId}:${effectIndex}` — stable and reproducible */
+      promptId: string;
+      promptText: string;
+      seat: number;
+      /** FROZEN at prompt time, in zone order */
+      candidates: Id[];
+      min: number;
+      max: number;
+    }
+  | { kind: 'chooseOption'; promptId: string; promptText: string; seat: number; options: ChoiceOption[] }
+  | { kind: 'chooseNumber'; promptId: string; promptText: string; seat: number; min: number; max: number }
+  | { kind: 'chooseSeat'; promptId: string; promptText: string; seat: number; candidates: SeatId[] }
+  | {
+      kind: 'priority';
+      promptId: string;
+      windowId: Id;
+      seat: number;
+      /** Non-empty by construction — an empty set auto-passes without raising (§5.5). */
+      legal: { ruleId: Id; cardId: Id | null; label: string }[];
+    }
+  | {
+      kind: 'sealed';
+      promptId: string;
+      choiceId: string;
+      seats: SeatId[];
+      options: ChoiceOption[];
+      /** Hidden from every seat and from the log until every seat in `seats` is present (§5.11). */
+      submitted: Record<SeatId, string>;
+    };
 
 /** Everything rewindable, and NOTHING else. The single immer-produced object. */
 export interface PlayState {
@@ -587,6 +797,10 @@ export interface PlayState {
   playerPools: Record<Id, (number | boolean)[]>;
   cards: Record<Id, CardInstance>;
   zones: Record<ZoneKey, ZoneInstance>;
+  /** v2 §4.8, §4.10 — game state for every announced action still awaiting resolution. */
+  pendingActions: Record<Id, PendingAction>;
+  /** v2 §4.10 — last placed resolves first (§8 step 22's AC). */
+  actionStack: Id[];
   currentStateId: Id;
   finished: boolean;
   /** LIFO continuation stack — §3.2. `step()` advances the top frame and returns. */
@@ -598,7 +812,13 @@ export interface PlayState {
    */
   pending: Frame[];
   interaction: Interaction | null;
-  budget: { causalDepth: number; effectsUsed: number; settleIterations: number };
+  /**
+   * v2 §4.10, §5.6 — continuous rules fire on false→true transitions, not while true. Keyed by
+   * `` `${ruleId}:${bindingKey}` ``, set on false→true and cleared on false — `continuous.ts` (step
+   * 26) owns the binding-key scheme this key is built from.
+   */
+  continuousFired: Record<string, true>;
+  budget: { causalDepth: number; effectsUsed: number; settleIterations: number; priorityRounds: number };
 }
 
 export type LogLevel = 'info' | 'warn' | 'reject' | 'error' | 'override';
@@ -640,7 +860,19 @@ export type PlayAction =
   | { kind: 'transition'; toStateId: Id }
   | { kind: 'fireEvent'; name: string; seat: number | null }
   | { kind: 'answerPrompt'; chosen: Id[] }
-  | { kind: 'cancelPrompt' };
+  | { kind: 'cancelPrompt' }
+  /** v2 §4.12, §5.8 — `cardId` is set only for a `perInstance` activation. Step 25. */
+  | { kind: 'activate'; ruleId: Id; cardId: Id | null; seat: number }
+  /** v2 §4.12, §5.5 — the acting seat declines to respond in an open `priority` interaction. Step 24. */
+  | { kind: 'passPriority' }
+  /** v2 §4.12 — answers a `chooseOption` interaction. Step 28. */
+  | { kind: 'answerOption'; optionId: string }
+  /** v2 §4.12 — answers a `chooseNumber` interaction. Step 28. */
+  | { kind: 'answerNumber'; value: number }
+  /** v2 §4.12 — answers a `chooseSeat` interaction. Step 24/28. */
+  | { kind: 'answerSeat'; seat: number }
+  /** v2 §4.12, §5.11 — one seat's submission to an open `sealedChoice`. Step 29. */
+  | { kind: 'submitSealed'; seat: number; optionId: string };
 
 /** The store re-enters `step` with CONTINUE until it reports done (§3.3). */
 export const CONTINUE = { kind: 'continue' } as const;
@@ -671,7 +903,15 @@ export type RejectReason =
   /** v2 §4.12 — the continuous/auto-transition fixpoint hit `limits.maxSettleIterations`. */
   | 'SETTLE_DIVERGED'
   /** v2 §4.12, §5.12 — a target or destination belongs to an ousted seat. */
-  | 'SEAT_ELIMINATED';
+  | 'SEAT_ELIMINATED'
+  /** v2 §4.12, §5.8 — an activation's `costCheck` failed, or its `cost` could not be paid in full. */
+  | 'COST_UNPAYABLE'
+  /** v2 §4.12, §5.8 — `activation` is null, or the acting window does not match `activation.window`. */
+  | 'NOT_ACTIVATABLE'
+  /** v2 §4.12, §5.7 (via §8 step 23) — the targeted pending action was countered before resolving. */
+  | 'ACTION_COUNTERED'
+  /** v2 §4.12, §5.5 — the priority round cap (`limits.maxPriorityRounds`) was hit. */
+  | 'PRIORITY_EXHAUSTED';
 
 /** Uniform result for anything that can refuse. */
 export type EffectResult =

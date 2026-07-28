@@ -46,6 +46,7 @@ const DEF: GameDefinition = {
   customEvents: [],
   ruleSets: [],
   globalRuleSetIds: [],
+  priorityWindows: [],
   machine: { states: [], startStateId: 'start', endStateId: 'end' },
   limits: {
     maxDepth: DEFAULT_MAX_DEPTH,
@@ -76,7 +77,10 @@ function makeState(overrides: Partial<PlayState> = {}): PlayState {
     stack: [],
     pending: [],
     interaction: null,
-    budget: { causalDepth: 0, effectsUsed: 0, settleIterations: 0 },
+    pendingActions: {},
+    actionStack: [],
+    continuousFired: {},
+    budget: { causalDepth: 0, effectsUsed: 0, settleIterations: 0, priorityRounds: 0 },
     ...overrides,
   };
 }

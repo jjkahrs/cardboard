@@ -22,6 +22,49 @@ import type {
 } from './types';
 
 // ---------------------------------------------------------------------------
+// v2 §4.5 — every Effect kind, for RuleSet.replaces.effectKind (Effect['kind'], not narrowed to the
+// five replaceable ones — §5.7's restriction is semantic and lives in the superRefine below).
+// Kept in sync with the Effect union by SCHEMA_MATCHES_TYPES at the bottom of this file: an entry
+// missing or extra here fails that assertion at compile time rather than drifting silently.
+// ---------------------------------------------------------------------------
+
+const EFFECT_KINDS = [
+  'moveCards',
+  'drawCards',
+  'shuffleZone',
+  'changePool',
+  'setCardIndex',
+  'flipCard',
+  'rotateCard',
+  'createCard',
+  'destroyCards',
+  'fireEvent',
+  'forceTransition',
+  'eliminateSeat',
+  'setTag',
+  'attach',
+  'detach',
+  'setController',
+  'announceAction',
+  'counterAction',
+  'openPriority',
+  'sealedChoice',
+  'chooseMode',
+  'chooseNumber',
+] as const;
+
+const EffectKindSchema = z.enum(EFFECT_KINDS);
+
+/** §5.7 — only these five effect kinds can meaningfully be intercepted by a replacement rule. */
+const REPLACEABLE_EFFECT_KINDS = new Set<Effect['kind']>([
+  'drawCards',
+  'changePool',
+  'moveCards',
+  'destroyCards',
+  'setCardIndex',
+]);
+
+// ---------------------------------------------------------------------------
 // §4.1 Primitives and values
 // ---------------------------------------------------------------------------
 
@@ -112,6 +155,18 @@ export const CardRefSchema = z.discriminatedUnion('kind', [
    *  it is legal SHAPE anywhere a CardRef is legal is deliberate: nothing here knows whether a
    *  criterion is a `where`, and the runtime already refuses it as an unbound ref elsewhere. */
   z.object({ kind: z.literal('candidate') }),
+  /** v2 §4.2, §5.7 — bound only inside a replacement rule's `replaces.match`; carries no id. */
+  z.object({ kind: z.literal('replacedTarget') }),
+]);
+
+/**
+ * v2 §4.2 — no self-reference (`{kind:'action', id}` names a runtime id, not a nested ActionRef),
+ * so unlike SeatRef/CardRef/ZoneRef this needs no `z.lazy`.
+ */
+export const ActionRefSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('triggeringAction') }),
+  z.object({ kind: z.literal('topOfStack') }),
+  z.object({ kind: z.literal('action'), id: IdSchema }),
 ]);
 
 export const ValueRefSchema = z.discriminatedUnion('kind', [
@@ -122,6 +177,13 @@ export const ValueRefSchema = z.discriminatedUnion('kind', [
   /** §4.2 — boolean. `tag` is free-form like `fireEvent.name`: tags are declared nowhere. */
   z.object({ kind: z.literal('cardTag'), card: CardRefSchema, tag: z.string() }),
   z.object({ kind: z.literal('activeSeatCount') }),
+  /** v2 §4.2, §5.7 — bound only inside a replacement rule's `replaces.match`; carries no id. */
+  z.object({ kind: z.literal('replacedAmount') }),
+  z.object({
+    kind: z.literal('actionField'),
+    action: ActionRefSchema,
+    field: z.enum(['controller', 'targetCount']),
+  }),
 ]);
 
 // ---------------------------------------------------------------------------
@@ -235,7 +297,30 @@ export const TargetSelectorSchema: z.ZodType<TargetSelector, z.ZodTypeDef, Targe
     }),
   ]);
 
-export const EffectSchema = z.discriminatedUnion('kind', [
+export const ChoiceOptionSchema = z.object({ id: z.string(), label: z.string() });
+
+/**
+ * v2 §4.5 — `effects: Effect[]` makes this mutually recursive with `EffectSchema` (a `chooseMode`
+ * effect holds `ChoiceMode[]`, each of which holds `Effect[]`). `EffectSchema` is declared AFTER
+ * this, so the forward reference is deferred with `z.lazy` — same pattern `SeatRefSchema` already
+ * uses for its forward reference to `CardRefSchema`.
+ */
+export const ChoiceModeSchema = z.object({
+  label: z.string(),
+  effects: z.lazy(() => z.array(EffectSchema)),
+});
+
+/** v2 §4.4 — pending actions are selected separately from cards; no self-reference, no `z.lazy`. */
+export const ActionSelectorSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('action'), ref: ActionRefSchema }),
+  z.object({ kind: z.literal('allOnStack'), where: CriteriaNodeSchema.nullable() }),
+]);
+
+/**
+ * v2 §4.5 — `chooseMode` makes `Effect` self-referential through `ChoiceMode` above, so this now
+ * needs the same explicit `z.ZodType` annotation `CriteriaNodeSchema`/`TargetSelectorSchema` use.
+ */
+export const EffectSchema: z.ZodType<Effect, z.ZodTypeDef, Effect> = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('moveCards'),
     target: TargetSelectorSchema,
@@ -298,7 +383,57 @@ export const EffectSchema = z.discriminatedUnion('kind', [
     /** null clears the override back to zone-derived control (§4.3). */
     seat: SeatRefSchema.nullable(),
   }),
+  z.object({ kind: z.literal('announceAction'), ruleId: IdSchema, window: IdSchema.nullable() }),
+  z.object({ kind: z.literal('counterAction'), action: ActionSelectorSchema }),
+  z.object({ kind: z.literal('openPriority'), window: IdSchema }),
+  z.object({
+    kind: z.literal('sealedChoice'),
+    choiceId: z.string(),
+    seats: SeatRefSchema,
+    options: z.array(ChoiceOptionSchema),
+  }),
+  z.object({
+    kind: z.literal('chooseMode'),
+    promptText: z.string(),
+    seat: SeatRefSchema,
+    modes: z.array(ChoiceModeSchema),
+  }),
+  z.object({
+    kind: z.literal('chooseNumber'),
+    promptText: z.string(),
+    seat: SeatRefSchema,
+    min: ValueRefSchema,
+    max: ValueRefSchema,
+    key: z.string(),
+  }),
 ]);
+
+/** §5.8's refinement — true (with a reason) if `selector` is, or wraps, a `prompt` at any depth. */
+function selectorSuspends(s: TargetSelector): boolean {
+  if (s.kind === 'prompt') return true;
+  if (s.kind === 'matching') return selectorSuspends(s.from);
+  return false;
+}
+
+/**
+ * §5.8's refinement — the reason a cost effect would suspend the transaction, or `null` if it
+ * cannot. The four listed kinds always suspend; every other kind suspends only via a `prompt`
+ * TargetSelector reachable through its `target`.
+ */
+function costEffectSuspends(e: Effect): string | null {
+  if (
+    e.kind === 'chooseMode' ||
+    e.kind === 'chooseNumber' ||
+    e.kind === 'sealedChoice' ||
+    e.kind === 'openPriority'
+  ) {
+    return `it is a "${e.kind}" effect`;
+  }
+  if ('target' in e && selectorSuspends(e.target)) {
+    return 'its target selector contains a prompt';
+  }
+  return null;
+}
 
 export const RuleSetSchema = z.object({
   id: IdSchema,
@@ -320,6 +455,78 @@ export const RuleSetSchema = z.object({
       activeZones: z.array(IdSchema),
     })
     .nullable(),
+  /** v2 §4.5, §5.6. `.nullable()`-and-PRESENT siblings below share its §7.2 rationale. */
+  continuous: z.boolean(),
+  /** v2 §4.5, §5.7. */
+  replaces: z
+    .object({
+      effectKind: EffectKindSchema,
+      match: CriteriaNodeSchema.nullable(),
+    })
+    .nullable(),
+  /** v2 §4.5, §5.8. */
+  activation: z
+    .object({
+      costCheck: CriteriaNodeSchema.nullable(),
+      cost: z.array(EffectSchema),
+      window: IdSchema.nullable(),
+      perInstance: z.boolean(),
+      label: z.string(),
+    })
+    .nullable(),
+}).superRefine((rs, ctx) => {
+  // §4.5 — a rule may be at most one of: continuous, modifier, replaces, activation. Simultaneously
+  // a trigger, a modifier and a replacement has no defensible evaluation order.
+  const modeCount = [rs.continuous, rs.modifier !== null, rs.replaces !== null, rs.activation !== null]
+    .filter(Boolean).length;
+  if (modeCount > 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['continuous'],
+      message:
+        'A RuleSet may be at most one of: continuous, modifier, replaces, activation — pick one.',
+    });
+  }
+
+  // §5.7 — only these five kinds are meaningfully interceptable.
+  if (rs.replaces !== null && !REPLACEABLE_EFFECT_KINDS.has(rs.replaces.effectKind)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['replaces', 'effectKind'],
+      message: `"${rs.replaces.effectKind}" cannot be replaced; only ${[...REPLACEABLE_EFFECT_KINDS].join(', ')} are interceptable (§5.7).`,
+    });
+  }
+
+  // §5.8 — a cost effect may not suspend: no chooseMode/chooseNumber/sealedChoice/openPriority, and
+  // no `prompt` TargetSelector at any depth (a prompt nested inside a `matching`'s `from` counts).
+  // Suspending commits the transaction, which publishes the half-applied cost, and the discard
+  // model this activation relies on can then never discard it.
+  if (rs.activation !== null) {
+    rs.activation.cost.forEach((effect, i) => {
+      const suspending = costEffectSuspends(effect);
+      if (suspending) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['activation', 'cost', i],
+          message: `Cost effect ${i} (${effect.kind}) may suspend (${suspending}) — a cost effect must not raise an Interaction (§5.8).`,
+        });
+      }
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// v2 §4.6 Priority windows
+// ---------------------------------------------------------------------------
+
+export const PriorityWindowSchema = z.object({
+  id: IdSchema,
+  name: z.string(),
+  start: z.enum(['active', 'triggeringSeat', 'controllerOfAction']),
+  direction: z.enum(['forward', 'backward']),
+  includeStart: z.boolean(),
+  passesToClose: z.number().int().nullable(),
+  collapseEmptyOffers: z.literal(true),
 });
 
 // ---------------------------------------------------------------------------
@@ -359,6 +566,8 @@ const GameDefinitionShape = z.object({
   customEvents: z.array(z.string()),
   ruleSets: z.array(RuleSetSchema),
   globalRuleSetIds: z.array(IdSchema),
+  /** v2 §4.6, §4.11 — key order is the export contract (§7.2): after globalRuleSetIds, before machine. */
+  priorityWindows: z.array(PriorityWindowSchema),
   machine: StateMachineSchema,
   /** §7.2: all four keys are PRESENT, never `.optional()` — an absent key only fails on the
    *  second round trip. */

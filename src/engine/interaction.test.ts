@@ -11,7 +11,7 @@ function state(): PlayState {
 /** Real card ids from the fixture — nothing here looks them up, but nor should it have to. */
 const [a, b, c] = Object.keys(state().cards);
 
-function chooseCards(candidates: string[], min: number, max: number): Interaction {
+function chooseCards(candidates: string[], min: number, max: number): Extract<Interaction, { kind: 'chooseCards' }> {
   return {
     kind: 'chooseCards',
     promptId: '0:rule_x:0',
@@ -91,6 +91,12 @@ describe('isResuming', () => {
     fireEvent: { kind: 'fireEvent', name: 'onDraw', seat: null },
     answerPrompt: { kind: 'answerPrompt', chosen: ['card_1'] },
     cancelPrompt: { kind: 'cancelPrompt' },
+    activate: { kind: 'activate', ruleId: 'rule_x', cardId: null, seat: 0 },
+    passPriority: { kind: 'passPriority' },
+    answerOption: { kind: 'answerOption', optionId: 'opt' },
+    answerNumber: { kind: 'answerNumber', value: 1 },
+    answerSeat: { kind: 'answerSeat', seat: 0 },
+    submitSealed: { kind: 'submitSealed', seat: 0, optionId: 'opt' },
   };
 
   const RESUMING: PlayAction['kind'][] = ['answerPrompt', 'cancelPrompt'];
@@ -164,5 +170,19 @@ describe('validateAnswer', () => {
 
     expect(interaction).toEqual(snapshot);
     expect(interaction.candidates).toBe(candidates);
+  });
+
+  // v2 §4.9 — STUB. `answerPrompt`/`chosen: Id[]` is the wrong answer shape for all five; each gets
+  // its own action and its own validation when the primitive that raises it lands (steps 24/28/29).
+  it.each([
+    ['chooseOption', { kind: 'chooseOption', promptId: 'p', promptText: 'x', seat: 0, options: [] } as Interaction],
+    ['chooseNumber', { kind: 'chooseNumber', promptId: 'p', promptText: 'x', seat: 0, min: 0, max: 1 } as Interaction],
+    ['chooseSeat', { kind: 'chooseSeat', promptId: 'p', promptText: 'x', seat: 0, candidates: [0, 1] } as Interaction],
+    ['priority', { kind: 'priority', promptId: 'p', windowId: 'w', seat: 0, legal: [] } as Interaction],
+    ['sealed', { kind: 'sealed', promptId: 'p', choiceId: 'c', seats: [0, 1], options: [], submitted: {} } as Interaction],
+  ])('rejects answerPrompt against a %s interaction with INVALID_ANSWER', (kind, interaction) => {
+    const result = validateAnswer(interaction, [a]);
+    expect(result).toMatchObject({ ok: false, reason: 'INVALID_ANSWER' });
+    expect((result as { detail: string }).detail).toContain(kind);
   });
 });

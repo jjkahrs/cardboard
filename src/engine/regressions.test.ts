@@ -81,6 +81,7 @@ function mk(over: Partial<GameDefinition> = {}): GameDefinition {
     customEvents: [GO],
     ruleSets: [],
     globalRuleSetIds: [],
+    priorityWindows: [],
     machine: { states: [START_NODE, END_NODE], startStateId: START_STATE_ID, endStateId: END_STATE_ID },
     limits: {
       maxDepth: DEFAULT_MAX_DEPTH,
@@ -103,6 +104,9 @@ const rule = (id: Id, trigger: string, effects: RuleSet['effects'], over: Partia
   priority: 0,
   onRejection: 'continue',
   modifier: null,
+  continuous: false,
+  replaces: null,
+  activation: null,
   ...over,
 });
 

@@ -10,6 +10,8 @@
  */
 
 import type {
+  ActionRef,
+  ActionSelector,
   CardRef,
   CriteriaNode,
   Effect,
@@ -52,6 +54,16 @@ function indexName(def: GameDefinition, indexId: string): string {
 
 function stateName(def: GameDefinition, stateId: string): string {
   return def.machine.states.find((s) => s.id === stateId)?.name ?? '[deleted state]';
+}
+
+/** v2 §4.5 — `announceAction.ruleId` is the first reference from a rule to another rule (§6.10). */
+function ruleName(def: GameDefinition, ruleId: string): string {
+  return def.ruleSets.find((r) => r.id === ruleId)?.name ?? '[deleted rule]';
+}
+
+/** v2 §4.6 — a top-level `PriorityWindow`, addressed by `openPriority`, `announceAction.window` and `activation.window`. */
+function windowName(def: GameDefinition, windowId: string): string {
+  return def.priorityWindows.find((w) => w.id === windowId)?.name ?? '[deleted window]';
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +142,33 @@ function describeCardRef(def: GameDefinition, ref: CardRef): string {
       return 'the card this is attached to';
     case 'candidate':
       return 'the card';
+    // v2 §4.2, §5.7 — bound only inside a replacement rule's `replaces.match`.
+    case 'replacedTarget':
+      return 'the replaced target';
+  }
+}
+
+/** v2 §4.2 — addresses a pending action (§4.8) the way `describeCardRef` addresses a card. */
+function describeActionRef(ref: ActionRef): string {
+  switch (ref.kind) {
+    case 'triggeringAction':
+      return 'the action this is responding to';
+    case 'topOfStack':
+      return 'the top action on the stack';
+    case 'action':
+      return `action ${ref.id}`;
+  }
+}
+
+/** v2 §4.4 — used by `counterAction`'s prose. */
+function describeActionSelector(def: GameDefinition, selector: ActionSelector): string {
+  switch (selector.kind) {
+    case 'action':
+      return describeActionRef(selector.ref);
+    case 'allOnStack':
+      return selector.where === null
+        ? 'every action on the stack'
+        : `every action on the stack where ${describeCriteria(selector.where, def)}`;
   }
 }
 
@@ -166,6 +205,12 @@ export function describeValueRef(ref: ValueRef, def: GameDefinition): string {
       return 'the number of players still in the game';
     case 'cardTag':
       return `whether ${describeCardRef(def, ref.card)} is tagged "${ref.tag}"`;
+    // v2 §4.2, §5.7 — bound only inside a replacement rule's `replaces.match`.
+    case 'replacedAmount':
+      return 'the replaced amount';
+    // v2 §4.2 — reads a characteristic off a pending action rather than off a card.
+    case 'actionField':
+      return `the ${ref.field} of ${describeActionRef(ref.action)}`;
   }
 }
 
@@ -272,6 +317,20 @@ export function describeEffect(effect: Effect, def: GameDefinition): string {
       return effect.seat === null
         ? `give up control of ${describeTarget(effect.target, def)}`
         : `give control of ${describeTarget(effect.target, def)} to ${seatNoun(def, effect.seat)}`;
+    case 'announceAction':
+      return effect.window === null
+        ? `announce ${ruleName(def, effect.ruleId)}`
+        : `announce ${ruleName(def, effect.ruleId)} and open ${windowName(def, effect.window)}`;
+    case 'counterAction':
+      return `counter ${describeActionSelector(def, effect.action)}`;
+    case 'openPriority':
+      return `open ${windowName(def, effect.window)}`;
+    case 'sealedChoice':
+      return `have ${seatNoun(def, effect.seats)} simultaneously choose one of: ${effect.options.map((o) => o.label).join(', ')}`;
+    case 'chooseMode':
+      return `have ${seatNoun(def, effect.seat)} choose one of: ${effect.modes.map((m) => m.label).join(', ')}`;
+    case 'chooseNumber':
+      return `have ${seatNoun(def, effect.seat)} choose a number from ${describeValueRef(effect.min, def)} to ${describeValueRef(effect.max, def)}`;
   }
 }
 
@@ -298,7 +357,58 @@ function triggerPhrase(rule: RuleSet, def: GameDefinition): string {
   return TRIGGER_PHRASE[rule.trigger] ?? `"${rule.trigger}" fires`;
 }
 
+// ---------------------------------------------------------------------------
+// v2 §4.5, §6.10 — the four new RuleSet panels. `continuous` / `modifier` / `replaces` /
+// `activation` are mutually exclusive (a zod refinement enforces it — schema.ts), so `describeRuleSet`
+// below picks at most one of these before falling back to the ordinary trigger sentence.
+// ---------------------------------------------------------------------------
+
+/** §5.6 — `trigger` is ignored; the condition is what the rule is "whenever" of. */
+function describeContinuousRule(rule: RuleSet, def: GameDefinition): string {
+  const condition = rule.condition ? describeCriteria(rule.condition, def) : 'true';
+  const effects = rule.effects.map((e) => describeEffect(e, def)).join('; ');
+  return `Whenever ${condition} becomes true: ${effects}.`;
+}
+
+/** §5.4 — a continuously-applying value modifier; never fires an effect, so `rule.effects` is unread. */
+function describeModifierRule(rule: RuleSet, def: GameDefinition): string {
+  const mod = rule.modifier;
+  if (mod === null) return ''; // unreachable — guarded by the caller
+  const index = indexName(def, mod.indexId);
+  const amount = describeValueRef(mod.amount, def);
+  const verb = mod.op === 'set' ? `is set to ${amount}` : `is adjusted by ${amount}`;
+  const zones =
+    mod.activeZones.length === 0
+      ? ''
+      : ` while its source is in ${mod.activeZones.map((id) => zoneName(def, id)).join(' or ')}`;
+  return `${describeTarget(mod.scope, def)}: ${index} ${verb}${zones}.`;
+}
+
+/** §5.7 — intercepts an effect before it applies; `rule.effects` runs IN PLACE of the original. */
+function describeReplacementRule(rule: RuleSet, def: GameDefinition): string {
+  const r = rule.replaces;
+  if (r === null) return ''; // unreachable — guarded by the caller
+  const match = r.match ? `, where ${describeCriteria(r.match, def)}` : '';
+  const effects = rule.effects.map((e) => describeEffect(e, def)).join('; ');
+  return `If a "${r.effectKind}" effect would apply${match}, instead: ${effects}.`;
+}
+
+/** §5.8 — cost-gated activation; `rule.effects` is what the activation DOES once its cost is paid. */
+function describeActivationRule(rule: RuleSet, def: GameDefinition): string {
+  const a = rule.activation;
+  if (a === null) return ''; // unreachable — guarded by the caller
+  const cost = a.cost.length === 0 ? 'no cost' : a.cost.map((e) => describeEffect(e, def)).join('; ');
+  const check = a.costCheck ? `, if ${describeCriteria(a.costCheck, def)}` : '';
+  const window = a.window === null ? 'outside a priority window' : windowName(def, a.window);
+  const effects = rule.effects.map((e) => describeEffect(e, def)).join('; ');
+  return `Activate "${a.label}" (cost: ${cost}${check}; ${window}): ${effects}.`;
+}
+
 function describeRuleSet(rule: RuleSet, def: GameDefinition): string {
+  if (rule.continuous) return describeContinuousRule(rule, def);
+  if (rule.modifier !== null) return describeModifierRule(rule, def);
+  if (rule.replaces !== null) return describeReplacementRule(rule, def);
+  if (rule.activation !== null) return describeActivationRule(rule, def);
   const when = `When ${triggerPhrase(rule, def)}`;
   const condition = rule.condition ? `, if ${describeCriteria(rule.condition, def)}` : '';
   const effects = rule.effects.map((e) => describeEffect(e, def)).join('; ');

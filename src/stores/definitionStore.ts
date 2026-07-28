@@ -33,6 +33,8 @@ import {
   START_STATE_ID,
 } from '../engine/types';
 import type {
+  ActionRef,
+  ActionSelector,
   CardIndex,
   CardRef,
   CardTemplate,
@@ -44,6 +46,7 @@ import type {
   MachineState,
   PlayZone,
   PointPool,
+  PriorityWindow,
   RuleSet,
   SeatRef,
   TargetSelector,
@@ -65,7 +68,7 @@ export type EditResult =
 // ---------------------------------------------------------------------------
 
 /** The kinds of thing that can be referenced by id. Matches `schema.ts`'s `Refs`. */
-export type RefKind = 'pool' | 'zone' | 'template' | 'cardIndex' | 'ruleSet' | 'state';
+export type RefKind = 'pool' | 'zone' | 'template' | 'cardIndex' | 'ruleSet' | 'state' | 'priorityWindow';
 
 /** The entity holding a reference, plus where inside it the reference sits. */
 export interface Referrer {
@@ -133,15 +136,34 @@ function walkCardRef(c: CardRef, p: string, w: Walk): void {
     case 'zoneTop':
       return walkZoneRef(c.zone, `${p}.zone`, w);
     // §4.2 — `host` and `candidate` are runtime bindings, and `instance`/`promptAnswer` address a
-    // card by a per-session id, not by anything the definition declares.
+    // card by a per-session id, not by anything the definition declares. `replacedTarget` (v2 §4.2,
+    // §5.7) is bound at replacement time — carries no authored id either.
     case 'triggering':
     case 'promptAnswer':
     case 'instance':
     case 'host':
     case 'candidate':
+    case 'replacedTarget':
       return;
   }
   return unwalked(c);
+}
+
+/**
+ * v2 §4.2 — none of the three carry a reference `findReferrers` tracks: `{kind:'action', id}` names
+ * a runtime `PendingAction` id (game state, not a declared entity), same reasoning as `CardRef`'s
+ * `instance`/`promptAnswer`. No `path`/`Walk` parameter, unlike every other `walk*` here — there is
+ * nothing for it to `hit()` yet. Still a real switch, not a no-op, so a future `ActionRef` kind that
+ * DOES carry one trips the same `unwalked` guard every other walker here relies on.
+ */
+function walkActionRef(r: ActionRef): void {
+  switch (r.kind) {
+    case 'triggeringAction':
+    case 'topOfStack':
+    case 'action':
+      return;
+  }
+  return unwalked(r);
 }
 
 function walkValueRef(v: ValueRef, p: string, w: Walk): void {
@@ -160,9 +182,14 @@ function walkValueRef(v: ValueRef, p: string, w: Walk): void {
     // still carry a ZoneRef.
     case 'cardTag':
       return walkCardRef(v.card, `${p}.card`, w);
+    // §4.2, §5.7 — `replacedAmount` is bound at replacement time; carries no authored id.
     case 'literal':
     case 'activeSeatCount':
+    case 'replacedAmount':
       return;
+    // v2 §4.2 — the `ActionRef` inside can still carry one, per `walkActionRef` above.
+    case 'actionField':
+      return walkActionRef(v.action);
   }
   return unwalked(v);
 }
@@ -200,6 +227,18 @@ function walkSelector(s: TargetSelector, p: string, w: Walk): void {
     case 'hostOf':
       return walkCardRef(s.card, `${p}.card`, w);
     case 'triggeringCard':
+      return;
+  }
+  return unwalked(s);
+}
+
+/** v2 §4.4 — `counterAction.action`'s selector. `allOnStack.where` is a full CriteriaNode. */
+function walkActionSelector(s: ActionSelector, p: string, w: Walk): void {
+  switch (s.kind) {
+    case 'action':
+      return walkActionRef(s.ref);
+    case 'allOnStack':
+      if (s.where !== null) walkCriteria(s.where, `${p}.where`, w);
       return;
   }
   return unwalked(s);
@@ -257,6 +296,33 @@ function walkEffect(e: Effect, p: string, w: Walk): void {
     // `fireEvent.name` is free-form by design (§4.6) — no declared entity to reference.
     case 'fireEvent':
       return;
+    // v2 §4.5 — carries BOTH a ruleId (RefKind:'ruleSet') and a window (RefKind:'priorityWindow',
+    // nullable) — two different reference kinds off one effect, unlike anything above it.
+    case 'announceAction':
+      hit(w, 'ruleSet', e.ruleId, `${p}.ruleId`);
+      if (e.window !== null) hit(w, 'priorityWindow', e.window, `${p}.window`);
+      return;
+    case 'counterAction':
+      return walkActionSelector(e.action, `${p}.action`, w);
+    case 'openPriority':
+      hit(w, 'priorityWindow', e.window, `${p}.window`);
+      return;
+    // §4.5 — `options` is a free-form id/label list; nothing declared to reference.
+    case 'sealedChoice':
+      return walkSeatRef(e.seats, `${p}.seats`, w);
+    // §4.5 — `modes[].effects` recurses back into `walkEffect`, which is what makes a rule id or
+    // priority window reachable only from inside a mode's branch still delete-protected.
+    case 'chooseMode':
+      walkSeatRef(e.seat, `${p}.seat`, w);
+      e.modes.forEach((mode, i) =>
+        mode.effects.forEach((inner, j) => walkEffect(inner, `${p}.modes.${i}.effects.${j}`, w))
+      );
+      return;
+    case 'chooseNumber':
+      walkSeatRef(e.seat, `${p}.seat`, w);
+      walkValueRef(e.min, `${p}.min`, w);
+      walkValueRef(e.max, `${p}.max`, w);
+      return;
   }
   return unwalked(e);
 }
@@ -288,17 +354,27 @@ function walkRefs(d: GameDefinition, visit: Visit): void {
     if (rs.stateFilter !== null) hit(w, 'state', rs.stateFilter, `ruleSets.${i}.stateFilter`);
     if (rs.condition !== null) walkCriteria(rs.condition, `ruleSets.${i}.condition`, w);
     rs.effects.forEach((e, j) => walkEffect(e, `ruleSets.${i}.effects.${j}`, w));
-    // §4.5's `modifier` sub-tree. The plan assigns this to step 31 alongside phase 2's other new
-    // `RuleSet` panels, but `modifier` itself landed in step 13 — leaving it unwalked until then is
-    // precisely §8's first trap: an index or zone reachable only from a modifier would delete with
-    // no protection and resurface as a runtime MISSING_REFERENT. `.replaces` / `.activation` do not
-    // exist yet, and stay with step 31.
+    // §4.5's `modifier` sub-tree. Precisely §8's first trap: an index or zone reachable only from a
+    // modifier would delete with no protection and resurface as a runtime MISSING_REFERENT.
     if (rs.modifier !== null) {
       const m = `ruleSets.${i}.modifier`;
       walkSelector(rs.modifier.scope, `${m}.scope`, w);
       hit(w, 'cardIndex', rs.modifier.indexId, `${m}.indexId`);
       walkValueRef(rs.modifier.amount, `${m}.amount`, w);
       rs.modifier.activeZones.forEach((id, j) => hit(w, 'zone', id, `${m}.activeZones.${j}`));
+    }
+    // v2 §4.5, §5.7 — `replaces.match` may read `replacedAmount`/`replacedTarget`, which carry no
+    // id of their own, but a criterion built from ordinary refs dangles exactly like `condition` does.
+    if (rs.replaces !== null && rs.replaces.match !== null) {
+      walkCriteria(rs.replaces.match, `ruleSets.${i}.replaces.match`, w);
+    }
+    // v2 §4.5, §5.8 — three more sub-trees `walkRefs` could not see before step 21/31:
+    // `costCheck` (a CriteriaNode), `cost` (an Effect[]) and `window` (a priorityWindow ref).
+    if (rs.activation !== null) {
+      const a = `ruleSets.${i}.activation`;
+      if (rs.activation.costCheck !== null) walkCriteria(rs.activation.costCheck, `${a}.costCheck`, w);
+      rs.activation.cost.forEach((effect, j) => walkEffect(effect, `${a}.cost.${j}`, w));
+      if (rs.activation.window !== null) hit(w, 'priorityWindow', rs.activation.window, `${a}.window`);
     }
   });
 
@@ -350,6 +426,7 @@ const KIND_LABEL: Record<RefKind, string> = {
   cardIndex: 'card index',
   ruleSet: 'rule set',
   state: 'state',
+  priorityWindow: 'priority window',
 };
 
 const blockedErrors = (kind: RefKind, id: Id, refs: Referrer[]): string[] => [
@@ -398,6 +475,7 @@ export function createEmptyDefinition(id: Id, name: string, updatedAt: string): 
     customEvents: [],
     ruleSets: [],
     globalRuleSetIds: [],
+    priorityWindows: [],
     machine: {
       states: reservedStates(),
       startStateId: START_STATE_ID,
@@ -465,6 +543,11 @@ export interface DefinitionStore {
   removeRuleSet(id: Id): EditResult;
   /** Membership of `globalRuleSetIds` — the game-level rules (§4.9). */
   setGlobalRuleSet(id: Id, on: boolean): EditResult;
+
+  /** v2 §4.6, §8 step 21 — a top-level authored entity, edited in its own screen (§6.9). */
+  addPriorityWindow(input: Omit<PriorityWindow, 'id'>): EditResult;
+  updatePriorityWindow(id: Id, patch: Partial<Omit<PriorityWindow, 'id'>>): EditResult;
+  removePriorityWindow(id: Id): EditResult;
 
   addState(input: Omit<MachineState, 'id'>): EditResult;
   updateState(id: Id, patch: Partial<Omit<MachineState, 'id'>>): EditResult;
@@ -667,6 +750,22 @@ export function createDefinitionStore(options: DefinitionStoreOptions = {}) {
           if (on && !present) d.globalRuleSetIds.push(id);
           if (!on && present) d.globalRuleSetIds = d.globalRuleSetIds.filter((x) => x !== id);
         }),
+
+      // --- priority windows (v2 §4.6, §8 step 21) ---
+      addPriorityWindow(input) {
+        const id = freshId('window', new Set(get().definition.priorityWindows.map((w) => w.id)));
+        return edit((d) => void d.priorityWindows.push({ ...input, id }), id);
+      },
+      updatePriorityWindow(id, patch) {
+        if (!has(get().definition.priorityWindows, id)) return missing('priority window', id);
+        return edit((d) => patchById(d.priorityWindows, id, patch));
+      },
+      removePriorityWindow: (id) =>
+        removeChecked(
+          'priorityWindow',
+          id,
+          (d) => void (d.priorityWindows = d.priorityWindows.filter((w) => w.id !== id))
+        ),
 
       // --- state machine ---
       addState(input) {

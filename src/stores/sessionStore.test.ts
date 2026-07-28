@@ -16,6 +16,7 @@ import {
   type Deck,
   type Frame,
   type GameDefinition,
+  type Interaction,
   type PlayState,
   type PlayZone,
   type RuleSet,
@@ -73,6 +74,9 @@ const shuffleRule: RuleSet = {
   priority: 0,
   onRejection: 'continue',
   modifier: null,
+  continuous: false,
+  replaces: null,
+  activation: null,
 };
 
 const promptRule: RuleSet = {
@@ -95,6 +99,9 @@ const promptRule: RuleSet = {
   priority: 0,
   onRejection: 'continue',
   modifier: null,
+  continuous: false,
+  replaces: null,
+  activation: null,
 };
 
 /**
@@ -125,6 +132,9 @@ const midStackPromptRule: RuleSet = {
   priority: 0,
   onRejection: 'continue',
   modifier: null,
+  continuous: false,
+  replaces: null,
+  activation: null,
 };
 
 const testDef: GameDefinition = {
@@ -139,6 +149,7 @@ const testDef: GameDefinition = {
   customEvents: ['doShuffle', 'doPrompt', 'doMidPrompt'],
   ruleSets: [shuffleRule, promptRule, midStackPromptRule],
   globalRuleSetIds: ['rs_shuffle', 'rs_prompt', 'rs_midprompt'],
+  priorityWindows: [],
   machine: {
     states: [
       { id: START_STATE_ID, name: 'Start', enterableFrom: [], exitableTo: [MAIN], entryCriteria: null, transitionLabel: null, priority: 0, position: { x: 0, y: 0 } },
@@ -181,11 +192,11 @@ function cardsIn(zoneId: string, seat: number | null, n: number): string[] {
  * — but the discriminant is checked rather than assumed, so a later arm raised where `chooseCards`
  * is expected fails here instead of silently reading `undefined` off a different shape.
  */
-function interaction() {
+function interaction(): Extract<Interaction, { kind: 'chooseCards' }> | null {
   const i = session().state.interaction;
   if (i === null) return null;
   expect(i.kind).toBe('chooseCards');
-  return i;
+  return i as Extract<Interaction, { kind: 'chooseCards' }>;
 }
 
 /** Sorts object keys recursively before stringifying — the same spirit as `exportJson`'s canonical

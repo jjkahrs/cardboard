@@ -15,6 +15,7 @@ import {
   type Frame,
   type GameDefinition,
   type Id,
+  type Interaction,
   type LogLine,
   type MachineState,
   type PlayAction,
@@ -46,6 +47,17 @@ import {
 import { emptyBoard, place } from '../test/board';
 import { ECHO, fanOut, mutualLoop, N, PING, selfLoop } from '../test/fixtures/loop';
 import { END_NODE, FIXTURE_UPDATED_AT, START_NODE } from '../test/fixtures/empty';
+
+/**
+ * Every case in this file that reads `state.interaction!.candidates`/`.promptText` is asserting
+ * against phase 0's one arm — the only one anything here can raise. Narrows for the type checker
+ * without changing what is asserted; a wrong-kind interaction throws immediately, same as the `!`
+ * it replaces.
+ */
+function chooseCards(interaction: Interaction | null): Extract<Interaction, { kind: 'chooseCards' }> {
+  if (interaction?.kind !== 'chooseCards') throw new Error('expected a chooseCards interaction');
+  return interaction;
+}
 
 // ---------------------------------------------------------------------------
 // Driver — exactly what sessionStore.ts does (§3.3), minus immer.
@@ -150,6 +162,7 @@ function mini(over: Partial<GameDefinition> = {}): GameDefinition {
     customEvents: ['e'],
     ruleSets: [],
     globalRuleSetIds: [],
+    priorityWindows: [],
     machine: { states: [START_NODE, END_NODE], startStateId: START_STATE_ID, endStateId: END_STATE_ID },
     limits: LIMITS,
     updatedAt: FIXTURE_UPDATED_AT,
@@ -189,6 +202,9 @@ const bump = (id: string, trigger: string, extra: Partial<RuleSet> = {}): RuleSe
   priority: 0,
   onRejection: 'continue',
   modifier: null,
+  continuous: false,
+  replaces: null,
+  activation: null,
   ...extra,
 });
 
@@ -259,8 +275,8 @@ describe('AC: R2 — prompt suspension', () => {
 
     expect(result).toEqual({ done: true, suspended: true, haltedByLoopGuard: false });
     expect(state.interaction?.kind).toBe('chooseCards');
-    expect([...state.interaction!.candidates].sort()).toEqual(['g1', 'g2', 'g3']);
-    expect(state.interaction!.promptText).toBe(BOMB_PROMPT_TEXT);
+    expect([...chooseCards(state.interaction).candidates].sort()).toEqual(['g1', 'g2', 'g3']);
+    expect(chooseCards(state.interaction).promptText).toBe(BOMB_PROMPT_TEXT);
     expect(state.interaction!).toMatchObject({ min: 1, max: 1, seat: 0 });
   });
 
@@ -359,7 +375,7 @@ describe('AC: R2 — prompt suspension', () => {
     place(state, duel, HAND_0, BOMB, 'b1');
 
     play(state);
-    expect(state.interaction?.candidates).toEqual(['g1']);
+    expect(chooseCards(state.interaction).candidates).toEqual(['g1']);
     expect(state.cards['g1']).toBeDefined();
   });
 
@@ -403,8 +419,8 @@ describe('AC: R2 — prompt suspension', () => {
     const { lines, result } = driveEvent(state, def, 'onCardPlayed', 'b1');
 
     expect(result.suspended).toBe(true);
-    expect(state.interaction?.candidates).toEqual(['g2']);
-    expect(state.interaction?.promptText).toBe(BOMB_PROMPT_TEXT);
+    expect(chooseCards(state.interaction).candidates).toEqual(['g2']);
+    expect(chooseCards(state.interaction).promptText).toBe(BOMB_PROMPT_TEXT);
     // §5.9 row 3 — and the tester can see WHY g1 was not offered.
     const criteria = lines.filter((l) => l.kind === 'criteria');
     expect(criteria.map((l) => l.message)).toEqual([
@@ -783,6 +799,9 @@ describe('bindings and rejection policy', () => {
     const rule = bump('rs_abort', 'e', {
       onRejection: 'abort',
       modifier: null,
+      continuous: false,
+      replaces: null,
+      activation: null,
       effects: [
         { kind: 'changePool', poolId: N, seat: null, op: 'add', amount: { kind: 'literal', value: 1 } },
         { kind: 'changePool', poolId: 'nope', seat: null, op: 'add', amount: { kind: 'literal', value: 1 } },
@@ -1161,7 +1180,7 @@ describe('actions', () => {
     expect(state.budget.effectsUsed).toBeGreaterThan(spent);
 
     drive(state, duel, { kind: 'flipCard', cardId: 'b1', to: 'toggle' });
-    expect(state.budget).toEqual({ causalDepth: 0, effectsUsed: 0, settleIterations: 0 });
+    expect(state.budget).toEqual({ causalDepth: 0, effectsUsed: 0, settleIterations: 0, priorityRounds: 0 });
   });
 });
 
@@ -1180,6 +1199,12 @@ describe('AC: M5 — SESSION_FINISHED', () => {
     fireEvent: true,
     answerPrompt: true,
     cancelPrompt: true,
+    activate: true,
+    passPriority: true,
+    answerOption: true,
+    answerNumber: true,
+    answerSeat: true,
+    submitSealed: true,
   };
 
   const actions: PlayAction[] = [
@@ -1191,6 +1216,12 @@ describe('AC: M5 — SESSION_FINISHED', () => {
     { kind: 'fireEvent', name: 'onCardPlayed', seat: 0 },
     { kind: 'answerPrompt', chosen: ['g1'] },
     { kind: 'cancelPrompt' },
+    { kind: 'activate', ruleId: RS_BOMB, cardId: null, seat: 0 },
+    { kind: 'passPriority' },
+    { kind: 'answerOption', optionId: 'opt' },
+    { kind: 'answerNumber', value: 1 },
+    { kind: 'answerSeat', seat: 0 },
+    { kind: 'submitSealed', seat: 0, optionId: 'opt' },
   ];
 
   it('the table covers every PlayAction kind in types.ts', () => {

@@ -53,6 +53,7 @@ function baseDef(overrides: Partial<GameDefinition> = {}): GameDefinition {
     customEvents: [],
     ruleSets: [],
     globalRuleSetIds: [],
+    priorityWindows: [],
     machine,
     limits: {
     maxDepth: DEFAULT_MAX_DEPTH,
@@ -215,5 +216,17 @@ describe('createPlayState', () => {
     const snapshot = JSON.parse(JSON.stringify(def));
     createPlayState(def, '12345');
     expect(def).toEqual(snapshot);
+  });
+
+  // -------------------------------------------------------------------------
+  // v2 §4.8, §4.10 — the pending-action layer's four new PlayState fields, seeded empty
+  // -------------------------------------------------------------------------
+
+  it('seeds the pending-action layer empty: no pending actions, no stack, no continuous firings, zero priority rounds', () => {
+    const state = createPlayState(baseDef(), '12345');
+    expect(state.pendingActions).toEqual({});
+    expect(state.actionStack).toEqual([]);
+    expect(state.continuousFired).toEqual({});
+    expect(state.budget.priorityRounds).toBe(0);
   });
 });

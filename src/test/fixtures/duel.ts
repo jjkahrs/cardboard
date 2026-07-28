@@ -145,6 +145,9 @@ export const strikeRule: RuleSet = {
   priority: 0,
   onRejection: 'continue',
   modifier: null,
+  continuous: false,
+  replaces: null,
+  activation: null,
 };
 
 /** A3 asserts this rule's generated prose verbatim, so it stays one unambiguous effect. */
@@ -165,6 +168,9 @@ export const cantripRule: RuleSet = {
   priority: 0,
   onRejection: 'continue',
   modifier: null,
+  continuous: false,
+  replaces: null,
+  activation: null,
 };
 
 /**
@@ -196,6 +202,9 @@ export const gruntRule: RuleSet = {
   priority: 0,
   onRejection: 'continue',
   modifier: null,
+  continuous: false,
+  replaces: null,
+  activation: null,
 };
 
 /**
@@ -229,6 +238,9 @@ export const bombRule: RuleSet = {
   priority: 0,
   onRejection: 'continue',
   modifier: null,
+  continuous: false,
+  replaces: null,
+  activation: null,
 };
 
 export const ruleSets: RuleSet[] = [strikeRule, cantripRule, gruntRule, bombRule];
@@ -385,6 +397,7 @@ export const duel: GameDefinition = deepFreeze({
   customEvents: [],
   ruleSets,
   globalRuleSetIds: [],
+  priorityWindows: [],
   machine: { states, startStateId: START_STATE_ID, endStateId: END_STATE_ID },
   limits: {
     maxDepth: DEFAULT_MAX_DEPTH,

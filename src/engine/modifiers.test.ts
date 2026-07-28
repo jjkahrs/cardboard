@@ -82,6 +82,9 @@ function modifierRule(id: Id, op: 'set' | 'adjust', amount: ValueRef, activeZone
       amount,
       activeZones,
     },
+    continuous: false,
+    replaces: null,
+    activation: null,
   };
 }
 
@@ -109,6 +112,7 @@ function makeDef(over: Partial<GameDefinition> = {}): GameDefinition {
     customEvents: [],
     ruleSets: [modifierRule(RS_ADJUST, 'adjust', lit(1)), modifierRule(RS_SET, 'set', lit(0))],
     globalRuleSetIds: [],
+    priorityWindows: [],
     machine: {
       states: [
         { id: START_STATE_ID, name: 'Start', enterableFrom: [], exitableTo: [END_STATE_ID], entryCriteria: null, transitionLabel: 'Go', priority: 0, position: { x: 0, y: 0 } },
@@ -167,7 +171,10 @@ function makeState(cards: CardInstance[], zones: Record<string, Id[]>): PlayStat
     stack: [],
     pending: [],
     interaction: null,
-    budget: { causalDepth: 0, effectsUsed: 0, settleIterations: 0 },
+    pendingActions: {},
+    actionStack: [],
+    continuousFired: {},
+    budget: { causalDepth: 0, effectsUsed: 0, settleIterations: 0, priorityRounds: 0 },
   };
 }
 

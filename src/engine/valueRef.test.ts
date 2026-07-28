@@ -34,6 +34,7 @@ function makeDef(overrides: Partial<GameDefinition> = {}): GameDefinition {
     customEvents: [],
     ruleSets: [],
     globalRuleSetIds: [],
+    priorityWindows: [],
     machine: { states: [], startStateId: 'start', endStateId: 'end' },
     limits: {
     maxDepth: DEFAULT_MAX_DEPTH,
@@ -66,7 +67,10 @@ function makeState(playerCount: number, activePlayer: number, overrides: Partial
     stack: [],
     pending: [],
     interaction: null,
-    budget: { causalDepth: 0, effectsUsed: 0, settleIterations: 0 },
+    pendingActions: {},
+    actionStack: [],
+    continuousFired: {},
+    budget: { causalDepth: 0, effectsUsed: 0, settleIterations: 0, priorityRounds: 0 },
     ...overrides,
   };
 }
@@ -747,6 +751,26 @@ describe('resolveValueRef', () => {
         values: [2],
         quantifier: 'every',
       });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // v2 §4.2, §5.7 — replacedAmount and actionField. Final behaviour, not stubs: outside a
+  // replacement rule / step 23's pendingActions resolution, both are genuinely unbound.
+  // -------------------------------------------------------------------------
+
+  describe('replacedAmount', () => {
+    it('is UNBOUND_REF outside a replacement rule — replacement.ts (step 27) is the only writer', () => {
+      const result = resolveValueRef({ kind: 'replacedAmount' }, makeState(2, 0), makeCtx(), makeDef());
+      expect(result).toMatchObject({ ok: false, reason: 'UNBOUND_REF' });
+    });
+  });
+
+  describe('actionField', () => {
+    it('is UNBOUND_REF everywhere — pendingActions resolution is step 23, not this wave', () => {
+      const ref = { kind: 'actionField', action: { kind: 'topOfStack' }, field: 'controller' } as const;
+      const result = resolveValueRef(ref, makeState(2, 0), makeCtx(), makeDef());
+      expect(result).toMatchObject({ ok: false, reason: 'UNBOUND_REF' });
     });
   });
 });

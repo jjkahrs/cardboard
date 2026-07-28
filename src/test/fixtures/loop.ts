@@ -55,6 +55,9 @@ const echoRule = (id: string, name: string, trigger: string, refires: string): R
   priority: 0,
   onRejection: 'continue',
   modifier: null,
+  continuous: false,
+  replaces: null,
+  activation: null,
 });
 
 const base = (id: string, name: string, customEvents: string[], ruleSets: RuleSet[]): GameDefinition => ({
@@ -69,6 +72,7 @@ const base = (id: string, name: string, customEvents: string[], ruleSets: RuleSe
   customEvents,
   ruleSets,
   globalRuleSetIds: ruleSets.map((r) => r.id),
+  priorityWindows: [],
   machine: { states: [START_NODE, END_NODE], startStateId: START_STATE_ID, endStateId: END_STATE_ID },
   limits: {
     maxDepth: DEFAULT_MAX_DEPTH,

@@ -87,8 +87,22 @@ export function validateAnswer(interaction: Interaction, chosen: Id[]): EffectRe
       }
       return { ok: true };
     }
+    // v2 §4.9 — STUB. `answerPrompt`/`chosen: Id[]` is the wrong SHAPE of answer for all five of
+    // these (a chosen option id, a number, a seat, …) — their own actions (`answerOption`,
+    // `answerNumber`, `answerSeat`, `passPriority`, `submitSealed`) carry the right one and get
+    // their own validation when the primitive that raises the interaction lands (steps 24/28/29).
+    // Reached only if `answerPrompt` is called against the wrong kind of open interaction.
+    case 'chooseOption':
+    case 'chooseNumber':
+    case 'chooseSeat':
+    case 'priority':
+    case 'sealed':
+      return {
+        ok: false,
+        reason: 'INVALID_ANSWER',
+        detail: `Prompt answer invalid: a "${interaction.kind}" interaction is not answered with answerPrompt.`,
+      };
   }
   // §8 structural trap: no `default:` arm and no trailing return, so a new `Interaction` arm is a
-  // compile error here (TS2366) rather than a silent fall-through to "valid". A `never` assertion
-  // would NOT work while `Interaction` is a single-member type — TS only narrows unions.
+  // compile error here (TS2366) rather than a silent fall-through to "valid".
 }

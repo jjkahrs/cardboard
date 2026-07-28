@@ -51,14 +51,21 @@ const NO_SENSORS: SensorDescriptor<SensorOptions>[] = [];
  * boundary where the interaction is read — everything downstream (the table's legal-target
  * highlighting, `PromptBar` itself) sees the arm, not the union.
  *
- * Deliberately no `default:`. The declared return type excludes `undefined`, so the moment phase 2
- * adds an `Interaction` kind this switch stops being exhaustive and fails to compile right here,
- * instead of silently rendering nothing at all (§8).
+ * Deliberately no `default:` — a new `Interaction` kind is a compile error right here rather than
+ * silently rendering nothing (§8). The return type widened to `| null` in v2 §4.9/§4.12/§4.6: five
+ * new arms exist (steps 24/28/29 raise them) with no play-UI surface yet — Phase 3's job (§6.6) —
+ * so they render nothing rather than mis-rendering as a card prompt.
  */
-function interactionSurface(interaction: Interaction): ChooseCardsInteraction {
+function interactionSurface(interaction: Interaction): ChooseCardsInteraction | null {
   switch (interaction.kind) {
     case 'chooseCards':
       return interaction;
+    case 'chooseOption':
+    case 'chooseNumber':
+    case 'chooseSeat':
+    case 'priority':
+    case 'sealed':
+      return null;
   }
 }
 

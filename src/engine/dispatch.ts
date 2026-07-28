@@ -27,6 +27,7 @@ import {
   type Frame,
   type GameDefinition,
   type Id,
+  type Interaction,
   type LogLine,
   type PlayAction,
   type PlayState,
@@ -347,6 +348,33 @@ function promptTarget(
 }
 
 const promptSeat = (state: PlayState, ctx: TriggerContext) => ctx.triggeringSeat ?? activeSeat(state);
+
+/**
+ * v2 §4.9 — `promptText`/`seat` are common to FOUR of the six `Interaction` arms, not all six:
+ * `priority` has no `promptText` and `sealed` has no singular `seat` (§4.9). The three messages
+ * below used to read `interaction.promptText`/`.seat` unconditionally, which only worked while
+ * `chooseCards` was the only arm that could exist — exactly the §8 trap this file's own comments
+ * warn about elsewhere. `null` for the two that lack them; neither can be raised yet in this wave
+ * (steps 24/29), so the fallback text at each call site below is never exercised today.
+ */
+function promptFields(interaction: Interaction): { promptText: string; seat: number } | null {
+  switch (interaction.kind) {
+    case 'chooseCards':
+    case 'chooseOption':
+    case 'chooseNumber':
+    case 'chooseSeat':
+      return { promptText: interaction.promptText, seat: interaction.seat };
+    case 'priority':
+    case 'sealed':
+      return null;
+  }
+}
+
+/** `"X" (seat N)` — the shared shape `answerPrompt`/`cancelPrompt`'s log lines quote. */
+function promptLabel(interaction: Interaction): string {
+  const fields = promptFields(interaction);
+  return fields ? `"${fields.promptText}" (seat ${fields.seat})` : `"${interaction.kind}"`;
+}
 
 /**
  * ONE effect — the one at `frame.cursor` — then the cursor moves. v1 ran the whole remaining list
@@ -690,6 +718,16 @@ function advance(state: PlayState, def: GameDefinition, lines: LogLine[]): StepR
       return advanceRule(frame, state, def, lines);
     case 'settle':
       return advanceSettle(frame, state, def, lines);
+    // v2 §4.7 — STUB. Nothing in this wave can PUSH one of these three frames (`announceAction`,
+    // `openPriority` and `sealedChoice` all reject NOT_ACTIVATABLE in effects.ts), so a throw here
+    // is honest: reaching this arm means something upstream pushed a frame it should not have been
+    // able to. Real bodies land with the steps that push them.
+    case 'resolve':
+      throw new Error('resolve frame not implemented — v2 step 22');
+    case 'priority':
+      throw new Error('priority frame not implemented — v2 step 24');
+    case 'sealed':
+      throw new Error('sealed frame not implemented — v2 step 29');
   }
 }
 
@@ -743,9 +781,10 @@ function applyAction(
   if (state.interaction && !resuming) {
     // Row 9, widened from "a card prompt" to ANY interaction. Rewind is the store's job and never
     // reaches step().
+    const fields = promptFields(state.interaction);
     return reject(
       'AWAITING_PROMPT',
-      `Input ignored: awaiting response to prompt "${state.interaction.promptText}".`,
+      `Input ignored: awaiting response to ${fields ? `prompt "${fields.promptText}"` : `interaction "${state.interaction.kind}"`}.`,
       SUSPENDED
     );
   }
@@ -879,7 +918,7 @@ function applyAction(
         kind: 'prompt',
         depth: head.depth,
         ruleId: head.ruleId,
-        message: `Prompt "${pending.promptText}" (seat ${pending.seat}) answered: ${action.chosen.join(', ')}.`,
+        message: `Prompt ${promptLabel(pending)} answered: ${action.chosen.join(', ')}.`,
       });
       return MORE;
     }
@@ -892,7 +931,7 @@ function applyAction(
       log(lines, {
         level: 'reject',
         kind: 'prompt',
-        message: `Prompt "${pending.promptText}" (seat ${pending.seat}): canceled by tester.`,
+        message: `Prompt ${promptLabel(pending)}: canceled by tester.`,
       });
       // Not an override, and not flagged as one. The RuleSet then continues or aborts per
       // onRejection (§5.9 row 8b) — resuming at the SAME cursor would just re-raise the prompt.
@@ -903,6 +942,23 @@ function applyAction(
       }
       return MORE;
     }
+
+    // -----------------------------------------------------------------------
+    // v2 §4.12 — STUB. The action exists (step 21/31 has to make PlayAction compile), but nothing
+    // in this wave can raise the interaction it answers, or run the primitive it drives. Real
+    // bodies land with the steps named below.
+    case 'activate':
+      return reject('NOT_ACTIVATABLE', `Activate: RuleSet.activation is not yet implemented — v2 step 25.`);
+    case 'passPriority':
+      return reject('INVALID_ANSWER', 'Pass priority ignored: no priority window is open — v2 step 24.');
+    case 'answerOption':
+      return reject('INVALID_ANSWER', 'Answer ignored: chooseOption is not yet raised — v2 step 28.');
+    case 'answerNumber':
+      return reject('INVALID_ANSWER', 'Answer ignored: chooseNumber is not yet raised — v2 step 28.');
+    case 'answerSeat':
+      return reject('INVALID_ANSWER', 'Answer ignored: chooseSeat is not yet raised — v2 step 24/28.');
+    case 'submitSealed':
+      return reject('INVALID_ANSWER', 'Submission ignored: sealedChoice is not yet raised — v2 step 29.');
   }
 }
 

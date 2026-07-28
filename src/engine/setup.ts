@@ -101,11 +101,14 @@ export function createPlayState(def: GameDefinition, seed: string): PlayState {
     playerPools,
     cards,
     zones,
+    pendingActions: {},
+    actionStack: [],
     currentStateId: def.machine.startStateId,
     finished: false,
     stack: [],
     pending: [],
     interaction: null,
-    budget: { causalDepth: 0, effectsUsed: 0, settleIterations: 0 },
+    continuousFired: {},
+    budget: { causalDepth: 0, effectsUsed: 0, settleIterations: 0, priorityRounds: 0 },
   };
 }

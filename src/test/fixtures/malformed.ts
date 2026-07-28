@@ -69,9 +69,13 @@ export const malformedBase: GameDefinition = deepFreeze({
       priority: 0,
       onRejection: 'continue',
       modifier: null,
+      continuous: false,
+      replaces: null,
+      activation: null,
     },
   ],
   globalRuleSetIds: [MB_RULESET],
+  priorityWindows: [],
   machine: { states: [START_NODE, END_NODE], startStateId: START_STATE_ID, endStateId: END_STATE_ID },
   limits: {
     maxDepth: DEFAULT_MAX_DEPTH,

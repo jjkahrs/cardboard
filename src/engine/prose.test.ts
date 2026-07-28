@@ -15,6 +15,8 @@ import {
   type GameDefinition,
   type PlayZone,
   type PointPool,
+  type PriorityWindow,
+  type RuleSet,
   type TargetSelector,
 } from './types';
 
@@ -44,6 +46,33 @@ const grunt: CardTemplate = {
 
 const combatState = { id: 'combat', name: 'Combat', enterableFrom: [START_STATE_ID], exitableTo: [END_STATE_ID], entryCriteria: null, transitionLabel: null, priority: 0, position: { x: 0, y: 0 } };
 
+/** Referenced by EVERY_EFFECT's `announceAction`/`openPriority` samples so their prose resolves a
+ *  real name instead of the `[deleted …]` placeholder the missing-referent tests exercise on purpose. */
+const referencedRule: RuleSet = {
+  id: 'rs-referenced',
+  name: 'Referenced Rule',
+  trigger: 'onGameStart',
+  stateFilter: null,
+  condition: null,
+  effects: [],
+  priority: 0,
+  onRejection: 'continue',
+  modifier: null,
+  continuous: false,
+  replaces: null,
+  activation: null,
+};
+
+const referencedWindow: PriorityWindow = {
+  id: 'window-referenced',
+  name: 'Referenced Window',
+  start: 'active',
+  direction: 'forward',
+  includeStart: true,
+  passesToClose: null,
+  collapseEmptyOffers: true,
+};
+
 function baseDef(overrides: Partial<GameDefinition> = {}): GameDefinition {
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -55,8 +84,9 @@ function baseDef(overrides: Partial<GameDefinition> = {}): GameDefinition {
     templates: [grunt],
     decks: [],
     customEvents: [],
-    ruleSets: [],
+    ruleSets: [referencedRule],
     globalRuleSetIds: [],
+    priorityWindows: [referencedWindow],
     machine: {
       states: [
         { id: START_STATE_ID, name: 'Start', enterableFrom: [], exitableTo: ['combat'], entryCriteria: null, transitionLabel: null, priority: 0, position: { x: 0, y: 0 } },
@@ -115,6 +145,9 @@ describe('generateRulesProse', () => {
           priority: 0,
           onRejection: 'continue',
           modifier: null,
+          continuous: false,
+          replaces: null,
+          activation: null,
         },
       ],
       def
@@ -135,6 +168,9 @@ describe('generateRulesProse', () => {
       priority: 0,
       onRejection: 'continue' as const,
       modifier: null,
+      continuous: false,
+      replaces: null,
+      activation: null,
     });
     const prose = generateRulesProse(
       [
@@ -277,6 +313,29 @@ const EVERY_EFFECT: Record<Effect['kind'], Effect> = {
   detach: { kind: 'detach', target: { kind: 'triggeringCard' } },
   setController: { kind: 'setController', target: { kind: 'triggeringCard' }, seat: { kind: 'next' } },
   eliminateSeat: { kind: 'eliminateSeat', seat: { kind: 'relative', from: { kind: 'active' }, offset: -1 } },
+  announceAction: { kind: 'announceAction', ruleId: 'rs-referenced', window: 'window-referenced' },
+  counterAction: { kind: 'counterAction', action: { kind: 'action', ref: { kind: 'topOfStack' } } },
+  openPriority: { kind: 'openPriority', window: 'window-referenced' },
+  sealedChoice: {
+    kind: 'sealedChoice',
+    choiceId: 'choice1',
+    seats: { kind: 'all' },
+    options: [{ id: 'a', label: 'Option A' }, { id: 'b', label: 'Option B' }],
+  },
+  chooseMode: {
+    kind: 'chooseMode',
+    promptText: 'Choose a mode',
+    seat: { kind: 'active' },
+    modes: [{ label: 'Mode A', effects: [] }, { label: 'Mode B', effects: [] }],
+  },
+  chooseNumber: {
+    kind: 'chooseNumber',
+    promptText: 'Choose a number',
+    seat: { kind: 'active' },
+    min: { kind: 'literal', value: 0 },
+    max: { kind: 'literal', value: 5 },
+    key: 'chosenNumber',
+  },
 };
 
 describe('describeEffect — exhaustive over Effect["kind"]', () => {
@@ -414,5 +473,196 @@ describe('missing-referent placeholders', () => {
     expect(
       describeEffect({ kind: 'setCardIndex', target: { kind: 'triggeringCard' }, indexId: 'ghost-idx', op: 'add', amount: { kind: 'literal', value: 1 } }, def)
     ).toBe('add 1 to [deleted index] of this card');
+  });
+
+  it('deleted rule (announceAction.ruleId)', () => {
+    expect(describeEffect({ kind: 'announceAction', ruleId: 'ghost-rule', window: null }, def)).toBe(
+      'announce [deleted rule]'
+    );
+  });
+
+  it('deleted priority window (openPriority.window)', () => {
+    expect(describeEffect({ kind: 'openPriority', window: 'ghost-window' }, def)).toBe(
+      'open [deleted window]'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2 §4.5 — the six new effect kinds, locked exactly (not just the exhaustiveness table above)
+// ---------------------------------------------------------------------------
+
+describe('describeEffect — the six v2 phase-2 kinds', () => {
+  it('announceAction — with and without a window', () => {
+    expect(describeEffect({ kind: 'announceAction', ruleId: 'rs-referenced', window: null }, def)).toBe(
+      'announce Referenced Rule'
+    );
+    expect(
+      describeEffect({ kind: 'announceAction', ruleId: 'rs-referenced', window: 'window-referenced' }, def)
+    ).toBe('announce Referenced Rule and open Referenced Window');
+  });
+
+  it('counterAction — a single action and allOnStack, with and without a where', () => {
+    expect(
+      describeEffect({ kind: 'counterAction', action: { kind: 'action', ref: { kind: 'topOfStack' } } }, def)
+    ).toBe('counter the top action on the stack');
+    expect(
+      describeEffect({ kind: 'counterAction', action: { kind: 'allOnStack', where: null } }, def)
+    ).toBe('counter every action on the stack');
+  });
+
+  it('openPriority', () => {
+    expect(describeEffect({ kind: 'openPriority', window: 'window-referenced' }, def)).toBe(
+      'open Referenced Window'
+    );
+  });
+
+  it('sealedChoice', () => {
+    expect(
+      describeEffect(
+        {
+          kind: 'sealedChoice',
+          choiceId: 'c1',
+          seats: { kind: 'all' },
+          options: [{ id: 'a', label: 'Attack' }, { id: 'b', label: 'Block' }],
+        },
+        def
+      )
+    ).toBe('have each player simultaneously choose one of: Attack, Block');
+  });
+
+  it('chooseMode', () => {
+    expect(
+      describeEffect(
+        {
+          kind: 'chooseMode',
+          promptText: 'Pick one',
+          seat: { kind: 'active' },
+          modes: [{ label: 'Draw a card', effects: [] }, { label: 'Gain a point', effects: [] }],
+        },
+        def
+      )
+    ).toBe('have the active player choose one of: Draw a card, Gain a point');
+  });
+
+  it('chooseNumber', () => {
+    expect(
+      describeEffect(
+        {
+          kind: 'chooseNumber',
+          promptText: 'Pick a number',
+          seat: { kind: 'active' },
+          min: { kind: 'literal', value: 0 },
+          max: { kind: 'literal', value: 5 },
+          key: 'k',
+        },
+        def
+      )
+    ).toBe('have the active player choose a number from 0 to 5');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2 §4.2 — the new CardRef/ValueRef kinds and ActionRef/ActionSelector
+// ---------------------------------------------------------------------------
+
+describe('the v2 phase-2 vocabulary — §4.2', () => {
+  it('replacedTarget and replacedAmount', () => {
+    expect(describeValueRef({ kind: 'cardTag', card: { kind: 'replacedTarget' }, tag: 'x' }, def)).toBe(
+      'whether the replaced target is tagged "x"'
+    );
+    expect(describeValueRef({ kind: 'replacedAmount' }, def)).toBe('the replaced amount');
+  });
+
+  it('actionField reads a PendingAction characteristic off an ActionRef', () => {
+    expect(
+      describeValueRef({ kind: 'actionField', action: { kind: 'triggeringAction' }, field: 'controller' }, def)
+    ).toBe('the controller of the action this is responding to');
+    expect(
+      describeValueRef({ kind: 'actionField', action: { kind: 'topOfStack' }, field: 'targetCount' }, def)
+    ).toBe('the targetCount of the top action on the stack');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2 §4.5, §6.10 — the four new RuleSet panels: continuous / modifier / replaces / activation
+// ---------------------------------------------------------------------------
+
+describe('generateRulesProse — the four new RuleSet panels', () => {
+  const baseRule = {
+    id: 'r1',
+    name: 'R',
+    trigger: 'onGameStart' as const,
+    stateFilter: null,
+    effects: [{ kind: 'changePool' as const, poolId: 'score', seat: null, op: 'add' as const, amount: { kind: 'literal' as const, value: 1 } }],
+    priority: 0,
+    onRejection: 'continue' as const,
+    modifier: null,
+    continuous: false,
+    replaces: null,
+    activation: null,
+  };
+
+  it('continuous ignores trigger and reads "Whenever"', () => {
+    const condition: CriteriaNode = { kind: 'criteria', left: { kind: 'pool', poolId: 'score', seat: null }, op: '>=', right: { kind: 'literal', value: 10 } };
+    const prose = generateRulesProse([{ ...baseRule, continuous: true, condition }], def);
+    expect(prose).toBe('Whenever Score is at least 10 becomes true: add 1 to Score.');
+  });
+
+  it('modifier — set vs adjust, and the active-zones clause', () => {
+    const setMod = generateRulesProse(
+      [{ ...baseRule, condition: null, effects: [], modifier: { scope: { kind: 'triggeringCard' }, indexId: 'power', op: 'set' as const, amount: { kind: 'literal', value: 3 }, activeZones: [] } }],
+      def
+    );
+    expect(setMod).toBe('this card: Power is set to 3.');
+
+    const adjustMod = generateRulesProse(
+      [{ ...baseRule, condition: null, effects: [], modifier: { scope: { kind: 'triggeringCard' }, indexId: 'power', op: 'adjust' as const, amount: { kind: 'literal', value: 1 }, activeZones: ['bf'] } }],
+      def
+    );
+    expect(adjustMod).toBe('this card: Power is adjusted by 1 while its source is in Battlefield.');
+  });
+
+  it('replaces — with and without a match', () => {
+    const noMatch = generateRulesProse(
+      [{ ...baseRule, condition: null, replaces: { effectKind: 'drawCards' as const, match: null } }],
+      def
+    );
+    expect(noMatch).toBe('If a "drawCards" effect would apply, instead: add 1 to Score.');
+
+    const withMatch: CriteriaNode = { kind: 'criteria', left: { kind: 'replacedAmount' }, op: '>', right: { kind: 'literal', value: 1 } };
+    const matched = generateRulesProse(
+      [{ ...baseRule, condition: null, replaces: { effectKind: 'drawCards' as const, match: withMatch } }],
+      def
+    );
+    expect(matched).toBe('If a "drawCards" effect would apply, where the replaced amount is above 1, instead: add 1 to Score.');
+  });
+
+  it('activation — cost, costCheck, window and the "outside a priority window" fallback', () => {
+    const noCost = generateRulesProse(
+      [{ ...baseRule, condition: null, activation: { costCheck: null, cost: [], window: null, perInstance: false, label: 'Zap' } }],
+      def
+    );
+    expect(noCost).toBe('Activate "Zap" (cost: no cost; outside a priority window): add 1 to Score.');
+
+    const withCostAndWindow = generateRulesProse(
+      [
+        {
+          ...baseRule,
+          condition: null,
+          activation: {
+            costCheck: { kind: 'criteria', left: { kind: 'pool', poolId: 'score', seat: null }, op: '>', right: { kind: 'literal', value: 0 } },
+            cost: [{ kind: 'changePool' as const, poolId: 'score', seat: null, op: 'subtract' as const, amount: { kind: 'literal', value: 1 } }],
+            window: 'window-referenced',
+            perInstance: true,
+            label: 'Zap',
+          },
+        },
+      ],
+      def
+    );
+    expect(withCostAndWindow).toBe(
+      'Activate "Zap" (cost: subtract 1 from Score, if Score is above 0; Referenced Window): add 1 to Score.'
+    );
   });
 });

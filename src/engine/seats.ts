@@ -341,5 +341,11 @@ export function resolveCardRef(ref: CardRef, state: PlayState, ctx: TriggerConte
       const card = state.cards[id];
       return card ? { ok: true, card } : fail('TARGET_GONE', `Card "${id}" no longer exists.`);
     }
+    // v2 §4.2, §5.7 — bound only inside a replacement rule's `replaces.match`, to the target the
+    // intercepted effect was about to touch. `replacement.ts` (step 27) is the only writer of that
+    // binding; outside it there is nothing to mean, same discipline as `candidate` above. Final
+    // behaviour, not a stub — UNBOUND_REF is genuinely correct everywhere this wave can reach it.
+    case 'replacedTarget':
+      return fail('UNBOUND_REF', 'Ref "replacedTarget" is unbound: it resolves only inside a replacement rule.');
   }
 }

@@ -82,6 +82,9 @@ function cardLabel(card: CardRef): string {
     // card that was is named by the per-candidate log line wrapping it, not repeated in the label.
     case 'candidate':
       return 'candidate';
+    // v2 §4.2, §5.7 — bound only inside a replacement rule's `replaces.match`.
+    case 'replacedTarget':
+      return 'replaced target';
   }
 }
 
@@ -105,6 +108,13 @@ function labelOf(ref: ValueRef, def: GameDefinition): string {
       return 'active seats';
     case 'cardTag':
       return `tag "${ref.tag}"(${cardLabel(ref.card)})`;
+    // v2 §4.2, §5.7 — bound only inside a replacement rule's `replaces.match`.
+    case 'replacedAmount':
+      return 'replaced amount';
+    // v2 §4.2 — reads a PendingAction field. UNBOUND_REF until step 23's `pendingActions`
+    // resolution lands; the label still needs to exist for the log line that reports the failure.
+    case 'actionField':
+      return `${ref.field}(${ref.action.kind})`;
   }
 }
 

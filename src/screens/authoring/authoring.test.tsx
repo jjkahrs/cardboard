@@ -121,6 +121,9 @@ describe('<PoolsScreen>', () => {
       priority: 0,
       onRejection: 'continue',
       modifier: null,
+      continuous: false,
+      replaces: null,
+      activation: null,
     };
     useDefinitionStore.getState().setDefinition(
       blank({
@@ -268,6 +271,9 @@ describe('<EventsScreen>', () => {
           priority: 0,
           onRejection: 'continue',
           modifier: null,
+          continuous: false,
+          replaces: null,
+          activation: null,
         },
       ],
     });

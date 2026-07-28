@@ -132,6 +132,9 @@ describe('pools', () => {
           priority: 0,
           onRejection: 'continue',
           modifier: null,
+          continuous: false,
+          replaces: null,
+          activation: null,
         },
       ],
     });
@@ -209,6 +212,63 @@ describe('zones', () => {
 });
 
 // ---------------------------------------------------------------------------
+// v2 §4.6, §8 step 21 — PriorityWindow as a top-level authored entity
+// ---------------------------------------------------------------------------
+
+const RESPONSE_WINDOW = {
+  name: 'Response',
+  start: 'active' as const,
+  direction: 'forward' as const,
+  includeStart: false,
+  passesToClose: null,
+  collapseEmptyOffers: true as const,
+};
+
+describe('priority windows', () => {
+  it('creates, updates and removes one, following the same CRUD shape as every other entity', () => {
+    const { store } = storeWith(empty);
+
+    const id = ok(store.getState().addPriorityWindow(RESPONSE_WINDOW));
+    expect(store.getState().definition.priorityWindows).toEqual([{ id, ...RESPONSE_WINDOW }]);
+
+    ok(store.getState().updatePriorityWindow(id!, { name: 'Block window', passesToClose: 3 }));
+    expect(store.getState().definition.priorityWindows[0]).toMatchObject({
+      name: 'Block window',
+      passesToClose: 3,
+    });
+
+    ok(store.getState().removePriorityWindow(id!));
+    expect(store.getState().definition.priorityWindows).toEqual([]);
+  });
+
+  it('reports a missing id rather than silently succeeding', () => {
+    const { store } = storeWith(empty);
+    expect(errorsOf(store.getState().updatePriorityWindow('nope', {})).join('\n')).toContain('No ');
+  });
+
+  it('generates ids that do not collide with ids already in the definition', () => {
+    const { store } = storeWith({
+      ...empty,
+      priorityWindows: [{ id: 'window_1', ...RESPONSE_WINDOW }],
+    });
+    expect(ok(store.getState().addPriorityWindow(RESPONSE_WINDOW))).not.toBe('window_1');
+  });
+
+  it('survives an export → import round trip', () => {
+    const { store } = storeWith(empty);
+    const id = ok(store.getState().addPriorityWindow(RESPONSE_WINDOW));
+
+    const text = exportJson(store.getState().definition);
+    const reimported = JSON.parse(text);
+    expect(reimported.priorityWindows).toEqual([{ id, ...RESPONSE_WINDOW }]);
+
+    // And a second round trip is byte-identical (§7.2) — the field is nullable-and-present
+    // (`passesToClose`), not optional, so nothing vanishes on the second pass.
+    expect(exportJson(store.getState().definition)).toBe(text);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // §9.4 item 2 / §5.9 row 3b — delete is blocked and names the referrers
 // ---------------------------------------------------------------------------
 
@@ -275,6 +335,9 @@ describe('deleting a referenced entity', () => {
           priority: 0,
           onRejection: 'continue',
           modifier: null,
+          continuous: false,
+          replaces: null,
+          activation: null,
         },
       ],
     });
@@ -305,6 +368,9 @@ describe('deleting a referenced entity', () => {
         priority: 0,
         onRejection: 'continue',
         modifier: null,
+        continuous: false,
+        replaces: null,
+        activation: null,
       })
     );
 
@@ -337,6 +403,9 @@ describe('deleting a referenced entity', () => {
           amount: { kind: 'literal', value: 1 },
           activeZones: [aura],
         },
+        continuous: false,
+        replaces: null,
+        activation: null,
       })
     );
 
@@ -346,6 +415,87 @@ describe('deleting a referenced entity', () => {
     expect(errorsOf(store.getState().removeCardIndex('tpl_grunt', POWER)).join('\n')).toContain(
       'Rule set "Anthem"'
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // v2 §4.5, §8 step 31 — the four new reference sites the walker learns: `announceAction` carries
+  // BOTH a ruleId and a window; `openPriority.window`; `RuleSet.activation.window`.
+  // -------------------------------------------------------------------------
+
+  it('blocks deleting a rule set and a priority window both reachable only through announceAction', () => {
+    const { store } = storeWith(duel);
+    const window = ok(store.getState().addPriorityWindow(RESPONSE_WINDOW))!;
+    ok(
+      store.getState().addRuleSet({
+        name: 'Herald',
+        trigger: 'onGameStart',
+        stateFilter: null,
+        condition: null,
+        effects: [{ kind: 'announceAction', ruleId: RS_STRIKE, window }],
+        priority: 0,
+        onRejection: 'continue',
+        modifier: null,
+        continuous: false,
+        replaces: null,
+        activation: null,
+      })
+    );
+
+    expect(errorsOf(store.getState().removeRuleSet(RS_STRIKE)).join('\n')).toContain(
+      'effects.0.ruleId'
+    );
+    const windowErrors = errorsOf(store.getState().removePriorityWindow(window));
+    expect(windowErrors[0]).toContain('Cannot delete priority window');
+    expect(windowErrors.join('\n')).toContain('Rule set "Herald"');
+    expect(windowErrors.join('\n')).toContain('effects.0.window');
+  });
+
+  it('blocks deleting a priority window reachable only through openPriority', () => {
+    const { store } = storeWith(duel);
+    const window = ok(store.getState().addPriorityWindow(RESPONSE_WINDOW))!;
+    ok(
+      store.getState().addRuleSet({
+        name: 'Opener',
+        trigger: 'onGameStart',
+        stateFilter: null,
+        condition: null,
+        effects: [{ kind: 'openPriority', window }],
+        priority: 0,
+        onRejection: 'continue',
+        modifier: null,
+        continuous: false,
+        replaces: null,
+        activation: null,
+      })
+    );
+
+    const errors = errorsOf(store.getState().removePriorityWindow(window));
+    expect(errors.join('\n')).toContain('Rule set "Opener"');
+    expect(errors.join('\n')).toContain('effects.0.window');
+  });
+
+  it('blocks deleting a priority window reachable only through RuleSet.activation.window', () => {
+    const { store } = storeWith(duel);
+    const window = ok(store.getState().addPriorityWindow(RESPONSE_WINDOW))!;
+    ok(
+      store.getState().addRuleSet({
+        name: 'Ability',
+        trigger: 'onGameStart',
+        stateFilter: null,
+        condition: null,
+        effects: [],
+        priority: 0,
+        onRejection: 'continue',
+        modifier: null,
+        continuous: false,
+        replaces: null,
+        activation: { costCheck: null, cost: [], window, perInstance: false, label: 'Go' },
+      })
+    );
+
+    const errors = errorsOf(store.getState().removePriorityWindow(window));
+    expect(errors.join('\n')).toContain('Rule set "Ability"');
+    expect(errors.join('\n')).toContain('activation.window');
   });
 
   it('blocks deleting a machine state other states can reach', () => {
@@ -433,6 +583,9 @@ describe('findReferrers', () => {
           priority: 0,
           onRejection: 'continue',
           modifier: null,
+          continuous: false,
+          replaces: null,
+          activation: null,
         },
       ],
     };

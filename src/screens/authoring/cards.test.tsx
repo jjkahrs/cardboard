@@ -49,6 +49,9 @@ const burn: RuleSet = {
   priority: 0,
   onRejection: 'continue',
   modifier: null,
+  continuous: false,
+  replaces: null,
+  activation: null,
 };
 
 const hp = {

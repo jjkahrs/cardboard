@@ -67,6 +67,21 @@ function describeCause(action: PlayAction): LogEntry['cause'] {
       return { kind: 'userAction', description: 'Answer prompt', seat: null };
     case 'cancelPrompt':
       return { kind: 'userAction', description: 'Cancel prompt', seat: null };
+    // v2 §4.12 — STUB. dispatch.ts rejects every one of these outright (nothing in this wave raises
+    // the interaction they answer, or runs the primitive they drive), but the cause line is still
+    // written for the log entry that rejection produces — see the step named in each case there.
+    case 'activate':
+      return { kind: 'userAction', description: `Activate rule ${action.ruleId}`, seat: action.seat };
+    case 'passPriority':
+      return { kind: 'userAction', description: 'Pass priority', seat: null };
+    case 'answerOption':
+      return { kind: 'userAction', description: `Answer option ${action.optionId}`, seat: null };
+    case 'answerNumber':
+      return { kind: 'userAction', description: `Answer number ${action.value}`, seat: null };
+    case 'answerSeat':
+      return { kind: 'userAction', description: `Answer seat ${action.seat}`, seat: null };
+    case 'submitSealed':
+      return { kind: 'userAction', description: `Submit sealed choice ${action.optionId}`, seat: action.seat };
   }
 }
 

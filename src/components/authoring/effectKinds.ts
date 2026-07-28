@@ -89,6 +89,24 @@ export function defaultEffect(
       return { kind, target, host: { kind: 'triggering' } };
     case 'detach':
       return { kind, target };
+    // v2 §4.5 — also deliberately absent from EFFECT_KINDS above: the authoring UI for these six
+    // (§6.10) is phase 3/4. Same reasoning as `eliminateSeat` above — exhaustiveness only.
+    case 'announceAction': {
+      const rule = definition.ruleSets[0];
+      return rule ? { kind, ruleId: rule.id, window: null } : null;
+    }
+    case 'counterAction':
+      return { kind, action: { kind: 'action', ref: { kind: 'topOfStack' } } };
+    case 'openPriority': {
+      const window = definition.priorityWindows[0];
+      return window ? { kind, window: window.id } : null;
+    }
+    case 'sealedChoice':
+      return { kind, choiceId: '', seats: { kind: 'all' }, options: [] };
+    case 'chooseMode':
+      return { kind, promptText: '', seat: { kind: 'active' }, modes: [] };
+    case 'chooseNumber':
+      return { kind, promptText: '', seat: { kind: 'active' }, min: one, max: one, key: '' };
   }
 }
 

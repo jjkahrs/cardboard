@@ -64,6 +64,7 @@ export const empty: GameDefinition = deepFreeze({
   customEvents: [],
   ruleSets: [],
   globalRuleSetIds: [],
+  priorityWindows: [],
   machine: {
     states: [START_NODE, END_NODE],
     startStateId: START_STATE_ID,

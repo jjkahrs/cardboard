@@ -89,6 +89,16 @@ const LEVEL_OF: Record<RejectReason, LogLevel> = {
   SETTLE_DIVERGED: 'error',
   // Rule-legal: acting on an ousted seat is a refusal, not a broken game (§5.12).
   SEAT_ELIMINATED: 'reject',
+  // v2 §4.12, §5.8 — a cost genuinely could not be paid. Rule-legal, like ZONE_FULL.
+  COST_UNPAYABLE: 'reject',
+  // v2 §4.12, §5.8 — wrong window, or `activation` is null. Rule-legal.
+  NOT_ACTIVATABLE: 'reject',
+  // v2 §4.12 — a targeted action was countered before resolving. Rule-legal.
+  ACTION_COUNTERED: 'reject',
+  // v2 §4.12, §5.5 — the priority round cap. Not a broken game the way RULE_LOOP/SETTLE_DIVERGED
+  // are: a real table can legitimately hit `maxPriorityRounds` on a long response chain, and the
+  // fix is raising the limit, not treating the session as corrupt.
+  PRIORITY_EXHAUSTED: 'reject',
 };
 
 /**
@@ -1010,5 +1020,22 @@ function applyEffectInner(effect: Effect, ec: EffectContext): EffectResult {
       }
       return { ok: true };
     }
+
+    // -----------------------------------------------------------------------
+    // v2 §4.5 — STUB. The type exists (step 21/31 has to make every §4 union compile), but the
+    // behaviour belongs to the step named per kind below. Grouped into one arm because all six
+    // reject identically: nothing here can run, so nothing here should pretend to.
+    case 'announceAction':
+    case 'counterAction': {
+      const step = effect.kind === 'announceAction' ? 22 : 23;
+      return reject(ec, effect, 'NOT_ACTIVATABLE', `${effect.kind}: not yet implemented — v2 step ${step}.`);
+    }
+    case 'openPriority':
+      return reject(ec, effect, 'NOT_ACTIVATABLE', `${effect.kind}: not yet implemented — v2 step 24.`);
+    case 'chooseMode':
+    case 'chooseNumber':
+      return reject(ec, effect, 'NOT_ACTIVATABLE', `${effect.kind}: not yet implemented — v2 step 28.`);
+    case 'sealedChoice':
+      return reject(ec, effect, 'NOT_ACTIVATABLE', `${effect.kind}: not yet implemented — v2 step 29.`);
   }
 }

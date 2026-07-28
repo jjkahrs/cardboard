@@ -1414,3 +1414,46 @@ describe('module boundaries', () => {
     expect(h.lines.every((l) => l.effectKind === 'drawCards' && l.depth === 4)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// v2 §4.5 — the six phase-2 effect kinds are STUBS this wave: nothing runs, and the rejection
+// names the step that replaces the stub. Step 21+31 exists to make the union compile, not to
+// implement these; see effects.ts's `applyEffectInner`.
+// ---------------------------------------------------------------------------
+
+describe('phase-2 effect kinds — stubbed, rejecting NOT_ACTIVATABLE with the owning step named', () => {
+  it.each([
+    ['announceAction', { kind: 'announceAction', ruleId: STRIKE, window: null } as Effect, '22'],
+    [
+      'counterAction',
+      { kind: 'counterAction', action: { kind: 'allOnStack', where: null } } as Effect,
+      '23',
+    ],
+    ['openPriority', { kind: 'openPriority', window: 'w1' } as Effect, '24'],
+    [
+      'chooseMode',
+      { kind: 'chooseMode', promptText: 'Pick', seat: seat(0), modes: [] } as Effect,
+      '28',
+    ],
+    [
+      'chooseNumber',
+      { kind: 'chooseNumber', promptText: 'Pick', seat: seat(0), min: lit(0), max: lit(1), key: 'k' } as Effect,
+      '28',
+    ],
+    [
+      'sealedChoice',
+      { kind: 'sealedChoice', choiceId: 'c', seats: { kind: 'all' }, options: [] } as Effect,
+      '29',
+    ],
+  ])('%s rejects NOT_ACTIVATABLE, naming step %s, and mutates nothing', (kind, effect, step) => {
+    const before = JSON.stringify(h.state);
+    const result = applyEffect(effect, h.ec);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('NOT_ACTIVATABLE');
+      expect(result.detail).toContain(`step ${step}`);
+      expect(result.detail).toContain(kind);
+    }
+    expect(JSON.stringify(h.state)).toBe(before);
+  });
+});

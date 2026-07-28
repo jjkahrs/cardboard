@@ -61,6 +61,12 @@ export function ValueRefPicker({ value, onChange, definition, ariaLabel }: Value
         return { kind: 'activeSeatCount' };
       case 'cardTag':
         return { kind: 'cardTag', card: { kind: 'triggering' }, tag: '' };
+      // v2 §4.2 — same reasoning: not offered here (§6.10's own new `ActionSelectorChip`/`CardRefChip`
+      // widgets land in phase 4), arm exists for exhaustiveness only.
+      case 'replacedAmount':
+        return { kind: 'replacedAmount' };
+      case 'actionField':
+        return { kind: 'actionField', action: { kind: 'topOfStack' }, field: 'controller' };
     }
   };
 
