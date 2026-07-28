@@ -3,3 +3,6 @@ dist
 coverage
 *.local
 .DS_Store
+
+# transient agent worktrees
+.claude/worktrees

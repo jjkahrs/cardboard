@@ -5,7 +5,10 @@ import reactRefresh from 'eslint-plugin-react-refresh';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist', 'coverage'] },
+  // `.claude/worktrees` holds transient agent worktrees — checkouts of this same repo, not source.
+  // Linting them double-reports every file, and the nested path misses the `src/test/**` override
+  // below, so identical code lints clean at the root and errors inside a worktree.
+  { ignores: ['dist', 'coverage', '.claude'] },
   {
     files: ['**/*.{ts,tsx}'],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
