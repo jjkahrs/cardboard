@@ -442,6 +442,18 @@ describe('catalog and in-play render identically (AC: L2)', () => {
     }
   });
 
+  it('takes no PlayState, and imports nothing that would need one (§6.8)', () => {
+    // v2 §5.4 names Card.tsx:116 and :96 as read sites, and §6.8 answers that they are resolved one
+    // level up in ZoneView. That answer is only load-bearing if it is impossible to un-answer here:
+    // a `state` prop, or a direct `effectiveIndex` import, is how the catalog quietly acquires
+    // play-state coupling while every rendering test above keeps passing.
+    const source = readFileSync(join(process.cwd(), 'src/components/card/Card.tsx'), 'utf8');
+    const code = source.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ''); // the doc comments DISCUSS PlayState
+    expect(code).not.toMatch(/\bPlayState\b/);
+    expect(code).not.toMatch(/from '.*\/engine\/modifiers'/);
+    expect(code).not.toMatch(/\beffective(Index|Tags)\s*\(/);
+  });
+
   it('scales from the container, and the breakpoints are the ones §6.3 specifies', () => {
     // jsdom implements no container queries, so the proof is the stylesheet itself.
     const css = readFileSync(join(process.cwd(), 'src/theme/card.css'), 'utf8');

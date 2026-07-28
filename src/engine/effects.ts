@@ -464,13 +464,27 @@ function writeNote(v: GameValue, op: NumericOp, before: number | boolean, after:
 // applyEffect
 // ---------------------------------------------------------------------------
 
+/**
+ * §5.4's memo is keyed on state identity, which is a fresh object per immer produce — but NOT per
+ * effect: this draft is mutated in place by every effect in the transaction.
+ *
+ * Entry AND exit, because not every read between two effects goes through `applyEffect`:
+ * `dispatch.ts:564` evaluates the next RuleSet's `condition` in this same draft, `stateMachine.ts`
+ * scans transition `entryCriteria` at settle, and both reach `effectiveIndex` via `resolveValueRef`.
+ * Invalidating on entry alone leaves those reads answering with the value from before the last
+ * write — a `setCardIndex` that raised a creature's power to 7 would gate the following rule on 5.
+ */
 export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
-  const { state, def, ctx } = ec;
+  invalidateEffective(ec.state);
+  try {
+    return applyEffectInner(effect, ec);
+  } finally {
+    invalidateEffective(ec.state);
+  }
+}
 
-  // §5.4's memo is keyed on state identity, which is a fresh object per immer produce — but NOT per
-  // effect: this draft has been mutated in place by every effect before this one. Dropping the memo
-  // here is the one place that cannot be forgotten when a new effect kind is added.
-  invalidateEffective(state);
+function applyEffectInner(effect: Effect, ec: EffectContext): EffectResult {
+  const { state, def, ctx } = ec;
 
   switch (effect.kind) {
     // -----------------------------------------------------------------------

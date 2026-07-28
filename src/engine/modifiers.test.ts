@@ -282,14 +282,27 @@ describe('effectiveIndex (§5.4)', () => {
   // AC: MTG7
   it('applies every `set` before every `adjust`, regardless of authoring order', () => {
     const def = makeDef();
-    // `def.ruleSets` is authored [adjust, set]; the set-carrying lord is also created FIRST, so
-    // neither array order nor creation order would produce this answer on their own.
+    // `def.ruleSets` is authored [adjust, set] — §9.1's MTG7 spells that array order out.
     expect(def.ruleSets.map((r) => r.modifier?.op)).toEqual(['adjust', 'set']);
     const state = makeState(
       [card('c0', T_BEAR), card('c1', T_SET_LORD), card('c2', T_ADJUST_LORD)],
       { [BF_KEY]: ['c0', 'c1', 'c2'] }
     );
     // set.amount (0) + adjust.amount (1) — the adjust is NOT clobbered by the set.
+    expect(effectiveIndex(state, def, 'c0', POWER)).toBe(1);
+  });
+
+  // The half MTG7's own arrangement cannot see. Above, the set-carrying lord is ALSO the earlier
+  // instance, so a naive "apply every modifier in creation order" engine lands on 1 too. Swapping
+  // the two instances separates them: creation order gives 2 + 1 = 3, then set → 0, while §5.4's
+  // two passes give set → 0, then + 1 = 1.
+  it('…and the set still wins when the ADJUST source is the earlier instance', () => {
+    const def = makeDef();
+    const state = makeState(
+      [card('c0', T_BEAR), card('c1', T_ADJUST_LORD), card('c2', T_SET_LORD)],
+      { [BF_KEY]: ['c0', 'c1', 'c2'] }
+    );
+    expect(collectModifiers(state, def).map((m) => m.spec.op)).toEqual(['adjust', 'set']);
     expect(effectiveIndex(state, def, 'c0', POWER)).toBe(1);
   });
 
@@ -388,6 +401,46 @@ describe('the WeakMap memo (§5.4)', () => {
     // The old object still answers with the old board — it IS the old board, which is what makes
     // rewinding to it correct rather than merely cached.
     expect(effectiveIndex(before, def, 'c0', POWER)).toBe(2);
+  });
+
+  // Regression, step 20. `applyEffect` used to drop the memo on ENTRY only, which covers a read
+  // made by the NEXT effect but not one made between two effects — and `dispatch.ts:564` evaluates
+  // the following RuleSet's `condition` in exactly that window, as does `stateMachine.ts`'s settle
+  // scan of `entryCriteria`. The memo then answered with the value from before the last write: a
+  // `setCardIndex` that raised power to 9 gated the next rule on 5.
+  it('does not serve a pre-write value to a read that happens between two effects', () => {
+    const { def, state } = buffedBoard(); // c0 base 3, lord +2 → reads 5
+    applyEffect(setIndex('add', 2), ecFor(state, def, 'c0')); // 5 + 2 → base 7, reads 9
+
+    expect(state.cards['c0'].indexValues[POWER]).toBe(7);
+    // No intervening applyEffect — this is the read dispatch makes for the next rule's condition.
+    expect(effectiveIndex(state, def, 'c0', POWER)).toBe(9);
+    const node: CriteriaNode = {
+      kind: 'criteria',
+      left: { kind: 'cardIndex', card: { kind: 'instance', id: 'c0' }, indexId: POWER },
+      op: '=',
+      right: lit(9),
+    };
+    expect(evalCriteriaBool(node, state, ctx, def)).toBe(true);
+  });
+
+  it('does not serve a pre-move value either — moveCards changes which modifiers are active', () => {
+    const def = makeDef();
+    const state = makeState(
+      [card('c0', T_BEAR), card('c1', T_ADJUST_LORD)],
+      { [BF_KEY]: ['c1'], [HAND_0]: ['c0'] }
+    );
+    expect(effectiveIndex(state, def, 'c0', POWER)).toBe(2); // priming the memo on this very object
+    applyEffect(
+      {
+        kind: 'moveCards',
+        target: { kind: 'allInZone', zone: { zoneId: HAND, seat: { kind: 'seat', index: 0 } } },
+        to: { zoneId: BF, seat: null },
+        position: 'top',
+      },
+      effectContext(state, def)
+    );
+    expect(effectiveIndex(state, def, 'c0', POWER)).toBe(3);
   });
 
   it('lives nowhere in PlayState — the state is byte-identical after a read', () => {

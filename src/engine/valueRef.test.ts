@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseZoneKey, resolvePoolDef, resolveSeat, resolveValueRef, zoneKey } from './valueRef';
+import { evalCriteriaBool } from './criteria';
+import type { CriteriaNode } from './types';
 import {
   DEFAULT_MAX_DEPTH,
   DEFAULT_MAX_EFFECTS,
@@ -322,6 +324,31 @@ describe('resolveValueRef', () => {
         def
       );
       expect(res).toEqual({ ok: true, values: [2], quantifier: 'every' });
+    });
+
+    // §4.1 names EVERY quantifier, not just `sum`: "an implementation that iterates the array
+    // silently counts ousted players in every vote tally AND every 'all players' check". The tally
+    // half is above; this is the check half, asserted through `evalCriteriaBool` because that is the
+    // consumer — `resolveSeat` returning the right seats proves nothing if criteria re-index.
+    it('every/some fold over the RING, so an ousted seat cannot decide an "all players" check', () => {
+      const def = makeDef({
+        pools: [{ id: 'hp', scope: 'player', value: { type: 'integer', name: 'HP', defaultValue: 0, min: null, max: null } }],
+      });
+      // Seat 1 is out and its stale HP of 0 is still sitting in the dense array (§3.5).
+      const state = makeState(3, 0, { seatOrder: [0, 2], eliminated: [1], playerPools: { hp: [5, 0, 5] } });
+      const node = (op: 'every' | 'some'): CriteriaNode => ({
+        kind: 'criteria',
+        left: { kind: 'pool', poolId: 'hp', seat: { kind: 'all', quantifier: op } },
+        op: '>',
+        right: { kind: 'literal', value: 0 },
+      });
+      // Iterating playerPools would make `every` false (seat 1's 0) and is the whole trap.
+      expect(evalCriteriaBool(node('every'), state, makeCtx(), def)).toBe(true);
+
+      // …and the mirror: with the LIVE seats at 0 and only the ousted one above the line, `some`
+      // must be false rather than rescued by a player who is no longer at the table.
+      const inverted = makeState(3, 0, { seatOrder: [0, 2], eliminated: [1], playerPools: { hp: [0, 5, 0] } });
+      expect(evalCriteriaBool(node('some'), inverted, makeCtx(), def)).toBe(false);
     });
 
     it('sum over a BOOLEAN pool is TYPE_MISMATCH at runtime — the import path bypasses the editor', () => {
