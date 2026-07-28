@@ -1,5 +1,11 @@
 import { useEffect } from 'react';
-import type { Id, PendingPrompt } from '../../engine/types';
+import type { Id, Interaction } from '../../engine/types';
+
+/**
+ * The one `Interaction` arm phase 0 can raise. This bar takes the ARM, not the union: phase 3 adds
+ * sibling surfaces for the other kinds (§6.6) rather than growing six branches in here.
+ */
+export type ChooseCardsInteraction = Extract<Interaction, { kind: 'chooseCards' }>;
 
 /**
  * The bar that appears while the engine is suspended on a prompt (§6.7).
@@ -14,7 +20,7 @@ export function PromptBar({
   onConfirm,
   onCancel,
 }: {
-  prompt: PendingPrompt;
+  prompt: ChooseCardsInteraction;
   chosen: Id[];
   onConfirm: () => void;
   onCancel: () => void;

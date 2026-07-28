@@ -14,6 +14,7 @@ import {
   START_STATE_ID,
   type CardTemplate,
   type Deck,
+  type Frame,
   type GameDefinition,
   type PlayState,
   type PlayZone,
@@ -94,6 +95,35 @@ const promptRule: RuleSet = {
   onRejection: 'continue',
 };
 
+/**
+ * The prompt sits at effect index 1 of 3 and effect 0 fires another event. Suspending inside this
+ * rule therefore parks a `rule` frame's cursor MID effect list with a sibling event still sitting in
+ * `state.pending` — the v2-only shape §5.10 claims rewind restores with no special case. `rs_prompt`
+ * above cannot prove that: its single effect leaves the cursor at 0 and `pending` empty.
+ */
+const midStackPromptRule: RuleSet = {
+  id: 'rs_midprompt',
+  name: 'Mid-list Prompt',
+  trigger: 'doMidPrompt',
+  stateFilter: null,
+  condition: null,
+  effects: [
+    { kind: 'fireEvent', name: 'doShuffle' },
+    {
+      kind: 'destroyCards',
+      target: {
+        kind: 'prompt',
+        from: { kind: 'allInZone', zone: { zoneId: BATTLEFIELD, seat: null } },
+        count: { kind: 'literal', value: 1 },
+        promptText: 'Choose one to destroy (mid-list)',
+      },
+    },
+    { kind: 'shuffleZone', zone: { zoneId: DECK, seat: { kind: 'active' } } },
+  ],
+  priority: 0,
+  onRejection: 'continue',
+};
+
 const testDef: GameDefinition = {
   schemaVersion: SCHEMA_VERSION,
   id: 'test-session-def',
@@ -103,9 +133,9 @@ const testDef: GameDefinition = {
   zones: [handZone, deckZone, battlefieldZone],
   templates: [blankTemplate],
   decks: [deck],
-  customEvents: ['doShuffle', 'doPrompt'],
-  ruleSets: [shuffleRule, promptRule],
-  globalRuleSetIds: ['rs_shuffle', 'rs_prompt'],
+  customEvents: ['doShuffle', 'doPrompt', 'doMidPrompt'],
+  ruleSets: [shuffleRule, promptRule, midStackPromptRule],
+  globalRuleSetIds: ['rs_shuffle', 'rs_prompt', 'rs_midprompt'],
   machine: {
     states: [
       { id: START_STATE_ID, name: 'Start', enterableFrom: [], exitableTo: [MAIN], entryCriteria: null, transitionLabel: null, priority: 0, position: { x: 0, y: 0 } },
@@ -140,6 +170,19 @@ function session() {
  * card wherever it sits. */
 function cardsIn(zoneId: string, seat: number | null, n: number): string[] {
   return session().state.zones[zoneKey(zoneId, seat)].cardIds.slice(0, n);
+}
+
+/**
+ * `state.interaction`, asserted to be the one arm phase 0 can raise before it is read as one.
+ * §9.2: v1's prompt slot's data under a discriminant, so every assertion below is the v1 assertion
+ * — but the discriminant is checked rather than assumed, so a later arm raised where `chooseCards`
+ * is expected fails here instead of silently reading `undefined` off a different shape.
+ */
+function interaction() {
+  const i = session().state.interaction;
+  if (i === null) return null;
+  expect(i.kind).toBe('chooseCards');
+  return i;
 }
 
 /** Sorts object keys recursively before stringifying — the same spirit as `exportJson`'s canonical
@@ -177,7 +220,7 @@ describe('startSession', () => {
   });
 });
 
-describe('dispatch — a rejected action while a prompt is pending', () => {
+describe('dispatch — a rejected action while an interaction is set', () => {
   it('keeps the pending prompt answerable (logSeq must not move under it)', () => {
     // promptId is `${logSeq}:${ruleId}:${effectIndex}`. A rejected action still appends a log entry,
     // so bumping logSeq for it files the tester's answer under an id runEffects never reads: the
@@ -188,15 +231,15 @@ describe('dispatch — a rejected action while a prompt is pending', () => {
     dispatch({ kind: 'moveCard', cardId, to: { zoneId: BATTLEFIELD, seat: null }, position: 'top' });
     dispatch({ kind: 'fireEvent', name: 'doPrompt', seat: 0 });
 
-    const raised = session().state.pendingPrompt;
+    const raised = interaction();
     expect(raised?.candidates).toEqual([cardId]);
 
     dispatch({ kind: 'transition', toStateId: MAIN }); // rejected AWAITING_PROMPT — but logged
-    expect(session().state.pendingPrompt?.promptId).toBe(raised!.promptId);
+    expect(interaction()?.promptId).toBe(raised!.promptId);
 
     dispatch({ kind: 'answerPrompt', chosen: [cardId] });
 
-    expect(session().state.pendingPrompt).toBeNull();
+    expect(interaction()).toBeNull();
     expect(session().state.cards[cardId]).toBeUndefined(); // the destroy actually ran
   });
 });
@@ -262,30 +305,93 @@ describe('rewind — AC: H1', () => {
 });
 
 describe('rewind — across a prompt', () => {
-  it('rewinding past the suspending entry clears pendingPrompt; rewinding TO it restores the original frozen prompt', () => {
+  it('rewinding past the suspending entry clears the interaction; rewinding TO it restores the original frozen prompt', () => {
     const [a, b] = cardsIn(DECK, 0, 2);
     useSessionStore.getState().dispatch({ kind: 'moveCard', cardId: a, to: { zoneId: BATTLEFIELD, seat: null }, position: 'top' });
     useSessionStore.getState().dispatch({ kind: 'moveCard', cardId: b, to: { zoneId: BATTLEFIELD, seat: null }, position: 'top' });
     const beforePrompt = session().log.length; // 2
 
     useSessionStore.getState().dispatch({ kind: 'fireEvent', name: 'doPrompt', seat: null });
-    const suspendedPrompt = session().state.pendingPrompt;
+    const suspendedPrompt = interaction();
     expect(suspendedPrompt).not.toBeNull();
     expect(session().log.at(-1)!.flags.suspended).toBe(true);
     const promptAt = session().log.length; // 3
 
     // Answer it — the suspension resolves and clears.
     useSessionStore.getState().dispatch({ kind: 'answerPrompt', chosen: [suspendedPrompt!.candidates[0]] });
-    expect(session().state.pendingPrompt).toBeNull();
+    expect(interaction()).toBeNull();
 
     // Rewind TO the suspending entry (keep it, undo only the answer): the ORIGINAL frozen prompt
     // comes back, so the tester could answer differently and branch.
     useSessionStore.getState().rewind(promptAt);
-    expect(session().state.pendingPrompt).toEqual(suspendedPrompt);
+    expect(interaction()).toEqual(suspendedPrompt);
 
     // Rewind PAST the suspending entry entirely: no special case needed, it's just gone.
     useSessionStore.getState().rewind(beforePrompt);
-    expect(session().state.pendingPrompt).toBeNull();
+    expect(interaction()).toBeNull();
+  });
+});
+
+describe('rewind — across a suspension parked MID stack (§5.10, v2-only)', () => {
+  it('restores stack, pending, interaction and budget together — including the rule cursor mid effect list', () => {
+    // §5.10's whole claim is that a suspended v2 state needs no special case in rewind because
+    // `stack`, `pending`, `interaction` and `budget` are all fields of `PlayState`. A v1 suspension
+    // could not test that: it was one queued `effect` work item with no cursor. `rs_midprompt`
+    // suspends at effect 1 of 3, with effect 0's fired event still waiting in `pending`, so there is
+    // a real continuation to lose.
+    const [a, b] = cardsIn(DECK, 0, 2);
+    useSessionStore.getState().dispatch({ kind: 'moveCard', cardId: a, to: { zoneId: BATTLEFIELD, seat: null }, position: 'top' });
+    useSessionStore.getState().dispatch({ kind: 'moveCard', cardId: b, to: { zoneId: BATTLEFIELD, seat: null }, position: 'top' });
+    const beforePrompt = session().log.length;
+
+    useSessionStore.getState().dispatch({ kind: 'fireEvent', name: 'doMidPrompt', seat: null });
+    const promptAt = session().log.length;
+
+    // The suspended shape, captured by value — `session()` hands back the live object, and the
+    // answer below mutates the very frames we are about to compare against.
+    const suspended = structuredClone(session().state);
+    const ruleFrameOf = (s: PlayState) =>
+      s.stack.find((f): f is Extract<Frame, { kind: 'rule' }> => f.kind === 'rule');
+
+    // Preconditions: if any of these are wrong the restoration assertions below prove nothing.
+    expect(suspended.interaction).not.toBeNull();
+    expect(suspended.stack.map((f) => f.kind)).toEqual(['event', 'rule']);
+    expect(suspended.pending.map((f) => f.kind)).toEqual(['event']); // effect 0's fired doShuffle
+    expect(ruleFrameOf(suspended)?.ruleId).toBe('rs_midprompt');
+    // Parked ON the prompt effect, with effect 2 still owed — not 0, not past the end.
+    expect(ruleFrameOf(suspended)?.cursor).toBe(1);
+    expect(midStackPromptRule.effects).toHaveLength(3);
+    expect(suspended.budget.effectsUsed).toBeGreaterThan(0); // effect 0 ran and was counted
+
+    // Answer it: the stack drains, the queued doShuffle runs, the transaction settles.
+    useSessionStore.getState().dispatch({ kind: 'answerPrompt', chosen: [interaction()!.candidates[0]] });
+    expect(interaction()).toBeNull();
+    expect(session().state.stack).toEqual([]);
+    expect(session().state.pending).toEqual([]);
+
+    // Rewind TO the suspending entry: every part of the continuation comes back at once.
+    useSessionStore.getState().rewind(promptAt);
+    const back = session().state;
+    expect(back.interaction).toEqual(suspended.interaction);
+    expect(back.stack).toEqual(suspended.stack);
+    expect(back.pending).toEqual(suspended.pending);
+    expect(back.budget).toEqual(suspended.budget);
+    // Asserted by VALUE, not by deep-equality alone: `stack`/`pending` deep-equal would also pass if
+    // both sides were `[]`, which is exactly the vacuous pass this test exists to rule out.
+    expect(ruleFrameOf(back)?.cursor).toBe(1);
+    expect(back.stack).toHaveLength(2);
+    expect(back.pending).toHaveLength(1);
+
+    // And the restored continuation is live, not a corpse: answering again completes it.
+    useSessionStore.getState().dispatch({ kind: 'answerPrompt', chosen: [interaction()!.candidates[0]] });
+    expect(interaction()).toBeNull();
+    expect(session().state.stack).toEqual([]);
+
+    // Rewind PAST it: the whole continuation is gone, with no special case in rewind().
+    useSessionStore.getState().rewind(beforePrompt);
+    expect(session().state.interaction).toBeNull();
+    expect(session().state.stack).toEqual([]);
+    expect(session().state.pending).toEqual([]);
   });
 });
 
@@ -392,6 +498,7 @@ describe('§9.4 item 13 — immer patch coverage over every top-level PlayState 
     const base = createPlayState(testDef, SEED);
     const someCardId = Object.keys(base.cards)[0];
     const someZoneKey = Object.keys(base.zones)[0];
+    const emptyCtx = () => ({ triggeringCardId: null, zoneKey: null, triggeringSeat: null, promptAnswers: {} });
 
     const mutators: Array<[string, (d: PlayState) => void]> = [
       ['definitionId', (d) => { d.definitionId = 'other'; }],
@@ -407,8 +514,11 @@ describe('§9.4 item 13 — immer patch coverage over every top-level PlayState 
       ['zones', (d) => { d.zones[someZoneKey].cardIds.push('extra'); }],
       ['currentStateId', (d) => { d.currentStateId = 'somewhere-else'; }],
       ['finished', (d) => { d.finished = true; }],
-      ['queue', (d) => { d.queue.push({ kind: 'event', id: 0, parentId: null, depth: 0, name: 'x', ctx: { triggeringCardId: null, zoneKey: null, triggeringSeat: null, promptAnswers: {} } }); }],
-      ['pendingPrompt', (d) => { d.pendingPrompt = { promptId: 'p', promptText: 't', seat: 0, candidates: [], min: 0, max: 1 }; }],
+      // v1's single `queue` row splits in two: `stack` and `pending` are independent fields, and a
+      // rewind that restored one but not the other would still pass a single-field check.
+      ['stack', (d) => { d.stack.push({ kind: 'rule', id: 0, parentId: null, depth: 0, ruleId: 'rs_shuffle', sourceCardId: null, ctx: emptyCtx(), cursor: 0, aborted: false }); }],
+      ['pending', (d) => { d.pending.push({ kind: 'event', id: 0, parentId: null, depth: 0, name: 'x', ctx: emptyCtx(), bindings: [], cursor: -1 }); }],
+      ['interaction', (d) => { d.interaction = { kind: 'chooseCards', promptId: 'p', promptText: 't', seat: 0, candidates: [], min: 0, max: 1 }; }],
       ['budget', (d) => { d.budget.effectsUsed += 1; }],
     ];
 
@@ -436,9 +546,13 @@ describe('performance budget', () => {
     const elapsed = Date.now() - start;
     expect(elapsed).toBeLessThan(2000);
     // The invariant §9.3 actually cares about: PER-ENTRY cost must not grow with total state (a
-    // snapshot-in-disguise). Confirmed by inspecting an actual frame: each flipCard here is 2 small
-    // `replace` patches (the field flip + dispatch.ts's per-action budget reset), never a
-    // whole-array/whole-state dump — the queue is untouched by this workload. Average bytes/entry
+    // snapshot-in-disguise). Confirmed by inspecting an actual frame: each flipCard here is two
+    // small `replace` patches (the field flip and `nextWorkId`, bumped by the settle frame's id),
+    // never a whole-array/whole-state dump. `stack` and `pending` cost nothing here even though v2
+    // pushes a settle frame per transaction: the push and the pop both happen inside the SAME
+    // produceWithPatches, so both arrays start and end empty and immer records no patch for them.
+    // If this assertion ever fails, the settle frame has started leaking patches into every history
+    // frame — a real regression in rewind cost, not a multiplier that needs raising. Average bytes/entry
     // does drift a little (logSeq grows from 1 to 3 JSON digits over 200 entries, a bounded,
     // one-time log-scale effect) but nowhere near doubling, so 2x is generous and unambiguous, not
     // a constant tuned to clear the observed number.

@@ -24,9 +24,9 @@ import { parseCardDragId, parseDropId } from '../../components/dnd/ids';
 import { EventLogPanel } from '../../components/play/EventLogPanel';
 import { PlayTable } from '../../components/play/PlayTable';
 import { PlayToolbar } from '../../components/play/PlayToolbar';
-import { PromptBar } from '../../components/play/PromptBar';
+import { PromptBar, type ChooseCardsInteraction } from '../../components/play/PromptBar';
 import { validateDefinition } from '../../engine/schema';
-import type { GameDefinition, Id, LogEntry, PendingPrompt, PlayState } from '../../engine/types';
+import type { GameDefinition, Id, Interaction, LogEntry, PlayState } from '../../engine/types';
 import { getGame } from '../../stores/persistence';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -45,6 +45,22 @@ const collisionDetection: CollisionDetection = (args) => {
 
 /** Prompt mode hands `DndContext` no sensors, so the only possible interaction is choosing (§6.7). */
 const NO_SENSORS: SensorDescriptor<SensorOptions>[] = [];
+
+/**
+ * Picks the surface a raised `Interaction` renders as. Narrowing happens HERE, once, at the
+ * boundary where the interaction is read — everything downstream (the table's legal-target
+ * highlighting, `PromptBar` itself) sees the arm, not the union.
+ *
+ * Deliberately no `default:`. The declared return type excludes `undefined`, so the moment phase 2
+ * adds an `Interaction` kind this switch stops being exhaustive and fails to compile right here,
+ * instead of silently rendering nothing at all (§8).
+ */
+function interactionSurface(interaction: Interaction): ChooseCardsInteraction {
+  switch (interaction.kind) {
+    case 'chooseCards':
+      return interaction;
+  }
+}
 
 /**
  * `/game/:gameId/play` — the playtest (§6.4). Its own layout, no authoring rail.
@@ -97,7 +113,8 @@ export function PlayScreen() {
   // Leaving discards the session and its log (§6.1), so it is worth one click to confirm.
   const blocker = useBlocker(phase === 'playing');
 
-  const prompt = session?.state.pendingPrompt ?? null;
+  const interaction = session?.state.interaction ?? null;
+  const prompt = interaction === null ? null : interactionSurface(interaction);
   const promptId = prompt?.promptId ?? null;
   useEffect(() => setChosen([]), [promptId]);
 
@@ -256,7 +273,7 @@ interface PlayBoardProps {
   definition: GameDefinition;
   state: PlayState;
   log: LogEntry[];
-  prompt: PendingPrompt | null;
+  prompt: ChooseCardsInteraction | null;
   chosen: Id[];
   onChoose: (cardId: Id) => void;
 }

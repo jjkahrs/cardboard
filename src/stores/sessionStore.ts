@@ -8,6 +8,7 @@
 import { create } from 'zustand';
 import { applyPatches, enablePatches, produceWithPatches, type Patch } from 'immer';
 import { step } from '../engine/dispatch';
+import { isResuming, isSuspended } from '../engine/interaction';
 import { createPlayState } from '../engine/setup';
 import {
   CONTINUE,
@@ -93,27 +94,32 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     const lines: LogLine[] = [];
     let result: StepResult = { done: false, suspended: false, haltedByLoopGuard: false };
 
-    // A resume (answerPrompt/cancelPrompt) continues an already-open transaction: dispatch.ts
-    // builds the prompt's id from state.logSeq when it first raises the prompt, and looks it up
-    // again by recomputing the SAME formula on resume. Bumping logSeq on the resuming call would
-    // change that lookup key out from under it and the answer would never match. Mirrors
-    // dispatch.ts's own `if (!resuming) state.budget = ...` treatment of the budget field.
-    const resuming = action.kind === 'answerPrompt' || action.kind === 'cancelPrompt';
+    // A resume continues an already-open transaction: dispatch.ts builds the prompt's id from
+    // state.logSeq when it first raises the interaction, and looks it up again by recomputing the
+    // SAME formula on resume. Bumping logSeq on the resuming call would change that lookup key out
+    // from under it and the answer would never match. Mirrors dispatch.ts's own
+    // `if (!resuming) state.budget = ...` treatment of the budget field.
+    //
+    // `isResuming` rather than an inline kind test: dispatch.ts routes its AWAITING_PROMPT gate
+    // through the same predicate, and a second copy of "which actions resume" here is exactly the
+    // drift §3.3 puts that predicate in one file to prevent.
+    const resuming = isResuming(action);
 
     // The WHOLE transaction — every step() call until settlement — runs inside ONE
     // produceWithPatches. That makes each HistoryFrame a single atomic immer diff, which is what
     // makes "apply this frame's inverse patches" safe: immer's own inverse patches for one produce
     // call are guaranteed correct applied as given. Concatenating patches from several SEPARATE
     // produceWithPatches calls (one per step()) and reversing that flat list — the design doc's
-    // literal skeleton — corrupts array fields that more than one step() call touched (state.queue
-    // above all): reversal mangles the internal order of index-based patches from different calls.
-    // Confirmed by reproduction; see the report to team-lead.
+    // literal skeleton — corrupts array fields that more than one step() call touched (the frame
+    // arrays `state.stack` and `state.pending` above all, which every step() pushes to, pops from or
+    // promotes between): reversal mangles the internal order of index-based patches from different
+    // calls. Confirmed by reproduction; see the report to team-lead.
     const [next, forward, inverse] = produceWithPatches(session.state, (draft) => {
-      // Also held while a prompt is pending: such an action is either the resume itself (excluded
+      // Also held while an interaction is set: such an action is either the resume itself (excluded
       // above) or is rejected AWAITING_PROMPT without running an effect — but it still appends a log
       // entry, so bumping logSeq would move promptIdOf() out from under the suspended effect and the
       // tester's answer would be filed under an id nothing reads.
-      if (!resuming && !session.state.pendingPrompt) draft.logSeq = seq;
+      if (!resuming && !isSuspended(session.state)) draft.logSeq = seq;
       let input: EngineInput = { kind: 'action', action, override };
       for (;;) {
         result = step(draft, input, lines, session.definition);

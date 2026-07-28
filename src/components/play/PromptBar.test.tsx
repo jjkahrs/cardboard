@@ -6,11 +6,11 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import type { PendingPrompt } from '../../engine/types';
 import { BOMB_PROMPT_TEXT } from '../../test/fixtures/duel';
-import { PromptBar } from './PromptBar';
+import { PromptBar, type ChooseCardsInteraction } from './PromptBar';
 
-const prompt: PendingPrompt = {
+const prompt: ChooseCardsInteraction = {
+  kind: 'chooseCards',
   promptId: '0:rs_bomb:0',
   promptText: BOMB_PROMPT_TEXT,
   seat: 0,
@@ -19,7 +19,7 @@ const prompt: PendingPrompt = {
   max: 1,
 };
 
-const bar = (chosen: string[] = [], over: Partial<PendingPrompt> = {}) => {
+const bar = (chosen: string[] = [], over: Partial<ChooseCardsInteraction> = {}) => {
   const onConfirm = vi.fn();
   const onCancel = vi.fn();
   return {
