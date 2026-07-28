@@ -682,6 +682,17 @@ export type Frame =
       ctx: TriggerContext;
       cursor: number;
       aborted: boolean;
+      /**
+       * v2 §5.7 — effect-replacement rule ids that have already substituted somewhere in the
+       * CURRENT top-level effect's replacement chain (`frame.cursor`'s effect, not the whole rule).
+       * `replacement.ts` resets it to `{}` at the start of each top-level effect and accumulates
+       * into it across the chain, so a rule cannot re-match its own substitutes ("draw two instead"
+       * cannot recurse) while a SECOND, distinct replacement rule may still intercept once (§9.5
+       * edge case 7 — a designed choice, not a spec-mandated one). Optional and absent on every
+       * frame `replacement.ts` never touches, so every existing `push(state, {kind:'rule', ...})`
+       * call site (dispatch.ts) stays valid unchanged.
+       */
+      replacedBy?: Record<Id, true>;
     })
   | (FrameBase & { kind: 'settle'; iteration: number })
   /** v2 §4.7, §4.8 — pops the top of `actionStack` and runs its rule's effects. Step 22. */
