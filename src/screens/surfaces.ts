@@ -22,6 +22,12 @@ export const SURFACES: Surface[] = [
     count: (d) => d.ruleSets.length,
     errorKeys: ['ruleSets', 'globalRuleSetIds'],
   },
+  {
+    path: 'priority',
+    label: 'Priority',
+    count: (d) => d.priorityWindows.length,
+    errorKeys: ['priorityWindows'],
+  },
   { path: 'states', label: 'States', count: (d) => d.machine.states.length, errorKeys: ['machine'] },
 ];
 
