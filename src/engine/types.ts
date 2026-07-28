@@ -363,7 +363,10 @@ export interface WorkItemBase {
 }
 
 export type WorkItem =
-  | (WorkItemBase & { kind: 'event'; name: EventName; ctx: TriggerContext })
+  // `stateId` is set only for `onStateExit`: the transition has already landed by the time the
+  // queued event drains, so `state.currentStateId` is the DESTINATION and a `stateFilter` matched
+  // against it would fire for the wrong state. Carries the state that was LEFT.
+  | (WorkItemBase & { kind: 'event'; name: EventName; ctx: TriggerContext; stateId?: Id })
   | (WorkItemBase & { kind: 'rule'; ruleId: Id; sourceCardId: Id | null; ctx: TriggerContext })
   | (WorkItemBase & { kind: 'effect'; ruleId: Id; effectIndex: number; ctx: TriggerContext })
   | (WorkItemBase & { kind: 'transition'; toStateId: Id; forced: boolean });

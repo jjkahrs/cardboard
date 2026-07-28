@@ -101,10 +101,15 @@ export function findAutoTransition(
   def: GameDefinition,
   ctx: TriggerContext
 ): { toStateId: Id; eligible: Id[] } | null {
-  const eligible = candidates(state, def).filter(
+  const eligible = candidates(state, def).filter((c) => {
     // entryCriteria === null means MANUAL: the state renders as a button and is never auto-entered.
-    (c) => c.target.entryCriteria !== null && evalCriteria(c.target.entryCriteria, state, ctx, def).value
-  );
+    if (c.target.entryCriteria === null) return false;
+    const verdict = evalCriteria(c.target.entryCriteria, state, ctx, def);
+    // A criteria tree with no leaves is a state still being authored — the editor writes an empty
+    // AND group the moment "Enter automatically instead" is clicked, and an empty AND is true, which
+    // would auto-enter the state unconditionally before a single criterion is typed.
+    return verdict.leaves.length > 0 && verdict.value;
+  });
   if (eligible.length === 0) return null;
 
   // Total comparator — §5.6. Never relies on sort stability or key order.
@@ -185,7 +190,7 @@ export function applyTransition(
     triggeringSeat: ec.ctx.triggeringSeat,
     promptAnswers: ec.ctx.promptAnswers,
   };
-  ec.fireEvent('onStateExit', eventCtx);
+  ec.fireEvent('onStateExit', eventCtx, fromId);
   ec.fireEvent('onStateEnter', eventCtx);
 
   if (toStateId === ec.def.machine.endStateId) {

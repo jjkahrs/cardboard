@@ -149,6 +149,19 @@ describe('createAutosave debounce (§9.4 item 12)', () => {
     expect((await getGame(duel.id))?.name).toBe('B');
   });
 
+  it('a read started right after an un-awaited flush() still sees the flushed edit', async () => {
+    // The route change out of the authoring layout: its unmount cleanup calls flush() and drops the
+    // promise on the floor, then PlayScreen mounts and reads. Nothing awaits the write, so the read
+    // has to wait behind it — otherwise the playtest runs the definition minus the last edit.
+    await putGame({ ...duel, name: 'Before' });
+    const auto = createAutosave(500);
+
+    auto.save({ ...duel, name: 'After' });
+    void auto.flush(); // deliberately NOT awaited — this is what AuthoringLayout does
+
+    expect((await getGame(duel.id))?.name).toBe('After');
+  });
+
   it('cancel() drops a pending save without writing', async () => {
     const putSpy = vi.spyOn(IDBObjectStore.prototype, 'put');
     const auto = createAutosave(500);

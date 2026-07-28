@@ -87,14 +87,20 @@ export function CardEditorScreen() {
             </button>
           </>
         ) : (
-          <button
-            type="button"
-            className="cb-btn"
-            data-variant="danger"
-            onClick={() => setConfirmingDelete(true)}
-          >
-            Delete
-          </button>
+          <>
+            <button
+              type="button"
+              className="cb-btn"
+              data-variant="danger"
+              onClick={() => setConfirmingDelete(true)}
+            >
+              Delete
+            </button>
+            {/* Edits write straight to the store, so Done is just navigation. */}
+            <button type="button" className="cb-btn" onClick={() => void navigate(catalog)}>
+              Done
+            </button>
+          </>
         )}
       </header>
 

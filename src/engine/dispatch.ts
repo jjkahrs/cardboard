@@ -86,6 +86,19 @@ function enqueueFront(state: PlayState, items: NewWorkItem[]): void {
 
 const activeSeat = (state: PlayState): number => Number(state.pools[ACTIVE_PLAYER_POOL_ID] ?? 0);
 
+/**
+ * `@chosen` is the answer to the prompt of the effect being applied RIGHT NOW. effects.ts forwards
+ * `ctx.promptAnswers` by reference into every event it fires, so without this a rule bound to that
+ * child event inherits the key, its own `prompt` selector short-circuits in targets.ts, and the
+ * nested prompt is never raised — logged, misleadingly, as "0 legal targets. Prompt skipped."
+ */
+function stripChosen(ctx: TriggerContext): TriggerContext {
+  if (!(CHOSEN_PROMPT_KEY in ctx.promptAnswers)) return ctx;
+  const promptAnswers = { ...ctx.promptAnswers };
+  delete promptAnswers[CHOSEN_PROMPT_KEY];
+  return { ...ctx, promptAnswers };
+}
+
 function baseCtx(state: PlayState): TriggerContext {
   return { triggeringCardId: null, zoneKey: null, triggeringSeat: activeSeat(state), promptAnswers: {} };
 }
@@ -112,8 +125,15 @@ function makeEc(
     log: (l) =>
       lines.push({ ...l, ruleId: l.ruleId ?? ruleId, effectKind: l.effectKind ?? effectKind }),
     // depth + 1 and tail placement are enforced HERE, not in effects.ts (§5.5, §5.1).
-    fireEvent: (name, childCtx) =>
-      enqueue(state, { kind: 'event', name, ctx: childCtx, parentId, depth: depth + 1 }),
+    fireEvent: (name, childCtx, stateId) =>
+      enqueue(state, {
+        kind: 'event',
+        name,
+        ctx: stripChosen(childCtx),
+        ...(stateId !== undefined && { stateId }),
+        parentId,
+        depth: depth + 1,
+      }),
   };
 }
 
@@ -171,7 +191,9 @@ function resolveBindings(
   name: EventName,
   ctx: TriggerContext,
   state: PlayState,
-  def: GameDefinition
+  def: GameDefinition,
+  /** The state a queued `onStateExit` left, when the item carries one. */
+  eventStateId: Id | null
 ): Binding[] {
   const { rules: byId, templates } = indexOf(def);
 
@@ -185,15 +207,16 @@ function resolveBindings(
    */
   const selfScoped = (CARD_BINDING_EVENTS as readonly string[]).includes(name);
 
-  // ponytail: stateFilter is matched against state.currentStateId. Correct for onStateEnter; for
-  // onStateExit the transition has already landed by the time the queued event drains, so a filtered
-  // onStateExit rule sees the DESTINATION state. Fixing it needs a state id on TriggerContext.
+  // stateFilter matches currentStateId for onStateEnter. For onStateExit the transition has already
+  // landed by the time the queued event drains, so currentStateId is the DESTINATION — the item
+  // carries the state that was left and that is what the filter is matched against instead.
+  const filterState = name === 'onStateExit' ? (eventStateId ?? state.currentStateId) : state.currentStateId;
   const matches = (rule: RuleSet | undefined): rule is RuleSet =>
     rule !== undefined &&
     rule.trigger === name &&
     (rule.stateFilter === null ||
       (name !== 'onStateEnter' && name !== 'onStateExit') ||
-      rule.stateFilter === state.currentStateId);
+      rule.stateFilter === filterState);
 
   const out: Binding[] = [];
   for (const id of def.globalRuleSetIds) {
@@ -393,7 +416,7 @@ const promptSeat = (state: PlayState, ctx: TriggerContext) => ctx.triggeringSeat
 function runItem(item: WorkItem, state: PlayState, def: GameDefinition, lines: LogLine[]): StepResult {
   switch (item.kind) {
     case 'event': {
-      const bindings = resolveBindings(item.name, item.ctx, state, def);
+      const bindings = resolveBindings(item.name, item.ctx, state, def, item.stateId ?? null);
       // Row 6: a custom event with no bound RuleSet is NOT an error.
       log(lines, {
         level: 'info',
@@ -408,7 +431,10 @@ function runItem(item: WorkItem, state: PlayState, def: GameDefinition, lines: L
           kind: 'rule' as const,
           ruleId: b.rule.id,
           sourceCardId: b.sourceCardId,
-          ctx: { ...item.ctx },
+          // promptAnswers is copied, not aliased: promptIds are `logSeq:ruleId:effectIndex`, so two
+          // bindings of the SAME rule under one event compute the same id. Sharing the map would let
+          // the first binding's answer satisfy the second's prompt, which then never raises.
+          ctx: { ...item.ctx, promptAnswers: { ...item.ctx.promptAnswers } },
           parentId: item.id,
           depth: item.depth,
         }))

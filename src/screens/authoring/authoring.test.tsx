@@ -52,7 +52,8 @@ describe('<PoolsScreen>', () => {
     render(<PoolsScreen />);
     await user.click(screen.getByRole('button', { name: 'Add pool' }));
 
-    await user.click(within(rowsOf('Pools')[0]).getByRole('button', { name: 'Rename' }));
+    // Adding opens the new row's name field on its own — the placeholder name is the app's, not the
+    // designer's, so it is the first thing waiting to be typed over.
     const input = screen.getByRole('textbox', { name: /rename new pool/i });
     await user.clear(input);
     await user.type(input, 'HP{Enter}');
@@ -155,7 +156,6 @@ describe('<PoolsScreen>', () => {
     await user.keyboard('{Escape}');
 
     await user.click(screen.getByRole('button', { name: 'Add pool' }));
-    await user.click(within(rowsOf('Pools')[0]).getByRole('button', { name: 'Rename' }));
     const input = screen.getByRole('textbox', { name: /rename new pool/i });
     await user.clear(input);
     await user.type(input, 'HP{Enter}');
@@ -204,7 +204,7 @@ describe('<ZonesScreen>', () => {
     expect(definition().zones.map((z) => z.name)).toEqual(['New zone', 'New zone 2']);
 
     const before = definition();
-    await user.click(within(rowsOf('Zones')[1]).getByRole('button', { name: 'Rename' }));
+    // The second add left its own name field open.
     const input = screen.getByRole('textbox', { name: /rename new zone 2/i });
     await user.clear(input);
     await user.type(input, 'New zone{Enter}');
@@ -225,6 +225,7 @@ describe('<ZonesScreen>', () => {
 
   it('edits visibility, layout, ordering and capacity', async () => {
     const user = await addZones(1);
+    await user.keyboard('{Escape}'); // Leave the name field the add opened; this test is about the row summary.
 
     await user.selectOptions(screen.getByRole('combobox', { name: 'Visibility' }), 'ownerOnly');
     await user.selectOptions(screen.getByRole('combobox', { name: 'Layout' }), 'fan');

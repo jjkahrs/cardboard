@@ -41,7 +41,16 @@ async function withDb<T>(fn: (db: IDBDatabase) => Promise<T>): Promise<T> {
   }
 }
 
-export function getGame(id: Id): Promise<GameDefinition | undefined> {
+/**
+ * Every autosave write chains here, module-wide, and every read waits behind it. A route change
+ * unmounts the authoring layout and its `flush()` is fire-and-forget: the put is only scheduled, so
+ * PlayScreen's `getGame` would otherwise open its own connection first and load the pre-edit
+ * definition — the tester playtests rules they just changed, minus the change.
+ */
+let writeChain: Promise<void> = Promise.resolve();
+
+export async function getGame(id: Id): Promise<GameDefinition | undefined> {
+  await writeChain;
   return withDb(
     (db) =>
       new Promise((resolve, reject) => {
@@ -52,7 +61,8 @@ export function getGame(id: Id): Promise<GameDefinition | undefined> {
   );
 }
 
-export function getAllGames(): Promise<GameDefinition[]> {
+export async function getAllGames(): Promise<GameDefinition[]> {
+  await writeChain;
   return withDb(
     (db) =>
       new Promise((resolve, reject) => {
@@ -133,7 +143,6 @@ export interface Autosave {
 export function createAutosave(delayMs = 500): Autosave {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let pending: GameDefinition | null = null;
-  let writeChain: Promise<void> = Promise.resolve();
 
   const enqueue = (d: GameDefinition): void => {
     // Both arms run `putGame` regardless of whether the prior write settled or rejected, so one

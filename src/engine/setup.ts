@@ -65,7 +65,10 @@ export function createPlayState(def: GameDefinition, seed: string): PlayState {
       }
       const shuffled = shuffle(instanceIds, seedHash, cursor);
       cursor = shuffled.cursor;
-      zones[zoneKey(deck.zoneId, seat)].cardIds = shuffled.items;
+      // Append, never assign: two decks may target the same zone (DecksScreen defaults every new
+      // deck to the first zone), and assigning would orphan the earlier deck's already-minted cards
+      // in `state.cards` with no zone holding them.
+      zones[zoneKey(deck.zoneId, seat)].cardIds.push(...shuffled.items);
     }
   }
 

@@ -109,7 +109,11 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     // above all): reversal mangles the internal order of index-based patches from different calls.
     // Confirmed by reproduction; see the report to team-lead.
     const [next, forward, inverse] = produceWithPatches(session.state, (draft) => {
-      if (!resuming) draft.logSeq = seq;
+      // Also held while a prompt is pending: such an action is either the resume itself (excluded
+      // above) or is rejected AWAITING_PROMPT without running an effect — but it still appends a log
+      // entry, so bumping logSeq would move promptIdOf() out from under the suspended effect and the
+      // tester's answer would be filed under an id nothing reads.
+      if (!resuming && !session.state.pendingPrompt) draft.logSeq = seq;
       let input: EngineInput = { kind: 'action', action, override };
       for (;;) {
         result = step(draft, input, lines, session.definition);

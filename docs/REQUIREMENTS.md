@@ -1,3 +1,10 @@
+# Requirements: Cardboard
+
+- [**v1**](#requirements-cardboard-v1) — shipped. The baseline engine.
+- [**v2**](#v2--reference-games-magic-the-gathering-and-vampire-the-eternal-struggle) — what it would take to author Magic: The Gathering and Vampire: The Eternal Struggle.
+
+---
+
 # Requirements: Cardboard v1
 
 ## Goal
@@ -223,3 +230,381 @@ All three are settled. See [`docs/TECHNICAL_DESIGN.md`](./TECHNICAL_DESIGN.md) f
 - **Icon set license and size.** → **A curated ~300-icon subset of game-icons.net** (CC BY 3.0),
   shipped as one inlined SVG sprite with attribution. The full ~4000-icon set stays available as a
   later expansion.
+
+---
+
+# v2 — Reference games: Magic: The Gathering and Vampire: The Eternal Struggle
+
+## Why these two
+
+v1 can express a large family of card games — anything whose play is *"a player acts, the engine
+reacts, and it settles."* Neither reference game is in that family, and they fail it in different
+directions, which is why both are named rather than one.
+
+- **Magic: The Gathering** stresses the engine **vertically**. Its core loop is a stack of pending
+  actions that other players may respond to before any of them resolve, and its cards continuously
+  modify each other's characteristics rather than mutating them once.
+- **VTES** stresses the engine **horizontally**. It seats four or five Methuselahs in a *ring* where
+  every player has a distinct relationship to every other (prey, predator, cross-table), players are
+  eliminated while the game continues, out-of-turn reactions are the normal case rather than the
+  exception, and combat requires two players to commit hidden choices simultaneously.
+
+Together they draw out the two assumptions v1 is built on: **one player is deciding at a time**, and
+**a card's value is the number stored on it**. Everything below follows from relaxing those two.
+
+These are named as *targets to design against*, not as content to ship. Cardboard remains a generic
+authoring tool; neither game's card pool, deck-construction legality, nor rules text is in scope.
+
+## Fidelity bar
+
+**A designer can author roughly 90% of printed cards in either game and play a real, recognisable
+game.** Not full rules compliance. The MTG Comprehensive Rules and the VEKN rulings both contain a
+long tail of interactions whose correct resolution is judge trivia; that tail is an explicit non-goal
+and the specific things that break are named in [v2 non-goals](#v2-non-goals) rather than left
+implicit.
+
+Where a rule is *approximable* by a general primitive plus authoring, the requirement is the
+primitive — not the rule. Cardboard should not learn what a creature is.
+
+## Revised scope
+
+These v1 non-goals are **relaxed**:
+
+- **Hidden information becomes real.** v1 renders every seat's hand to one screen, so there is no way
+  to see the game as any single player sees it — and at five seats, no way to tell whether the game
+  is even legible from a given position at the table. The engine must be able to answer *"what may
+  seat N see"* as a first-class query, and the play UI must be able to present exactly one seat's
+  view.
+- **Five or more seats become a supported configuration**, including a defined seating order, seat
+  references relative to any seat rather than only to the active player, and seats being removed
+  mid-game.
+
+These v1 non-goals **stand unchanged**: no networking, no server, no accounts, no bots, no mobile
+layouts, no user artwork. Hidden information is delivered by partitioning the view inside a single
+window — not by moving state to a server.
+
+> **What seat partitioning is for, stated plainly.** The tester is one person, at one machine, in one
+> window, who **moves from seat to seat as play progresses** in order to experience the game from
+> each player's perspective. Partitioning is not a secrecy mechanism and is not trying to be one —
+> that the same person eventually sees every seat is the exercise, not a leak.
+>
+> The requirement is that while the view is pinned to a seat, that seat's view is *complete and
+> honest*: everything that seat may see, nothing it may not, including in the event log. That is what
+> makes it possible to judge whether a card reads as strong from the seat holding it, whether a
+> hidden zone leaves an interesting decision, and whether a five-seat board is legible from the
+> middle of the ring. A global reveal-all view sits alongside the seat view for debugging, and moving
+> between the two is a normal part of playtesting rather than a cheat.
+
+## New core concepts
+
+Written in the same conceptual voice as v1's core concepts. These describe **what the engine must be
+able to express**; the type shapes and execution semantics belong to
+[`docs/TECHNICAL_DESIGN.md`](./TECHNICAL_DESIGN.md).
+
+### Pending Action
+
+A **Pending Action** is a declared-but-unresolved effect: a spell on the stack, an announced VTES
+action awaiting a block, a triggered ability waiting to go off. It is *addressable* — targeting
+selectors and criteria can refer to it the way they refer to a card — and therefore other effects can
+**counter, modify, or redirect it before it resolves**.
+
+This is the single largest departure from v1. Today the engine's work queue is internal bookkeeping
+that no authored rule can see or touch; a Pending Action is game state that rules can act on.
+
+### Priority Window
+
+A **Priority Window** is a defined point where the engine stops and offers seats, in a defined order,
+the chance to act before resolution continues. A window closes when every seat has passed
+consecutively. This generalises v1's single-seat target prompt — which pauses for exactly one player,
+at exactly one point per rule — into *"pause, and poll the table."*
+
+It is what MTG calls priority and what VTES calls the block/reaction window. **They are the same
+primitive and the requirement is that the engine has one, not two.**
+
+### Simultaneous Sealed Choice
+
+A choice submitted by two or more seats where **no submission is visible to any other seat, or to the
+log, until every named seat has submitted**, at which point all are revealed and resolve together.
+Required by VTES combat, where both players choose a strike before either sees the other's. Distinct
+from a Priority Window, which is strictly ordered and open.
+
+### Value Modifier
+
+A card's effective value becomes **base value plus the modifiers currently applying to it**, computed
+when read rather than stored. This is what "creatures you control get +1/+1" requires: an effect that
+is *continuously true while its source is in play*, not a one-time write.
+
+Modifiers apply in a fixed, deterministic order — all *set-to* modifiers before all *adjust-by*
+modifiers, ties broken by creation order — deliberately short of MTG's full layer system. See
+[v2 non-goals](#v2-non-goals) for exactly which interactions this gets wrong.
+
+### Attachment
+
+A card instance may be **attached to another card instance** — an Aura or Equipment on a creature, a
+Retainer or equipment on a Vampire, a blocker paired to an attacker. Attachment is a reference, not a
+zone: the attached card travels with its host and can read its host's values. Destroying a host does
+not automatically destroy what is attached to it; that cascade is authored, consistent with v1's
+existing refusal to cascade destruction implicitly.
+
+### Owner, Controller, and Holder
+
+v1 conflates three things into one: *whose card is this* is answered entirely by which seat's zone
+currently holds it. v2 separates them.
+
+- **Owner** — set once when the instance is created, never changes. "Return it to its owner's hand."
+- **Controller** — who currently makes decisions for it. Changes when a card is stolen, or when a
+  unique card is contested. Defaults to the holding zone's seat.
+- **Holder** — the zone instance the card physically sits in. This is v1's existing behaviour.
+
+### Per-instance Characteristics
+
+Tags become **mutable, per-instance**, seeded from the template at creation. v1's tags live on the
+immutable template, so nothing can grant, remove, or change a card's properties at runtime. This is
+the cheapest route to keyword abilities as a system: an effect adds a tag, and criteria and targeting
+read it.
+
+### Predicate Targeting
+
+A targeting selector may carry a **criteria tree evaluated once per candidate card**, with a
+reference bound to the card under test. "Every creature with power 3 or less that you control" is one
+selector, not a bespoke effect. v1's selectors can only address a zone, a position in it, or a single
+literal tag string.
+
+### Continuous Condition
+
+A rule that fires **whenever its condition becomes true**, re-checked to a fixpoint at the same
+settled moment the state machine already scans for automatic transitions — repeating until no further
+rule fires. This is what makes "a creature with lethal damage dies" and "a player at zero pool is
+ousted" authorable as rules rather than as engine behaviour.
+
+### Effect Replacement
+
+A rule that registers against an effect **about to be applied**, and substitutes its own effects
+before the original mutates anything. "If damage would be dealt, prevent it." "If you would draw,
+draw two instead."
+
+### Non-card Choice
+
+A prompt may resolve to something other than a set of cards: a number, a seat, or one option from a
+labelled list. Required by modal spells ("choose one —"), X costs, and every VTES choice that is not
+about pointing at a card.
+
+### Seating Order and Seat Elimination
+
+The seats form an **explicit, mutable order** rather than an implicit `0..N-1` range.
+
+- Seat references may be taken **relative to any seat**, not only to the active player — so "my
+  predator" resolves correctly for a card owned by a seat whose turn it is not.
+- A seat may be **eliminated while the session continues**. Elimination removes it from the seating
+  order — closing the ring, so the neighbours of a removed seat become neighbours of each other — and
+  makes its zones invalid as move and target destinations. This is distinct from the session
+  finishing.
+- A reserved, engine-maintained **active seat count** is readable by criteria, so thresholds that
+  scale with table size stay correct after an elimination.
+
+### Aggregation
+
+A value reference across all seats may **sum** rather than compare, alongside v1's existing
+`every` / `some` quantifiers. Vote tallies, total power, and "damage equal to the number of X" are
+all one primitive.
+
+### Cost-gated Activation
+
+A rule may declare a **cost precondition checked before any of its effects run**, rejecting the whole
+activation rather than aborting partway. v1 runs effects in order and stops on rejection, which means
+a cost paid by an earlier effect is not refunded when a later one fails. Activation must also be
+reachable **per card instance** in the play UI, not only as a global event button.
+
+## Revised engine semantics
+
+Marked by cost, because the difference is the whole planning story.
+
+**Rewrite — the execution core.** The Pending Action layer, Priority Windows, and Effect Replacement
+are not three features. They are three faces of one missing capability: an **addressable,
+interruptible, multi-seat pending-action layer**. v1's engine is built on the opposite premise —
+exactly one rule in flight at a time, one seat consulted at one point, resolution never interrupted —
+and its suspension record is a flat cursor rather than a resumable stack. Supporting either reference
+game's core loop means a new execution core, not an addition to the existing one. This should be
+planned as a rewrite and estimated as one.
+
+**Rewrite — the value read path.** Value Modifiers change *every site that reads a card's value* from
+a stored-property lookup into a computed one, including rendering. Mechanically repetitive rather
+than conceptually hard, but it is not additive: every read site changes together or the engine
+reports inconsistent values.
+
+**Rewrite — the seat model.** Seat elimination breaks the assumption that seats are a dense range,
+which currently backs per-seat pools, per-seat zone instances, and the wrap-around arithmetic behind
+`next` / `previous`.
+
+**Additive.** Per-instance characteristics; predicate targeting; relative seat references; the sum
+quantifier; the active seat count; attachment; owner/controller; continuous conditions evaluated at
+the existing settled-state scan; non-card choices; cost-gated activation.
+
+**Rewind granularity.** v1's rule — one log entry is one user action plus its entire cascade — holds,
+with the definition of "requires input" widened to include Priority Windows. A seat that has a legal
+response and passes anyway produces its own log entry and its own rewind point, because a real
+decision was made. A seat with no legal response produces none, and collapses into the surrounding
+cascade — otherwise a five-seat table generates four empty entries per window and the log becomes
+unreadable.
+
+## Acceptance criteria — shared primitives
+
+- **Given** a targeting selector carrying the criteria `power > 2` against a zone, **when** the effect
+  resolves, **then** only instances whose `power` exceeds 2 are targeted, and the log names the
+  criteria that included or excluded each candidate.
+- **Given** a card instance whose runtime tags include a tag added by an effect and absent from its
+  template, **when** a criterion tests for that tag, **then** it evaluates true; and **when** the tag
+  is later removed, **then** the same criterion evaluates false.
+- **Given** a card attached to a host, **when** the host moves between zones, **then** the attached
+  card's host reference still resolves to that host.
+- **Given** a card attached to a host, **when** the host is destroyed, **then** the attached card is
+  not automatically destroyed and the log records the detachment as its own change line.
+- **Given** a card whose controller has been set to a seat other than the one whose zone holds it,
+  **when** a criterion resolves that card's controller, **then** it resolves to the assigned
+  controller, not the holding zone's seat.
+- **Given** a per-player pool referenced across all seats with the `sum` quantifier, **when** it is
+  used as an effect amount, **then** it resolves to one summed total rather than being rejected for
+  resolving to multiple values.
+- **Given** a rule with a cost precondition requiring 2 of a pool and effects that spend 2 and draw,
+  **when** it is activated with only 1 available, **then** no effect runs, nothing is spent, and the
+  log names the failing cost.
+- **Given** the same rule with 2 available, **when** it is activated, **then** the spend and the draw
+  land in one transaction, and rewinding to before the activation restores the original total exactly.
+- **Given** two continuous-condition rules where the first rule's effect makes the second's condition
+  newly true, **when** the engine settles, **then** both fire within the same transaction rather than
+  only the first.
+- **Given** an effect with two labelled modes, **when** it executes, **then** play pauses showing the
+  mode labels rather than cards, no later effect in that rule has run, and the chosen branch's effects
+  run in order once a mode is picked.
+- **Given** a five-seat game with seat 3 eliminated, **when** a criterion resolves the seat after seat
+  2, **then** it resolves to seat 4, and the active seat count reads 4 while the session's finished
+  flag stays false.
+- **Given** the play UI is pinned to seat 2, **when** it renders, **then** no zone hidden from seat 2
+  discloses its contents, including in the event log, and switching the pinned seat requires an
+  explicit action.
+
+## Acceptance criteria — Magic: The Gathering
+
+- **Given** a pending action on the stack and two seats, **when** it is placed, **then** every seat is
+  offered priority in turn order before it resolves, and a seat with a legal response may respond,
+  placing its response above the original.
+- **Given** a stack of two pending actions, **when** no seat responds further, **then** the most
+  recently placed resolves first.
+- **Given** a pending action and an effect that counters it, **when** the counter resolves, **then**
+  the countered action is removed from the stack without applying, and the log names both.
+- **Given** a priority round in which no seat holds a legal response, **when** the round completes,
+  **then** it collapses into the enclosing transaction with no per-seat log entry.
+- **Given** a priority round in which a seat does hold a legal response and passes anyway, **when**
+  the pass is recorded, **then** it produces its own log entry and rewind point.
+- **Given** a static rule granting +1/+1 to a controller's creatures, **when** a new creature enters
+  that zone under that controller, **then** its effective values include the bonus immediately, with
+  no recalculation action required.
+- **Given** one modifier setting a value and another adjusting it, **when** both apply, **then** the
+  set is applied before the adjustment regardless of authoring order.
+- **Given** a card returned to its owner's hand after its controller was changed, **when** the effect
+  resolves, **then** it moves to the owner's hand, not the controller's.
+- **Given** a continuous-condition rule eliminating a seat at zero life, **when** any effect drops that
+  seat to zero, **then** the elimination fires at the next settled point and the session continues
+  while other seats remain.
+- **Given** a replacement rule stating that a draw by a seat draws two instead, **when** that seat
+  would draw, **then** the substitution happens before any card moves, and the log distinguishes the
+  replaced effect from the original.
+- **Given** creatures declared as attacker and blocker via attachment, **when** damage resolves,
+  **then** each assigns its power to the other and any creature meeting the lethal condition is
+  destroyed by the continuous-condition rule, not by bespoke combat machinery.
+
+## Acceptance criteria — Vampire: The Eternal Struggle
+
+- **Given** a five-seat table, **when** a criterion resolves the predator of the seat that owns the
+  triggering card, **then** it resolves relative to that seat, independent of which seat is active.
+- **Given** a seat is ousted, **when** the elimination resolves, **then** it leaves the seating order,
+  its former predator and prey become neighbours, and remaining seats' prey and predator references
+  resolve correctly on the next reference without a restart.
+- **Given** an announced action, **when** the block window opens, **then** each other seat is offered
+  the chance to block in the defined order, and the window closes only after every seat has declined
+  consecutively.
+- **Given** a block window in which one seat blocks, **when** its effects finish, **then** resolution
+  continues from the resulting combat rather than re-offering the window to seats that already
+  declined.
+- **Given** two seats each owing a hidden strike choice, **when** the first submits, **then** its
+  choice is not visible to the other seat and does not appear in the log; and **when** the second
+  submits, **then** both reveal and resolve in one transaction and one log entry.
+- **Given** minion cards carrying vote values of 1, 2, and 1, **when** a referendum sums votes across
+  them, **then** it evaluates to 4 and the log line names both resolved totals, not just the verdict.
+- **Given** a referendum whose votes-for exceeds votes-against, **when** it resolves, **then** the
+  passing branch runs; and **given** other seats added votes during the window, **then** those votes
+  are included in the tally that decides it.
+- **Given** an equipment card attached to a vampire, **when** an effect requires the host's discipline
+  value to be at least 2, **then** it is permitted only for that specific host, not for any vampire in
+  play.
+- **Given** a unique card contested between two seats, **when** control is resolved to one seat,
+  **then** the card's controller changes without the card changing zones.
+- **Given** a four-seat and a five-seat game both authoring a threshold against the active seat count,
+  **when** each session starts, **then** the threshold reflects the correct table size with no manual
+  per-game configuration.
+- **Given** a vampire in the uncontrolled region accumulating influence counters over successive
+  turns, **when** the counters reach its capacity, **then** the authored rule moves it into the ready
+  region — using existing v1 primitives, requiring no new engine capability.
+
+## Revised constraints & dependencies
+
+Everything in v1's constraints still holds. Added:
+
+- **Schema migration becomes a real capability.** v1 detects a schema version mismatch and rejects the
+  file. Nearly every v2 primitive changes the exported definition shape, so an actual migration path
+  from v1 definitions must exist rather than a version gate that refuses them.
+- **Determinism is non-negotiable and gets harder.** Priority windows, seating-order mutation, and
+  modifier ordering each introduce a new place where ordering must be total and reproducible.
+  Simultaneous sealed choices must resolve identically regardless of submission order.
+- **Log volume needs a budget.** v1 deliberately logs every evaluated criterion leaf with no
+  short-circuiting, for debuggability. Multiplied by per-candidate predicate targeting and
+  fixpoint continuous-condition scanning across a wide board, this grows faster than the board does
+  and needs a verbosity control.
+- **Rule execution limits need genre-appropriate defaults.** v1's depth and effect ceilings are sized
+  for games that settle quickly. Long legitimate response chains will trip them.
+- **Authoring UX for the new concepts is not a chip in the existing rule editor.** Priority windows
+  and pending-action manipulation are global structure a designer reasons about across the whole
+  game, closer to the state machine — which already earned its own visual editor — than to a rule's
+  effect list.
+
+## v2 non-goals
+
+Named explicitly so their absence is a decision rather than a bug.
+
+- **MTG's full layer system, with dependency ordering and timestamps.** The reduced modifier model
+  gets ordinary static effects right. It gets wrong: interactions where two effects' correct order
+  depends on each other's outcome rather than on creation order, counter-versus-effect ordering in
+  overlap cases, and characteristic-defining abilities that must evaluate before other modifiers.
+  These are the famously tricky minority, and they are accepted as wrong.
+- **Combat as bespoke engine machinery.** No declare-attackers phase, no damage assignment order, no
+  first-strike sub-steps built into the engine. Ordinary combat is approximated with attachment for
+  pairing, tags for combat state, predicate targeting for restrictions, and continuous conditions for
+  death. Multi-blocker damage-ordering judgement calls are out.
+- **Zone-change object identity.** MTG treats a card changing zones as a new object with no memory.
+  Cardboard instances keep their identity. Cards whose text depends on that distinction will behave
+  differently.
+- **Legend rule / uniqueness constraints, and copy effects.** Niche relative to cost, and both
+  compound badly with the reduced modifier model.
+- **Deck-construction legality** for either game — crypt group adjacency, singleton limits, format
+  legality. Playtest starts from an assembled deck, as in v1.
+- **Real-time limits.** VTES tournament timing is table administration, not game state, and the engine
+  has no clock by design.
+- **Hard-coded reference-game rules.** "You may only oust your prey" is authored as a criterion over
+  the seating-order primitive, not baked into the engine. Cardboard stays a generic tool; if a
+  reference game's rule cannot be authored, the missing thing is a primitive, not a special case.
+- **Networked play and bots** — see [Revised scope](#revised-scope). **Secrecy against the operator
+  is not a non-goal so much as a non-concept**: the tester is meant to see every seat, one at a time.
+  What must not happen is a seat's view disclosing what that seat may not see *while it is pinned* —
+  which is a requirement, not an exclusion, and is stated as one above.
+
+## Open questions — v2
+
+- **Does the pending-action rewrite land as a second engine or a replacement?** Every v1 game works
+  under the current core, and the rewrite is invasive. Running both is a maintenance cost; replacing
+  outright risks regressing the games v1 already runs. Unresolved.
+- **Is the reduced modifier model's failure mode acceptable in practice, or only on paper?** It is
+  defensible per-card and may still feel wrong across a whole board. Worth revisiting once a real
+  static-effect-heavy board is authored.
+- **How much of VTES combat is authorable content versus a required primitive?** Simultaneous sealed
+  choice is clearly a primitive. Ranges, maneuvers, presses, and torpor are believed authorable on top
+  of it, but that has not been demonstrated end to end.

@@ -370,8 +370,16 @@
   align-items: start;
 }
 
+/* The states screen inverts the split — the canvas is the pane that wants the room, the settings
+   form is the one that reads fine in a fixed column. Declared above the stacking query so that
+   query still wins on a narrow window. */
+.cb-master-detail--canvas {
+  grid-template-columns: 1fr minmax(16rem, 24rem);
+}
+
 @media (max-width: 60rem) {
-  .cb-master-detail {
+  .cb-master-detail,
+  .cb-master-detail--canvas {
     grid-template-columns: 1fr;
   }
 }
@@ -549,9 +557,12 @@
 
 .cb-state-canvas__scroll {
   overflow: auto;
-  max-block-size: 70vh;
+  /* Fixed, not max-: the canvas is the work surface here, so it claims the height whether or not the
+     nodes happen to fill it. */
+  block-size: 70vh;
   border: 2px dashed var(--cb-kraft-400);
 }
+
 
 .cb-state-canvas {
   position: relative;

@@ -49,8 +49,12 @@ export interface EffectContext {
   depth: number;
   override: boolean;
   log(line: LogLine): void;
-  /** ENQUEUES only. dispatch.ts owns depth+1 and tail ordering (§5.1). */
-  fireEvent(name: EventName, ctx: TriggerContext): void;
+  /**
+   * ENQUEUES only. dispatch.ts owns depth+1 and tail ordering (§5.1).
+   * `stateId` is for `onStateExit` alone — the state being LEFT, which stateFilter matching needs
+   * because `currentStateId` is already the destination when the queued event drains.
+   */
+  fireEvent(name: EventName, ctx: TriggerContext, stateId?: Id): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -417,6 +421,17 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
       if (!from.ok) return failed(ec, effect, from);
       const to = oneKey(effect.to, state, ctx);
       if (!to.ok) return failed(ec, effect, to);
+      // planMove drops every card whose source is the destination, so this draws nothing and fires
+      // no onCardDrawn — but it used to log as a plain success. The editor's default drawCards has
+      // from === to, so an untouched default effect looked like it ran. §5.9 row 15's spirit.
+      if (from.key === to.key) {
+        return reject(
+          ec,
+          effect,
+          'NO_TARGETS',
+          `Draw from ${zoneLabel(def, from.key)}: source and destination are the same zone. Nothing drawn.`
+        );
+      }
 
       const n = singleAmount(ec, effect, effect.count);
       if (!('value' in n)) return n;

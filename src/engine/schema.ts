@@ -11,7 +11,7 @@
  */
 
 import { z } from 'zod';
-import { SCHEMA_VERSION } from './types';
+import { ACTIVE_PLAYER_POOL_ID, SCHEMA_VERSION } from './types';
 import type {
   CriteriaNode,
   Effect,
@@ -426,7 +426,10 @@ function checkReferences(d: GameDefinition, ctx: z.RefinementCtx): void {
   const r: Refs = {
     ctx,
     zones: new Set(d.zones.map((z) => z.id)),
-    pools: new Set(d.pools.map((p) => p.id)),
+    // The reserved `activePlayer` pool is never in `d.pools` (§4.1 — it must not appear in an
+    // export), but setup.ts seeds it and authored effects are its only legal writers. Omitting it
+    // here rejects every definition that authors turn structure the documented way.
+    pools: new Set([ACTIVE_PLAYER_POOL_ID, ...d.pools.map((p) => p.id)]),
     templates: new Set(d.templates.map((t) => t.id)),
     indexes: new Set(d.templates.flatMap((t) => t.indexes.map((i) => i.id))),
     ruleSets: new Set(d.ruleSets.map((s) => s.id)),

@@ -97,11 +97,13 @@ export function Card({ template, instance, faceDown, definition, onClick }: Card
                 {template.tags.join(' · ')}
               </div>
               <div className="cb-card__rules">{rulesText}</div>
-            </div>
-            <div className="cb-card__pips">
-              {template.indexes.map((index) => (
-                <Pip key={index.id} index={index} instance={instance} />
-              ))}
+              {/* Inside the body grid so the overlay can be pinned below the marquee row — a pip
+                  anchored to the whole card lands on the title. */}
+              <div className="cb-card__pips">
+                {template.indexes.map((index) => (
+                  <Pip key={index.id} index={index} instance={instance} />
+                ))}
+              </div>
             </div>
           </>
         )}

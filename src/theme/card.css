@@ -54,6 +54,13 @@
   overflow: hidden;
 }
 
+/* Explicit rows because the pip overlay below spans rows 2..-1: auto-placement would flow the face,
+   tagline and rules past it into implicit rows instead of underneath it. */
+.cb-card__marquee { grid-row: 1; grid-column: 1; }
+.cb-card__face    { grid-row: 2; grid-column: 1; }
+.cb-card__tagline { grid-row: 3; grid-column: 1; }
+.cb-card__rules   { grid-row: 4; grid-column: 1; }
+
 .cb-card__marquee {
   padding: 0 var(--cb-s1);
   background: var(--cb-kraft-300);
@@ -96,9 +103,13 @@
   margin-block-end: 1.4em;
 }
 
+/* Overlays the face/tagline/rules rows of the body grid, never the marquee row: pips anchored to the
+   whole card sit on top of the title. Row placement, not a hand-measured offset, so it holds at every
+   --cb-card-w and whatever the title's line-height ends up being. */
 .cb-card__pips {
-  position: absolute;
-  inset: 0;
+  grid-row: 2 / -1;
+  grid-column: 1;
+  position: relative;
   pointer-events: none;
 }
 

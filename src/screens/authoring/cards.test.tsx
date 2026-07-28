@@ -77,6 +77,10 @@ describe('the catalog (/cards)', () => {
     await waitFor(() =>
       expect(router.state.location.pathname).toBe(`/game/g1/cards/${only().id}`)
     );
+
+    await user.click(await screen.findByRole('button', { name: 'Done' }));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/game/g1/cards'));
+    expect(definition().templates).toHaveLength(1);
   });
 
   it('renders each card with the same component the table uses, and opens one on click', async () => {

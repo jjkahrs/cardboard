@@ -20,7 +20,7 @@ import {
   type TriggerContext,
   type ValueRef,
 } from './types';
-import { resolveValueRef } from './valueRef';
+import { resolvePoolDef, resolveValueRef } from './valueRef';
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -84,7 +84,9 @@ function labelOf(ref: ValueRef, def: GameDefinition): string {
     case 'literal':
       return String(ref.value);
     case 'pool': {
-      const pool = def.pools.find((p) => p.id === ref.poolId);
+      // resolvePoolDef, not `def.pools.find` — the reserved `activePlayer` pool has no entry in
+      // `def.pools`, and a criterion on it would otherwise log as the raw id.
+      const pool = resolvePoolDef(def, ref.poolId);
       return `${pool?.value.name ?? ref.poolId}${seatLabel(ref.seat)}`;
     }
     case 'cardIndex':

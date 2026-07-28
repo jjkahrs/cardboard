@@ -21,13 +21,16 @@ import type {
   ValueRef,
   ZoneRef,
 } from './types';
+import { resolvePoolDef } from './valueRef';
 
 // ---------------------------------------------------------------------------
 // Name resolution — the one place ids surface as names (§6.8)
 // ---------------------------------------------------------------------------
 
 function poolName(def: GameDefinition, poolId: string): string {
-  return def.pools.find((p) => p.id === poolId)?.value.name ?? '[deleted pool]';
+  // resolvePoolDef, not `def.pools.find` — the reserved `activePlayer` pool is a legitimate
+  // reference with no entry in `def.pools`, and would otherwise read as "[deleted pool]".
+  return resolvePoolDef(def, poolId)?.value.name ?? '[deleted pool]';
 }
 
 function zoneName(def: GameDefinition, zoneId: string): string {

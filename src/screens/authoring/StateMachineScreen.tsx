@@ -82,7 +82,7 @@ export function StateMachineScreen() {
         </ul>
       )}
 
-      <div className="cb-master-detail">
+      <div className="cb-master-detail cb-master-detail--canvas">
         <div className="cb-state-canvas__scroll">
           <StateGraph
             machine={machine}
@@ -216,7 +216,11 @@ function StateDetail({
         </>
       ) : (
         <>
-          <span className="cb-hint">Entered on its own as soon as this holds, once nothing else is mid-rule.</span>
+          <span className="cb-hint">
+            {state.entryCriteria.kind === 'group' && state.entryCriteria.children.length === 0
+              ? 'No criteria yet, so this state is never entered — add at least one.'
+              : 'Entered on its own as soon as this holds, once nothing else is mid-rule.'}
+          </span>
           <CriteriaGroupEditorHost node={state.entryCriteria} onUpdate={onUpdate} />
         </>
       )}

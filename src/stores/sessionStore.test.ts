@@ -170,6 +170,30 @@ describe('startSession', () => {
   });
 });
 
+describe('dispatch — a rejected action while a prompt is pending', () => {
+  it('keeps the pending prompt answerable (logSeq must not move under it)', () => {
+    // promptId is `${logSeq}:${ruleId}:${effectIndex}`. A rejected action still appends a log entry,
+    // so bumping logSeq for it files the tester's answer under an id runEffects never reads: the
+    // answer vanishes and the identical prompt is re-raised. PlayToolbar/TransitionBar stay enabled
+    // during a prompt, so this is one stray click away in the real UI.
+    const [cardId] = cardsIn(DECK, 0, 1);
+    const dispatch = useSessionStore.getState().dispatch;
+    dispatch({ kind: 'moveCard', cardId, to: { zoneId: BATTLEFIELD, seat: null }, position: 'top' });
+    dispatch({ kind: 'fireEvent', name: 'doPrompt', seat: 0 });
+
+    const raised = session().state.pendingPrompt;
+    expect(raised?.candidates).toEqual([cardId]);
+
+    dispatch({ kind: 'transition', toStateId: MAIN }); // rejected AWAITING_PROMPT — but logged
+    expect(session().state.pendingPrompt?.promptId).toBe(raised!.promptId);
+
+    dispatch({ kind: 'answerPrompt', chosen: [cardId] });
+
+    expect(session().state.pendingPrompt).toBeNull();
+    expect(session().state.cards[cardId]).toBeUndefined(); // the destroy actually ran
+  });
+});
+
 describe('dispatch — transaction loop basics', () => {
   it('one action produces exactly one log entry and one history frame with non-empty patches', () => {
     const [cardId] = cardsIn(DECK, 0, 1);
