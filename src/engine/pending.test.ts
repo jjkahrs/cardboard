@@ -323,6 +323,31 @@ describe('counterAction', () => {
     if (!result.ok) expect(result.reason).toBe('TARGET_GONE');
   });
 
+  // v2 §4.12 — the one producer of ACTION_COUNTERED. Without the dedicated guard this case slips
+  // past the `actionStack.includes` check (countering leaves the action ON the stack until its own
+  // resolve frame), sets an already-true flag, and logs a fabricated `false -> true` change line.
+  it('rejects ACTION_COUNTERED when the selected action is already countered, and logs no change', () => {
+    const def = pendingDef([rsSpell, rsCounter]);
+    const state = createPlayState(def, 'seed-mtg3d');
+    const lines: LogLine[] = [];
+    const context = ec(state, def, lines);
+
+    announceAction(context, { kind: 'announceAction', ruleId: RS_SPELL, window: null });
+    const spellId = state.actionStack[0];
+
+    const counter = { kind: 'counterAction', action: { kind: 'action', ref: { kind: 'action', id: spellId } } } as const;
+    expect(counterAction(context, counter).ok).toBe(true);
+    expect(state.pendingActions[spellId].countered).toBe(true);
+    expect(state.actionStack).toEqual([spellId]); // still on the stack — this is what makes the guard necessary
+
+    const before = lines.length;
+    const result = counterAction(context, counter);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('ACTION_COUNTERED');
+    // §5.1 — the rejection line is allowed; a `change` line claiming the flag flipped again is not.
+    expect(lines.slice(before).filter((l) => l.change !== null)).toEqual([]);
+  });
+
   it('rejects NO_TARGETS when the selector matches nothing', () => {
     const def = pendingDef([]);
     const state = createPlayState(def, 'seed-mtg3c');

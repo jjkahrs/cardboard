@@ -413,16 +413,25 @@ export function counterAction(
   if (res.actions.length === 0) {
     return reject(ec, effect, 'NO_TARGETS', 'Counter: selector matched no pending action.');
   }
-  // Plan then mutate (§5.3) — an action no longer on the stack (already resolved, or already
-  // countered) rejects the WHOLE effect rather than countering the rest and silently no-oping it.
+  // Plan then mutate (§5.3) — a dead target rejects the WHOLE effect rather than countering the
+  // rest and silently no-oping it. Two distinct dead cases, and they are NOT the same reason:
+  //
+  //  - Gone from the stack entirely => already resolved. `TARGET_GONE`, like any dead referent.
+  //  - Still on the stack but already `countered` => `ACTION_COUNTERED` (§4.12's own words: "a
+  //    targeted action was countered before resolving").
+  //
+  // The second case needs its own check because countering does NOT remove the action from
+  // `actionStack` — only the flag is set, and `advanceResolve` pops it when its turn comes round
+  // (MTG3's "removed from the stack on its resolve frame"). So `includes()` is true for a countered
+  // action, and without this guard a second counter would set `countered = true` over an already-
+  // true flag and emit a change line hardcoded `before: false` — a fabricated false->true for a
+  // transition that never happened, in violation of §5.1's "a no-op write logs no change".
   for (const action of res.actions) {
     if (!state.actionStack.includes(action.id)) {
-      return reject(
-        ec,
-        effect,
-        'TARGET_GONE',
-        `Counter ${action.id}: not on the stack (already resolved or countered).`
-      );
+      return reject(ec, effect, 'TARGET_GONE', `Counter ${action.id}: not on the stack (already resolved).`);
+    }
+    if (action.countered) {
+      return reject(ec, effect, 'ACTION_COUNTERED', `Counter ${action.id}: already countered.`);
     }
   }
 
