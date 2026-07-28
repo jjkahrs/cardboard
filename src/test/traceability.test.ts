@@ -8,8 +8,9 @@
  * so this suite doesn't red the whole build over work nobody has started yet. Steps 21–32 landed
  * v2's pending-action/priority/activation/modifier/replacement/continuous/sealed-choice layer and
  * its two fixtures; step 33 (§8's phase-2 GATE) is what wired every criterion those steps made
- * provable into IN_SCOPE. PENDING holds exactly the one row §8's phase-2 exit criteria name as
- * out of scope for this gate — SP12, the pinned play UI — which Phase 3 owns.
+ * provable into IN_SCOPE. Step 40 (§8's phase-3 GATE, part one) proved the one row PENDING held —
+ * SP12, the pinned play UI — end to end from `PlayScreen` (play.test.tsx), so PENDING is empty; it
+ * stays declared, and tolerated empty, for whichever criterion needs it next.
  */
 
 import { readFileSync, readdirSync } from 'node:fs';
@@ -111,8 +112,8 @@ const IN_SCOPE: Criterion[] = [
   { id: 'MTG1', prose: 'Pending action placed -> every seat offered priority in turn order; a legal responder may respond above the original', expected: 'priority.test.ts' },
   { id: 'MTG2', prose: 'Stack of two, no further response -> most recently placed resolves first', expected: 'pending.test.ts' },
   { id: 'MTG3', prose: 'Counter resolves -> countered action removed without applying; log names both', expected: 'pending.test.ts' },
-  { id: 'MTG4', prose: 'Priority round with no legal response anywhere -> collapses, no per-seat log entry', expected: 'priority.test.ts' },
-  { id: 'MTG5', prose: 'A seat with a legal response passes anyway -> own log entry and rewind point', expected: 'priority.test.ts, sessionStore.test.ts' },
+  { id: 'MTG4', prose: 'Priority round with no legal response anywhere -> collapses, no per-seat log entry', expected: 'priority.test.ts, play.test.tsx' },
+  { id: 'MTG5', prose: 'A seat with a legal response passes anyway -> own log entry and rewind point', expected: 'priority.test.ts, sessionStore.test.ts, play.test.tsx' },
   { id: 'MTG9', prose: 'Continuous rule eliminates a seat at zero life; elimination lands at next settle; session continues', expected: 'continuous.test.ts, seats.test.ts' },
   { id: 'MTG10', prose: 'Replacement: a draw becomes two; substitution before any card moves; log distinguishes original from substitute', expected: 'replacement.test.ts' },
   { id: 'MTG11', prose: 'Attacker/blocker via attachment; damage resolves via the continuous-condition rule, not bespoke combat code', expected: "mtgish.ts-driven scenario in fixtures.test.ts" },
@@ -123,15 +124,17 @@ const IN_SCOPE: Criterion[] = [
   { id: 'V7', prose: 'Votes-for > votes-against -> passing branch runs; votes added mid-window are included', expected: 'fixtures.test.ts (vtesish scenario)' },
   { id: 'V8', prose: "Equipment attached to a vampire; discipline-value->=2 check permitted only for that host", expected: 'fixtures.test.ts (vtesish hostOf scenario)' },
   { id: 'V11', prose: 'Influence counters reach capacity -> authored rule moves the minion to Ready, via existing v1 primitives', expected: 'fixtures.test.ts (vtesish scenario)' },
+  // §8 step 40, part one (§8's phase-3 GATE) — the one row phase-2's exit criteria left PENDING for
+  // Phase 3 to own. Proved end to end from `PlayScreen` against vtesish (hidden-info leak check,
+  // raw HTML) and duel (the three-part explicit-switch proof from §6.1), not from a component in
+  // isolation, which is the point of it being the gate.
+  { id: 'SP12', prose: 'Play UI pinned to seat 2 discloses nothing hidden, log included; switching pinned seat is an explicit action', expected: 'play.test.tsx' },
 ];
 
-// SP12 (the pinned play UI, PlayTable/EventLogPanel/PlayToolbar) and V5's component half (the
-// `submitted` count in PromptBar/EventLogPanel) are the two rows §8's phase-2 exit criteria name as
-// out of scope for this gate — Phase 3 owns the UI. V5's ENGINE half is already proved above under
-// IN_SCOPE, so it does not also need a PENDING entry; only SP12 has no headless proof at all.
-const PENDING: Criterion[] = [
-  { id: 'SP12', prose: 'Play UI pinned to seat 2 discloses nothing hidden, log included; switching pinned seat is an explicit action', expected: 'PlayTable.test.tsx, EventLogPanel.test.tsx, PlayToolbar.test.tsx (Phase 3 — names the pinned play UI, which does not exist as a v2 seat-walk yet)' },
-];
+// Nothing lands here right now. A criterion goes in PENDING only when its sole possible proof is a
+// screen or component that doesn't exist yet — SP12 was the last one (Phase 3's UI), and step 40
+// proved it. `[...IN_SCOPE, ...PENDING]` below tolerates PENDING being empty with no special case.
+const PENDING: Criterion[] = [];
 
 const tags = scanTags(listTestFiles(SRC_DIR));
 
