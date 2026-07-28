@@ -16,7 +16,7 @@ import type { GameDefinition } from './types';
 // ---------------------------------------------------------------------------
 
 const valid: GameDefinition = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   id: 'g-tiny',
   name: 'Tiny Duel — "quoted" \\ back é✨\nsecond line',
   playerCount: 2,
@@ -127,7 +127,7 @@ const valid: GameDefinition = {
     startStateId: 'start',
     endStateId: 'end',
   },
-  limits: { maxDepth: 64, maxEffects: 10_000 },
+  limits: { maxDepth: 256, maxEffects: 50_000, maxSettleIterations: 64, maxPriorityRounds: 256 },
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
 
@@ -267,14 +267,24 @@ describe('gate 2: schema version', () => {
     d.schemaVersion = 999;
     d.zones = 'not even an array'; // would produce shape errors if the version gate ran late
     expect(failed(JSON.stringify(d))).toEqual([
-      'Unsupported schema version 999. This build reads version 1.',
+      'Unsupported schema version 999. This build reads version 2.',
+    ]);
+  });
+
+  // §7.1 — v1 is a live input, so it gets its own message saying WHY there is no migration,
+  // distinct from the generic future-version one above.
+  it('rejects schemaVersion 1 by name, saying v1 is not convertible', () => {
+    const d = clone();
+    d.schemaVersion = 1;
+    expect(failed(JSON.stringify(d))).toEqual([
+      'Unsupported schema version 1. This build reads version 2. v1 definitions are not convertible — the schema changed before release.',
     ]);
   });
 
   it('rejects an absent schemaVersion on the version path, not as a shape error', () => {
     const d = clone();
     delete d.schemaVersion;
-    expect(failed(JSON.stringify(d))).toEqual(['Missing schemaVersion. This build reads version 1.']);
+    expect(failed(JSON.stringify(d))).toEqual(['Missing schemaVersion. This build reads version 2.']);
   });
 });
 
@@ -384,7 +394,7 @@ describe('P2: canonical export', () => {
 
   it('puts schemaVersion first', () => {
     expect(Object.keys(JSON.parse(canonical))[0]).toBe('schemaVersion');
-    expect(canonical.startsWith('{\n  "schemaVersion": 1,')).toBe(true);
+    expect(canonical.startsWith('{\n  "schemaVersion": 2,')).toBe(true);
   });
 
   it('keeps maxCapacity: null as a present key', () => {

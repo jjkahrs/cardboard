@@ -311,10 +311,12 @@ export interface StateMachine {
 // §4.9 The export root
 // ---------------------------------------------------------------------------
 
-export const SCHEMA_VERSION = 1 as const;
+export const SCHEMA_VERSION = 2 as const;
 
-export const DEFAULT_MAX_DEPTH = 64;
-export const DEFAULT_MAX_EFFECTS = 10_000;
+export const DEFAULT_MAX_DEPTH = 256;
+export const DEFAULT_MAX_EFFECTS = 50_000;
+export const DEFAULT_MAX_SETTLE_ITERATIONS = 64;
+export const DEFAULT_MAX_PRIORITY_ROUNDS = 256;
 
 /** This IS the exported file. No envelope, no exportedAt — see §7. */
 export interface GameDefinition {
@@ -334,8 +336,13 @@ export interface GameDefinition {
   /** game-level rules (onGameStart setup, win checks) */
   globalRuleSetIds: Id[];
   machine: StateMachine;
-  /** defaults 64 / 10_000 — §5.5 */
-  limits: { maxDepth: number; maxEffects: number };
+  /** defaults from the DEFAULT_MAX_* constants above — v2 §4.11 */
+  limits: {
+    maxDepth: number;
+    maxEffects: number;
+    maxSettleIterations: number;
+    maxPriorityRounds: number;
+  };
   /** ISO. Bumped by edits only; import never writes it */
   updatedAt: string;
 }
@@ -352,26 +359,62 @@ export interface TriggerContext {
 }
 
 /**
- * §5.5 requires every WorkItem to carry a parent frame id so the loop-guard chain is
+ * §5.5 requires every frame to carry a parent frame id so the loop-guard chain is
  * reconstructed exactly rather than guessed. `id` is drawn from `PlayState.nextWorkId`,
  * so it is deterministic like every other id in the system.
  */
-export interface WorkItemBase {
+export interface FrameBase {
   id: number;
   parentId: number | null;
   depth: number;
 }
 
-export type WorkItem =
+/**
+ * v2 §4.7 — replaces v1's `WorkItem`. Two v1 kinds have no arm here on purpose:
+ *
+ * - `effect`: a `rule` frame's own `cursor` plays that role now (§4.7, §9.2).
+ * - `transition`: it was already dead code in v1 — `forceTransition` applies inline via
+ *   `applyTransition` (`effects.ts:730`) and nothing ever enqueued it. It gets no replacement.
+ *
+ * `resolve`, `priority` and `sealed` (§4.7) reference pending actions and priority windows, which
+ * do not exist until phase 2; they land with the entities they address.
+ */
+export type Frame =
   // `stateId` is set only for `onStateExit`: the transition has already landed by the time the
   // queued event drains, so `state.currentStateId` is the DESTINATION and a `stateFilter` matched
   // against it would fire for the wrong state. Carries the state that was LEFT.
-  | (WorkItemBase & { kind: 'event'; name: EventName; ctx: TriggerContext; stateId?: Id })
-  | (WorkItemBase & { kind: 'rule'; ruleId: Id; sourceCardId: Id | null; ctx: TriggerContext })
-  | (WorkItemBase & { kind: 'effect'; ruleId: Id; effectIndex: number; ctx: TriggerContext })
-  | (WorkItemBase & { kind: 'transition'; toStateId: Id; forced: boolean });
+  | (FrameBase & {
+      kind: 'event';
+      name: EventName;
+      ctx: TriggerContext;
+      stateId?: Id;
+      bindings: RuleBinding[];
+      cursor: number;
+    })
+  | (FrameBase & {
+      kind: 'rule';
+      ruleId: Id;
+      sourceCardId: Id | null;
+      ctx: TriggerContext;
+      cursor: number;
+      aborted: boolean;
+    })
+  | (FrameBase & { kind: 'settle'; iteration: number });
 
-export interface PendingPrompt {
+/** One matched rule inside an `event` frame's `bindings`, in §5.1 order. */
+export interface RuleBinding {
+  ruleId: Id;
+  sourceCardId: Id | null;
+  ctx: TriggerContext;
+}
+
+/**
+ * v2 §4.9 — replaces `PendingPrompt`. One suspension mechanism for every kind of pause.
+ * Phase 0 produces only the `chooseCards` arm, which is v1's prompt behaviour verbatim under a
+ * discriminant; the other five arms arrive with the primitives that raise them.
+ */
+export type Interaction = {
+  kind: 'chooseCards';
   /** `${logSeq}:${ruleSetId}:${effectIndex}` — stable and reproducible */
   promptId: string;
   promptText: string;
@@ -380,7 +423,7 @@ export interface PendingPrompt {
   candidates: Id[];
   min: number;
   max: number;
-}
+};
 
 /** Everything rewindable, and NOTHING else. The single immer-produced object. */
 export interface PlayState {
@@ -388,9 +431,9 @@ export interface PlayState {
   seed: string;
   rngCursor: number;
   nextSeq: number;
-  /** counter behind WorkItem.id — deterministic, part of the rewound domain */
+  /** counter behind Frame.id — deterministic, part of the rewound domain */
   nextWorkId: number;
-  /** the log seq this transaction will occupy; feeds PendingPrompt.promptId */
+  /** the log seq this transaction will occupy; feeds Interaction.promptId */
   logSeq: number;
   playerCount: number;
   /** game-scoped (incl. activePlayer) */
@@ -401,9 +444,16 @@ export interface PlayState {
   zones: Record<ZoneKey, ZoneInstance>;
   currentStateId: Id;
   finished: boolean;
-  queue: WorkItem[];
-  pendingPrompt: PendingPrompt | null;
-  budget: { causalDepth: number; effectsUsed: number };
+  /** LIFO continuation stack — §3.2. `step()` advances the top frame and returns. */
+  stack: Frame[];
+  /**
+   * FIFO, drained one frame at a time only once `stack` empties — §3.2. Fired events append here
+   * rather than pushing onto the stack, which is what preserves v1 §5.1's breadth-first guarantee:
+   * effect 4 sees the world effect 3 left behind, not a world mutated by a deep cascade.
+   */
+  pending: Frame[];
+  interaction: Interaction | null;
+  budget: { causalDepth: number; effectsUsed: number; settleIterations: number };
 }
 
 export type LogLevel = 'info' | 'warn' | 'reject' | 'error' | 'override';
@@ -471,7 +521,9 @@ export type RejectReason =
   | 'AWAITING_PROMPT'
   | 'INVALID_ANSWER'
   | 'PROMPT_CANCELED'
-  | 'SESSION_FINISHED';
+  | 'SESSION_FINISHED'
+  /** v2 §4.12 — the continuous/auto-transition fixpoint hit `limits.maxSettleIterations`. */
+  | 'SETTLE_DIVERGED';
 
 /** Uniform result for anything that can refuse. */
 export type EffectResult =

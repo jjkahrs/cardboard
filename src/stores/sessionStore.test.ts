@@ -7,6 +7,8 @@ import { duel, script, SCRIPT_SEED } from '../test/fixtures';
 import {
   DEFAULT_MAX_DEPTH,
   DEFAULT_MAX_EFFECTS,
+  DEFAULT_MAX_PRIORITY_ROUNDS,
+  DEFAULT_MAX_SETTLE_ITERATIONS,
   END_STATE_ID,
   SCHEMA_VERSION,
   START_STATE_ID,
@@ -113,7 +115,12 @@ const testDef: GameDefinition = {
     startStateId: START_STATE_ID,
     endStateId: END_STATE_ID,
   },
-  limits: { maxDepth: DEFAULT_MAX_DEPTH, maxEffects: DEFAULT_MAX_EFFECTS },
+  limits: {
+    maxDepth: DEFAULT_MAX_DEPTH,
+    maxEffects: DEFAULT_MAX_EFFECTS,
+    maxSettleIterations: DEFAULT_MAX_SETTLE_ITERATIONS,
+    maxPriorityRounds: DEFAULT_MAX_PRIORITY_ROUNDS,
+  },
   updatedAt: new Date(0).toISOString(),
 };
 

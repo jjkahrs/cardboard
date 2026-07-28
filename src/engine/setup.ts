@@ -86,8 +86,9 @@ export function createPlayState(def: GameDefinition, seed: string): PlayState {
     zones,
     currentStateId: def.machine.startStateId,
     finished: false,
-    queue: [],
-    pendingPrompt: null,
-    budget: { causalDepth: 0, effectsUsed: 0 },
+    stack: [],
+    pending: [],
+    interaction: null,
+    budget: { causalDepth: 0, effectsUsed: 0, settleIterations: 0 },
   };
 }

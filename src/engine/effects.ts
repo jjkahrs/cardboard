@@ -80,6 +80,9 @@ const LEVEL_OF: Record<RejectReason, LogLevel> = {
   INVALID_ANSWER: 'reject',
   PROMPT_CANCELED: 'reject',
   SESSION_FINISHED: 'reject',
+  // The fixpoint failed to converge — that is a broken game, not a rule-legal refusal, so it sits
+  // with RULE_LOOP rather than with the rejections (v2 §4.12, §5.3).
+  SETTLE_DIVERGED: 'error',
 };
 
 /**

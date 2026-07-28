@@ -2,7 +2,7 @@
  * §9.2 `loop.ts` — the three loop-guard fixtures for R4 (§5.5).
  *
  * All three are card-less: the rules are bound through `globalRuleSetIds`, so a test only has to
- * fire the event. All three keep the DEFAULT limits (64 / 10 000) — the point of each fixture is
+ * fire the event. All three keep the DEFAULT limits (256 / 50 000) — the point of each fixture is
  * which of the two counters trips first, so overriding them would defeat it.
  *
  * Frozen (§9.2). Mutating tests must `structuredClone` first.
@@ -12,6 +12,8 @@ import type { GameDefinition, PointPool, RuleSet } from '../../engine/types';
 import {
   DEFAULT_MAX_DEPTH,
   DEFAULT_MAX_EFFECTS,
+  DEFAULT_MAX_PRIORITY_ROUNDS,
+  DEFAULT_MAX_SETTLE_ITERATIONS,
   END_STATE_ID,
   SCHEMA_VERSION,
   START_STATE_ID,
@@ -67,7 +69,12 @@ const base = (id: string, name: string, customEvents: string[], ruleSets: RuleSe
   ruleSets,
   globalRuleSetIds: ruleSets.map((r) => r.id),
   machine: { states: [START_NODE, END_NODE], startStateId: START_STATE_ID, endStateId: END_STATE_ID },
-  limits: { maxDepth: DEFAULT_MAX_DEPTH, maxEffects: DEFAULT_MAX_EFFECTS },
+  limits: {
+    maxDepth: DEFAULT_MAX_DEPTH,
+    maxEffects: DEFAULT_MAX_EFFECTS,
+    maxSettleIterations: DEFAULT_MAX_SETTLE_ITERATIONS,
+    maxPriorityRounds: DEFAULT_MAX_PRIORITY_ROUNDS,
+  },
   updatedAt: FIXTURE_UPDATED_AT,
 });
 

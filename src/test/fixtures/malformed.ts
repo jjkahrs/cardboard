@@ -1,5 +1,5 @@
 /**
- * §9.2 `malformed.ts` — the 8-row bad-input table for P3 (§7.2's four import gates).
+ * §9.2 `malformed.ts` — the 9-row bad-input table for P3 (§7.2's four import gates).
  *
  * `json` is RAW FILE TEXT, not an object, because gate 1 is `JSON.parse` and row 0 must fail there.
  * `expectedPath` is the structural claim (which field this row breaks); `expectedError` is the
@@ -13,6 +13,8 @@ import type { GameDefinition } from '../../engine/types';
 import {
   DEFAULT_MAX_DEPTH,
   DEFAULT_MAX_EFFECTS,
+  DEFAULT_MAX_PRIORITY_ROUNDS,
+  DEFAULT_MAX_SETTLE_ITERATIONS,
   END_STATE_ID,
   SCHEMA_VERSION,
   START_STATE_ID,
@@ -70,7 +72,12 @@ export const malformedBase: GameDefinition = deepFreeze({
   ],
   globalRuleSetIds: [MB_RULESET],
   machine: { states: [START_NODE, END_NODE], startStateId: START_STATE_ID, endStateId: END_STATE_ID },
-  limits: { maxDepth: DEFAULT_MAX_DEPTH, maxEffects: DEFAULT_MAX_EFFECTS },
+  limits: {
+    maxDepth: DEFAULT_MAX_DEPTH,
+    maxEffects: DEFAULT_MAX_EFFECTS,
+    maxSettleIterations: DEFAULT_MAX_SETTLE_ITERATIONS,
+    maxPriorityRounds: DEFAULT_MAX_PRIORITY_ROUNDS,
+  },
   updatedAt: FIXTURE_UPDATED_AT,
 });
 
@@ -162,6 +169,17 @@ export const malformed: MalformedCase[] = deepFreeze([
     // §7.2 ("One clear message beats forty field errors from a future format"), and §9.4 item 10
     // requires only that it names the version.
     expectedError: 'Unsupported schema version 999',
+  },
+  {
+    // Structurally valid — as a v1 file. v1 is a live input this build will actually receive,
+    // unlike an arbitrarily future version, so §7.1 names it and says WHY there is no migration.
+    // Distinct row from `999` on purpose (§9.2).
+    label: 'v1 schema version',
+    json: broken((d) => {
+      d.schemaVersion = 1;
+    }),
+    expectedPath: 'schemaVersion',
+    expectedError: 'v1 definitions are not convertible',
   },
   {
     // Shape-valid; only gate 4 catches it.

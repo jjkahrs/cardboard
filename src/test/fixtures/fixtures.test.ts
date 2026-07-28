@@ -56,9 +56,9 @@ describe('every fixture definition', () => {
     expect(d.machine.states.every(Object.isFrozen)).toBe(true);
   });
 
-  it.each(allDefinitions)('%s has 2 players, schemaVersion 1 and the reserved states', (_name, d) => {
+  it.each(allDefinitions)('%s has 2 players, schemaVersion 2 and the reserved states', (_name, d) => {
     expect(d.playerCount).toBe(2);
-    expect(d.schemaVersion).toBe(1);
+    expect(d.schemaVersion).toBe(2);
     expect(d.machine.startStateId).toBe(START_STATE_ID);
     expect(d.machine.endStateId).toBe(END_STATE_ID);
     expect(d.machine.states.map((s) => s.id)).toEqual(expect.arrayContaining([START_STATE_ID, END_STATE_ID]));
@@ -212,7 +212,12 @@ describe('loop', () => {
       expect(d.templates).toEqual([]);
       expect(d.globalRuleSetIds).toEqual(d.ruleSets.map((r) => r.id));
       expect(d.ruleSets.every((r) => r.effects.some((e) => e.kind === 'fireEvent'))).toBe(true);
-      expect(d.limits).toEqual({ maxDepth: 64, maxEffects: 10_000 });
+      expect(d.limits).toEqual({
+        maxDepth: 256,
+        maxEffects: 50_000,
+        maxSettleIterations: 64,
+        maxPriorityRounds: 256,
+      });
     }
   });
 
@@ -244,9 +249,9 @@ describe('loop', () => {
 });
 
 describe('malformed', () => {
-  it('covers all 8 P3 rows, each with a distinct label', () => {
-    expect(malformed).toHaveLength(8);
-    expect(new Set(malformed.map((m) => m.label)).size).toBe(8);
+  it('covers all 9 P3 rows, each with a distinct label', () => {
+    expect(malformed).toHaveLength(9);
+    expect(new Set(malformed.map((m) => m.label)).size).toBe(9);
     expect(Object.isFrozen(malformed)).toBe(true);
   });
 

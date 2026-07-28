@@ -295,7 +295,14 @@ const GameDefinitionShape = z.object({
   ruleSets: z.array(RuleSetSchema),
   globalRuleSetIds: z.array(IdSchema),
   machine: StateMachineSchema,
-  limits: z.object({ maxDepth: z.number().int(), maxEffects: z.number().int() }),
+  /** §7.2: all four keys are PRESENT, never `.optional()` — an absent key only fails on the
+   *  second round trip. */
+  limits: z.object({
+    maxDepth: z.number().int(),
+    maxEffects: z.number().int(),
+    maxSettleIterations: z.number().int(),
+    maxPriorityRounds: z.number().int(),
+  }),
   /** ISO, but never re-derived here — import must not write it (§4.9). Plain string on purpose. */
   updatedAt: z.string(),
 });
@@ -570,6 +577,17 @@ export function importJson(text: string): ImportResult {
       : undefined;
   if (version === undefined) {
     return { ok: false, errors: [`Missing schemaVersion. This build reads version ${SCHEMA_VERSION}.`] };
+  }
+  // v1 is a live input this build will actually receive, unlike an arbitrarily future version, so
+  // it is named rather than lumped in with the generic message (§7.1). There is no migration
+  // chain by decision — §2.3 item 6.
+  if (version === 1) {
+    return {
+      ok: false,
+      errors: [
+        `Unsupported schema version 1. This build reads version ${SCHEMA_VERSION}. v1 definitions are not convertible — the schema changed before release.`,
+      ],
+    };
   }
   if (version !== SCHEMA_VERSION) {
     return {

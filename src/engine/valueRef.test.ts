@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { parseZoneKey, resolvePoolDef, resolveSeat, resolveValueRef, zoneKey } from './valueRef';
 import {
+  DEFAULT_MAX_DEPTH,
+  DEFAULT_MAX_EFFECTS,
+  DEFAULT_MAX_PRIORITY_ROUNDS,
+  DEFAULT_MAX_SETTLE_ITERATIONS,
+  SCHEMA_VERSION,
   ACTIVE_PLAYER_POOL,
   ACTIVE_PLAYER_POOL_ID,
   type CardInstance,
@@ -16,7 +21,7 @@ import { duel } from '../test/fixtures';
 
 function makeDef(overrides: Partial<GameDefinition> = {}): GameDefinition {
   return {
-    schemaVersion: 1,
+    schemaVersion: SCHEMA_VERSION,
     id: 'g1',
     name: 'Test Game',
     playerCount: 2,
@@ -28,7 +33,12 @@ function makeDef(overrides: Partial<GameDefinition> = {}): GameDefinition {
     ruleSets: [],
     globalRuleSetIds: [],
     machine: { states: [], startStateId: 'start', endStateId: 'end' },
-    limits: { maxDepth: 64, maxEffects: 10_000 },
+    limits: {
+    maxDepth: DEFAULT_MAX_DEPTH,
+    maxEffects: DEFAULT_MAX_EFFECTS,
+    maxSettleIterations: DEFAULT_MAX_SETTLE_ITERATIONS,
+    maxPriorityRounds: DEFAULT_MAX_PRIORITY_ROUNDS,
+  },
     updatedAt: '2024-01-01T00:00:00.000Z',
     ...overrides,
   };
@@ -49,9 +59,10 @@ function makeState(playerCount: number, activePlayer: number, overrides: Partial
     zones: {},
     currentStateId: 'start',
     finished: false,
-    queue: [],
-    pendingPrompt: null,
-    budget: { causalDepth: 0, effectsUsed: 0 },
+    stack: [],
+    pending: [],
+    interaction: null,
+    budget: { causalDepth: 0, effectsUsed: 0, settleIterations: 0 },
     ...overrides,
   };
 }
