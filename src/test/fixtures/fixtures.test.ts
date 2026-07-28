@@ -5,16 +5,23 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { ACTIVE_PLAYER_POOL_ID, END_STATE_ID, START_STATE_ID } from '../../engine/types';
-import type { EngineInput, GameDefinition, MachineState, PlayAction } from '../../engine/types';
+import { ACTIVE_PLAYER_POOL_ID, CONTINUE, END_STATE_ID, START_STATE_ID } from '../../engine/types';
+import type { EngineInput, GameDefinition, LogLine, MachineState, PlayAction, PlayState } from '../../engine/types';
 import { step } from '../../engine/dispatch';
+import { effectiveIndex } from '../../engine/modifiers';
+import { exportJson, importJson } from '../../engine/schema';
+import { emptyBoard, place } from '../board';
 import * as duelFx from './duel';
 import { duel, duelOneSidedEdge } from './duel';
 import { empty } from './empty';
 import { fanOut, mutualLoop, selfLoop } from './loop';
 import { malformed, malformedBase } from './malformed';
+import * as mtg from './mtgish';
+import { mtgish } from './mtgish';
 import { SCRIPT_SEED, script, scriptCards } from './script';
 import type { ScriptRow } from './script';
+import * as vtes from './vtesish';
+import { vtesish } from './vtesish';
 import { createPlayState } from '../../engine/setup';
 
 const byId = (states: MachineState[], id: string): MachineState => {
@@ -440,6 +447,419 @@ describe('script', () => {
   it('covers every effect kind duel is capable of reaching', () => {
     const reachable = new Set(duel.ruleSets.flatMap((r) => r.effects.map((e) => e.kind)));
     expect([...reachable].sort()).toEqual(['changePool', 'destroyCards', 'drawCards']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §8 step 32 — mtgish.ts / vtesish.ts. `allDefinitions` above hardcodes playerCount:2 for every
+// row, so these two (2 and 5 seats respectively) get their own equivalent checks rather than being
+// folded in and weakening that assertion.
+// ---------------------------------------------------------------------------
+
+/** Runs `step()` to settlement, answering an open `priority` interaction per `respond`. */
+function driveThroughPriority(
+  state: PlayState,
+  def: GameDefinition,
+  input: EngineInput,
+  respond: (seat: number) => PlayAction,
+  lines: LogLine[] = []
+): LogLine[] {
+  let result = step(state, input, lines, def);
+  let guard = 0;
+  while (true) {
+    if (++guard > 10_000) throw new Error('fixtures.test.ts driver runaway');
+    if (state.interaction?.kind === 'priority') {
+      result = step(state, { kind: 'action', action: respond(state.interaction.seat), override: false }, lines, def);
+    } else if (result.done) {
+      return lines;
+    } else {
+      result = step(state, CONTINUE, lines, def);
+    }
+  }
+}
+
+describe('mtgish', () => {
+  it('is frozen, schemaVersion 2, 2 players, the reserved states, and a hardcoded updatedAt', () => {
+    expect(Object.isFrozen(mtgish)).toBe(true);
+    expect(mtgish.schemaVersion).toBe(2);
+    expect(mtgish.playerCount).toBe(2);
+    expect(mtgish.machine.states.map((s) => s.id)).toEqual(expect.arrayContaining([START_STATE_ID, END_STATE_ID]));
+    expect(mtgish.updatedAt).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('has no one-sided state machine edges, and references only ruleSets that exist', () => {
+    expect(oneSidedEdges(mtgish)).toEqual([]);
+    const known = new Set(mtgish.ruleSets.map((r) => r.id));
+    const referenced = [...mtgish.globalRuleSetIds, ...mtgish.templates.flatMap((t) => t.ruleSetIds)];
+    expect(referenced.filter((id) => !known.has(id))).toEqual([]);
+  });
+
+  it('survives structuredClone, so mutating tests have an escape', () => {
+    const copy = structuredClone(mtgish);
+    expect(copy).toEqual(mtgish);
+    expect(Object.isFrozen(copy)).toBe(false);
+  });
+
+  it('declares exactly one pool (life, player int 20/0/20) and the four §9.3 zones', () => {
+    expect(mtgish.pools).toHaveLength(1);
+    expect(mtgish.pools[0]).toMatchObject({ id: mtg.LIFE, scope: 'player', value: { type: 'integer', defaultValue: 20, min: 0, max: 20 } });
+    expect(mtgish.zones.map((z) => z.name)).toEqual(['Library', 'Hand', 'Battlefield', 'Graveyard']);
+    expect(mtgish.zones.find((z) => z.id === mtg.MTG_BATTLEFIELD)).toMatchObject({ scope: 'shared', visibility: 'faceUp' });
+  });
+
+  it('declares exactly the six §9.3 templates, one per criterion, each wired to its own rule(s)', () => {
+    expect(mtgish.templates.map((t) => t.id)).toEqual([
+      mtg.BOLT, mtg.BEAR, mtg.COUNTER_MAGIC, mtg.ANTHEM_LORD, mtg.POWER_SET, mtg.MIND_CONTROL,
+    ]);
+    expect(mtgish.templates.find((t) => t.id === mtg.BOLT)?.ruleSetIds).toEqual([mtg.RS_BOLT]);
+    expect(mtgish.templates.find((t) => t.id === mtg.BEAR)?.ruleSetIds).toEqual([mtg.RS_LETHAL_DAMAGE, mtg.RS_BLOCK]);
+    expect(mtgish.templates.find((t) => t.id === mtg.COUNTER_MAGIC)?.ruleSetIds).toEqual([mtg.RS_COUNTER_MAGIC]);
+  });
+
+  it('opens the stack window on the active seat, forward, inclusive, no close cap', () => {
+    const win = mtgish.priorityWindows.find((w) => w.id === mtg.WINDOW_STACK);
+    expect(win).toMatchObject({ start: 'active', direction: 'forward', includeStart: true, passesToClose: null });
+  });
+
+  it('AC: MTG1–MTG3 — Bolt announces a resolve-only rule under the stack window; Counter Magic is a perInstance activation gated to it', () => {
+    const bolt = mtgish.ruleSets.find((r) => r.id === mtg.RS_BOLT)!;
+    expect(bolt.trigger).toBe('onCardPlayed');
+    expect(bolt.effects).toEqual([{ kind: 'announceAction', ruleId: mtg.RS_BOLT_RESOLVE, window: mtg.WINDOW_STACK }]);
+    const counter = mtgish.ruleSets.find((r) => r.id === mtg.RS_COUNTER_MAGIC)!;
+    expect(counter.activation).toMatchObject({ window: mtg.WINDOW_STACK, perInstance: true });
+    expect(counter.effects).toEqual([{ kind: 'counterAction', action: { kind: 'action', ref: { kind: 'topOfStack' } } }]);
+  });
+
+  it('AC: MTG7 — Power Set is authored BEFORE Anthem Lord in ruleSets array order', () => {
+    const a = mtgish.ruleSets.findIndex((r) => r.id === mtg.RS_POWER_SET);
+    const b = mtgish.ruleSets.findIndex((r) => r.id === mtg.RS_ANTHEM_LORD);
+    expect(a).toBeLessThan(b);
+    expect(mtgish.ruleSets[a].modifier).toMatchObject({ op: 'set' });
+    expect(mtgish.ruleSets[b].modifier).toMatchObject({ op: 'adjust' });
+  });
+
+  it('MindControl steals a prompted creature; Return to Owner is a global activation', () => {
+    const mc = mtgish.ruleSets.find((r) => r.id === mtg.RS_MIND_CONTROL)!;
+    expect(mc.effects[0]).toMatchObject({ kind: 'setController', seat: { kind: 'triggeringSeat' } });
+    expect(mtgish.globalRuleSetIds).toContain(mtg.RS_RETURN_TO_OWNER);
+    expect(mtgish.ruleSets.find((r) => r.id === mtg.RS_RETURN_TO_OWNER)?.activation).not.toBeNull();
+  });
+
+  it('Draw Two Instead is a global, unconditional drawCards replacement', () => {
+    expect(mtgish.globalRuleSetIds).toContain(mtg.RS_DRAW_TWO_INSTEAD);
+    const rule = mtgish.ruleSets.find((r) => r.id === mtg.RS_DRAW_TWO_INSTEAD)!;
+    expect(rule.replaces).toEqual({ effectKind: 'drawCards', match: null });
+    expect(rule.effects).toEqual([{ kind: 'drawCards', from: { zoneId: mtg.MTG_LIBRARY, seat: { kind: 'triggeringSeat' } }, to: { zoneId: mtg.MTG_HAND, seat: { kind: 'triggeringSeat' } }, count: { kind: 'literal', value: 2 } }]);
+  });
+
+  it('AC: MTG11 — Lethal Damage is card-attached and continuous; Declare Block is card-attached to onZoneEnter', () => {
+    const lethal = mtgish.ruleSets.find((r) => r.id === mtg.RS_LETHAL_DAMAGE)!;
+    expect(lethal.continuous).toBe(true);
+    expect(mtgish.templates.find((t) => t.id === mtg.BEAR)?.ruleSetIds).toContain(mtg.RS_LETHAL_DAMAGE);
+    const block = mtgish.ruleSets.find((r) => r.id === mtg.RS_BLOCK)!;
+    expect(block.trigger).toBe('onZoneEnter');
+    expect(block.effects.map((e) => e.kind)).toEqual(['attach', 'setCardIndex', 'setCardIndex']);
+  });
+
+  it('AC: MTG11 behavioral — attach + continuous LethalDamage kills the creature(s) at lethal damage, via effects.ts/continuous.ts only, no bespoke combat function', () => {
+    const state = emptyBoard(mtgish, 'state_main');
+    const bfKey = `${mtg.MTG_BATTLEFIELD}`;
+    const attackerId = place(state, mtgish, bfKey, mtg.BEAR, 'atk');
+    const blockerId = place(state, mtgish, `${mtg.MTG_HAND}#1`, mtg.BEAR, 'blk');
+
+    const lines: LogLine[] = [];
+    let result = step(state, { kind: 'action', action: { kind: 'moveCard', cardId: blockerId, to: { zoneId: mtg.MTG_BATTLEFIELD, seat: null }, position: 'bottom' }, override: false }, lines, mtgish);
+    let n = 0;
+    while (!result.done) {
+      if (++n > 10_000) throw new Error('runaway');
+      result = step(state, CONTINUE, lines, mtgish);
+    }
+
+    // Both bears deal their power (2) as damage to the other, meeting toughness (2) — both die.
+    expect(state.cards[attackerId]).toBeUndefined();
+    expect(state.cards[blockerId]).toBeUndefined();
+    expect(lines.some((l) => l.message.includes('attached to atk'))).toBe(true);
+    expect(lines.some((l) => l.message.includes('Damage on blk: 0 → 2'))).toBe(true);
+    expect(lines.some((l) => l.message.includes('Damage on atk: 0 → 2'))).toBe(true);
+    expect(lines.some((l) => l.ruleId === mtg.RS_LETHAL_DAMAGE)).toBe(true);
+  });
+
+  it('eliminates each seat at zero life via its own global continuous rule (engine ceiling — one rule per seat)', () => {
+    expect(mtgish.globalRuleSetIds).toEqual(expect.arrayContaining([mtg.RS_OUST_SEAT0, mtg.RS_OUST_SEAT1]));
+    for (const [id, seat] of [[mtg.RS_OUST_SEAT0, 0], [mtg.RS_OUST_SEAT1, 1]] as const) {
+      const rule = mtgish.ruleSets.find((r) => r.id === id)!;
+      expect(rule.continuous).toBe(true);
+      expect(rule.effects).toEqual([{ kind: 'eliminateSeat', seat: { kind: 'seat', index: seat } }]);
+    }
+  });
+});
+
+describe('vtesish', () => {
+  it('is frozen, schemaVersion 2, 5 players, the reserved states, and a hardcoded updatedAt', () => {
+    expect(Object.isFrozen(vtesish)).toBe(true);
+    expect(vtesish.schemaVersion).toBe(2);
+    expect(vtesish.playerCount).toBe(5);
+    expect(vtesish.machine.states.map((s) => s.id)).toEqual(expect.arrayContaining([START_STATE_ID, END_STATE_ID]));
+    expect(vtesish.updatedAt).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('has no one-sided state machine edges, and references only ruleSets that exist', () => {
+    expect(oneSidedEdges(vtesish)).toEqual([]);
+    const known = new Set(vtesish.ruleSets.map((r) => r.id));
+    const referenced = [...vtesish.globalRuleSetIds, ...vtesish.templates.flatMap((t) => t.ruleSetIds)];
+    expect(referenced.filter((id) => !known.has(id))).toEqual([]);
+  });
+
+  it('survives structuredClone, so mutating tests have an escape', () => {
+    const copy = structuredClone(vtesish);
+    expect(copy).toEqual(vtesish);
+    expect(Object.isFrozen(copy)).toBe(false);
+  });
+
+  it('declares the pool/vote pools and the four §9.3 zones', () => {
+    expect(vtesish.pools.map((p) => p.id)).toEqual([vtes.POOL, vtes.VOTES_FOR, vtes.VOTES_AGAINST, vtes.BLOCKED, vtes.REFERENDUM_PASSED]);
+    expect(vtesish.pools[0]).toMatchObject({ scope: 'player', value: { defaultValue: 30, min: 0, max: 30 } });
+    expect(vtesish.zones.map((z) => z.name)).toEqual(['Uncontrolled', 'Ready', 'Library', 'Hand']);
+  });
+
+  it('declares exactly the six §9.3 templates, each wired to its own rule(s)', () => {
+    expect(vtesish.templates.map((t) => t.id)).toEqual([
+      vtes.ACTION_CARD, vtes.MINION, vtes.VOTE_CARD, vtes.EQUIPMENT, vtes.UNIQUE_VAMPIRE, vtes.VTES_STRIKE,
+    ]);
+    expect(vtesish.templates.find((t) => t.id === vtes.ACTION_CARD)?.ruleSetIds).toEqual([vtes.RS_ACTION]);
+    expect(vtesish.templates.find((t) => t.id === vtes.EQUIPMENT)?.ruleSetIds).toEqual([vtes.RS_EQUIPMENT_ABILITY]);
+    expect(vtesish.templates.find((t) => t.id === vtes.UNIQUE_VAMPIRE)?.ruleSetIds).toEqual([vtes.RS_SEIZE]);
+    expect(vtesish.templates.find((t) => t.id === vtes.MINION)?.indexes.map((i) => i.id)).toEqual([vtes.INFLUENCE, vtes.CAPACITY, vtes.DISCIPLINE]);
+    expect(vtesish.templates.find((t) => t.id === vtes.VOTE_CARD)?.indexes.map((i) => i.id)).toEqual([vtes.VOTE_VALUE]);
+  });
+
+  it('opens the block window on controllerOfAction, forward, exclusive, no close cap', () => {
+    const win = vtesish.priorityWindows.find((w) => w.id === vtes.WINDOW_BLOCK);
+    expect(win).toMatchObject({ start: 'controllerOfAction', direction: 'forward', includeStart: false, passesToClose: null });
+  });
+
+  it('AC: V1 — the action card resolves the PREDATOR of its own OWNER, via relative(owner(triggering), -1)', () => {
+    const resolve = vtesish.ruleSets.find((r) => r.id === vtes.RS_ACTION_RESOLVE)!;
+    expect(resolve.effects[0]).toMatchObject({
+      kind: 'changePool',
+      poolId: vtes.POOL,
+      seat: { kind: 'relative', from: { kind: 'owner', card: { kind: 'triggering' } }, offset: -1 },
+    });
+  });
+
+  it('AC: V1, V3, V4 behavioral — the predator (not the active seat) is charged, and the block window excludes the announcer', () => {
+    const state = emptyBoard(vtesish, 'state_main');
+    const cardId = place(state, vtesish, `${vtes.VTES_HAND}#2`, vtes.ACTION_CARD, 'ac1');
+    const lines: LogLine[] = [];
+    driveThroughPriority(
+      state,
+      vtesish,
+      { kind: 'action', action: { kind: 'moveCard', cardId, to: { zoneId: vtes.UNCONTROLLED, seat: { kind: 'seat', index: 2 } }, position: 'top' }, override: false },
+      () => ({ kind: 'passPriority' }),
+      lines
+    );
+    // seat 2 (the owner) is NOT active (active is seat 0) — proves this resolves relative to the
+    // OWNER, not the active seat. Its predator, seat 1, is charged; every other seat is untouched.
+    expect(state.playerPools[vtes.POOL]).toEqual([30, 29, 30, 30, 30]);
+    const opened = lines.find((l) => l.message.includes('Priority window'));
+    expect(opened?.message).toContain('starting seat 3'); // controllerOfAction=2, includeStart:false, forward => 3 first
+  });
+
+  it('AC: V3/V4 — Block is a global, no-cost activation open only inside WINDOW_BLOCK', () => {
+    const block = vtesish.ruleSets.find((r) => r.id === vtes.RS_BLOCK_DECLARE)!;
+    expect(vtesish.globalRuleSetIds).toContain(vtes.RS_BLOCK_DECLARE);
+    expect(block.activation).toMatchObject({ costCheck: null, cost: [], window: vtes.WINDOW_BLOCK, perInstance: false });
+  });
+
+  // AC: V11 — see the dedicated describe block below for the structural "no announceAction/priority/
+  // replaces/modifier field touched" proof and the behavioral drive.
+
+  it('AC: V6/V7 — the referendum sums VOTES_FOR/VOTES_AGAINST across every seat (SP6), not per-card', () => {
+    const pass = vtesish.ruleSets.find((r) => r.id === vtes.RS_REFERENDUM_PASS)!;
+    expect(pass.condition).toEqual({
+      kind: 'criteria',
+      left: { kind: 'pool', poolId: vtes.VOTES_FOR, seat: { kind: 'all', quantifier: 'sum' } },
+      op: '>',
+      right: { kind: 'pool', poolId: vtes.VOTES_AGAINST, seat: { kind: 'all', quantifier: 'sum' } },
+    });
+  });
+
+  it('AC: V6/V7 behavioral — 1/2/1 votes for, 0 against, sum to 4 and the referendum passes', () => {
+    const state = emptyBoard(vtesish, 'state_main');
+    state.playerPools[vtes.VOTES_FOR] = [1, 2, 1, 0, 0];
+    const lines: LogLine[] = [];
+    let result = step(state, { kind: 'action', action: { kind: 'fireEvent', name: vtes.ON_REFERENDUM_CLOSE, seat: 0 }, override: false }, lines, vtesish);
+    let n = 0;
+    while (!result.done) {
+      if (++n > 10_000) throw new Error('runaway');
+      result = step(state, CONTINUE, lines, vtesish);
+    }
+    expect(state.pools[vtes.REFERENDUM_PASSED]).toBe(true);
+    expect(lines.some((l) => l.ruleId === vtes.RS_REFERENDUM_PASS && l.kind === 'rule')).toBe(true);
+  });
+
+  it('AC: V8 — the equipment ability is gated on the HOST vampire\'s discipline, not its own', () => {
+    const rule = vtesish.ruleSets.find((r) => r.id === vtes.RS_EQUIPMENT_ABILITY)!;
+    expect(rule.activation?.costCheck).toEqual({
+      kind: 'criteria',
+      left: { kind: 'cardIndex', card: { kind: 'host' }, indexId: vtes.DISCIPLINE },
+      op: '>=',
+      right: { kind: 'literal', value: 2 },
+    });
+  });
+
+  it('AC: V9 — Seize sets controller without touching the card\'s zone', () => {
+    const rule = vtesish.ruleSets.find((r) => r.id === vtes.RS_SEIZE)!;
+    expect(rule.effects).toEqual([
+      { kind: 'setController', target: { kind: 'allInZone', zone: { zoneId: vtes.UNCONTROLLED, seat: { kind: 'seat', index: 0 } } }, seat: { kind: 'triggeringSeat' } },
+    ]);
+  });
+
+  it('AC: V5 — Strike announces a resolve-only rule whose sealedChoice offers Hit/Dodge', () => {
+    const resolve = vtesish.ruleSets.find((r) => r.id === vtes.RS_STRIKE_RESOLVE)!;
+    expect(resolve.effects[0]).toMatchObject({
+      kind: 'sealedChoice',
+      choiceId: 'strike',
+      options: [{ id: 'hit', label: 'Hit' }, { id: 'dodge', label: 'Dodge' }],
+    });
+  });
+
+  it('eliminates each seat at zero pool via its own global continuous rule, one per seat (5 total)', () => {
+    const oustIds = vtesish.ruleSets.filter((r) => r.name.startsWith('Oust Seat')).map((r) => r.id);
+    expect(oustIds).toHaveLength(5);
+    expect(vtesish.globalRuleSetIds).toEqual(expect.arrayContaining(oustIds));
+    for (const r of vtesish.ruleSets.filter((x) => oustIds.includes(x.id))) {
+      expect(r.continuous).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §8 step 32's four required properties.
+// ---------------------------------------------------------------------------
+
+describe('§7.2 round-trip identity — mtgish and vtesish survive TWO round trips byte-identically', () => {
+  // §7.2's own warning: an `.optional()` where `.nullable()` was meant turns `null` into an absent
+  // key and only fails on the SECOND round trip — so this does two, not one.
+  for (const [name, def] of [['mtgish', mtgish], ['vtesish', vtesish]] as const) {
+    it(`${name}`, () => {
+      const once = exportJson(def);
+      const firstImport = importJson(once);
+      expect(firstImport.ok).toBe(true);
+      if (!firstImport.ok) return;
+      const twice = exportJson(firstImport.definition);
+      expect(twice).toBe(once);
+
+      const secondImport = importJson(twice);
+      expect(secondImport.ok).toBe(true);
+      if (!secondImport.ok) return;
+      const thrice = exportJson(secondImport.definition);
+      expect(thrice).toBe(twice);
+    });
+  }
+});
+
+describe('AC: V11 — influence-to-ready is driven purely by v1 primitives, proven structurally', () => {
+  // §9.1's own wording: "no announceAction/priority/replaces/modifier field touched" is proven by
+  // GREPPING the fixture's own rule objects, not only by behaviour.
+  it('RS_TICK and RS_READY touch none of announceAction/priority/replaces/modifier', () => {
+    for (const rule of [vtes.tickRule, vtes.readyRule]) {
+      expect(rule.activation).toBeNull();
+      expect(rule.replaces).toBeNull();
+      expect(rule.modifier).toBeNull();
+      expect(rule.continuous).toBe(false);
+      const kinds = new Set(rule.effects.map((e) => e.kind));
+      expect(kinds.has('announceAction')).toBe(false);
+      // No effect anywhere in either rule opens a priority window either.
+      expect(kinds.has('openPriority')).toBe(false);
+    }
+  });
+
+  it('behaviorally: two onUntap ticks reach capacity 2 and the minion moves to Ready', () => {
+    const state = emptyBoard(vtesish, 'state_main');
+    const minionId = place(state, vtesish, `${vtes.UNCONTROLLED}#0`, vtes.MINION, 'm1');
+    state.cards[minionId].indexValues[vtes.CAPACITY] = 2;
+    const lines: LogLine[] = [];
+
+    let result = step(state, { kind: 'action', action: { kind: 'fireEvent', name: vtes.ON_UNTAP, seat: 0 }, override: false }, lines, vtesish);
+    while (!result.done) result = step(state, CONTINUE, lines, vtesish);
+    expect(state.cards[minionId].indexValues[vtes.INFLUENCE]).toBe(1);
+    expect(state.zones[`${vtes.READY}#0`].cardIds).toEqual([]);
+
+    result = step(state, { kind: 'action', action: { kind: 'fireEvent', name: vtes.ON_UNTAP, seat: 0 }, override: false }, lines, vtesish);
+    while (!result.done) result = step(state, CONTINUE, lines, vtesish);
+    expect(state.cards[minionId].indexValues[vtes.INFLUENCE]).toBe(2);
+    expect(state.zones[`${vtes.READY}#0`].cardIds).toEqual([minionId]);
+  });
+});
+
+describe('§9.4(b) modifier-order determinism — AC: MTG7', () => {
+  it('effectiveIndex is identical whether Power Set or Anthem Lord is authored first in ruleSets', () => {
+    const swapped = mtgish.ruleSets.map((r) => r.id).indexOf(mtg.RS_POWER_SET);
+    const swappedWith = mtgish.ruleSets.map((r) => r.id).indexOf(mtg.RS_ANTHEM_LORD);
+    const flippedRuleSets = [...mtgish.ruleSets];
+    [flippedRuleSets[swapped], flippedRuleSets[swappedWith]] = [flippedRuleSets[swappedWith], flippedRuleSets[swapped]];
+    const flipped: GameDefinition = { ...mtgish, ruleSets: flippedRuleSets };
+    expect(flipped.ruleSets.map((r) => r.id).indexOf(mtg.RS_ANTHEM_LORD)).toBeLessThan(
+      flipped.ruleSets.map((r) => r.id).indexOf(mtg.RS_POWER_SET)
+    ); // the array order really is reversed relative to mtgish's own authored order
+
+    const bfKey = mtg.MTG_BATTLEFIELD;
+    const original = emptyBoard(mtgish, 'state_main');
+    place(original, mtgish, bfKey, mtg.BEAR, 'c0');
+    place(original, mtgish, bfKey, mtg.ANTHEM_LORD, 'c1');
+    place(original, mtgish, bfKey, mtg.POWER_SET, 'c2');
+
+    const swappedState = emptyBoard(flipped, 'state_main');
+    place(swappedState, flipped, bfKey, mtg.BEAR, 'c0');
+    place(swappedState, flipped, bfKey, mtg.ANTHEM_LORD, 'c1');
+    place(swappedState, flipped, bfKey, mtg.POWER_SET, 'c2');
+
+    expect(effectiveIndex(original, mtgish, 'c0', mtg.MTG_POWER)).toBe(effectiveIndex(swappedState, flipped, 'c0', mtg.MTG_POWER));
+  });
+});
+
+describe('§9.4(b) priority-order determinism — mtgish\'s stack scenario, same seed, differing response timing', () => {
+  it('life totals converge identically whether seat 1 counters the first Bolt or the second', () => {
+    // Two Bolts, one Counter Magic. Seat 1 always has exactly one legal response available and
+    // spends it on a DIFFERENT one of the two announcements in each run — the order seats are
+    // OFFERED priority (seat 0 then seat 1, every window) is identical in both runs; only the
+    // moment seat 1 chooses to respond differs. §5.1/§5.5's claim is that the OUTCOME (here, the
+    // final life total — exactly one Bolt lands either way) cannot depend on that choice.
+    function run(counterFirst: boolean) {
+      const state = emptyBoard(mtgish, 'state_main');
+      const boltA = place(state, mtgish, `${mtg.MTG_HAND}#0`, mtg.BOLT, 'boltA');
+      const boltB = place(state, mtgish, `${mtg.MTG_HAND}#0`, mtg.BOLT, 'boltB');
+      place(state, mtgish, `${mtg.MTG_HAND}#1`, mtg.COUNTER_MAGIC, 'cm');
+      const lines: LogLine[] = [];
+
+      const cast = (cardId: string, seat1Counters: boolean) => {
+        let seat1Responded = false;
+        driveThroughPriority(
+          state,
+          mtgish,
+          { kind: 'action', action: { kind: 'moveCard', cardId, to: { zoneId: mtg.GRAVEYARD, seat: { kind: 'seat', index: 0 } }, position: 'top' }, override: false },
+          (seat) => {
+            if (seat === 1 && seat1Counters && !seat1Responded) {
+              seat1Responded = true;
+              return { kind: 'activate', ruleId: mtg.RS_COUNTER_MAGIC, cardId: 'cm', seat: 1 };
+            }
+            return { kind: 'passPriority' };
+          },
+          lines
+        );
+      };
+
+      cast(boltA, counterFirst);
+      expect(state.actionStack).toEqual([]);
+      cast(boltB, !counterFirst);
+      return state;
+    }
+
+    const a = run(true);
+    const b = run(false);
+    expect(a.playerPools[mtg.LIFE]).toEqual(b.playerPools[mtg.LIFE]);
+    expect(a.playerPools[mtg.LIFE][1]).toBe(17); // exactly one of the two Bolts landed: 20 - 3
   });
 });
 

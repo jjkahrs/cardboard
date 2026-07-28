@@ -4,4 +4,6 @@ export * from './duel';
 export * from './empty';
 export * from './loop';
 export * from './malformed';
+export * from './mtgish';
 export * from './script';
+export * from './vtesish';
