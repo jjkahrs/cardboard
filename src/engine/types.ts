@@ -112,7 +112,15 @@ export type CardRef =
    * Deliberately not `triggering`: an equipment's rule fires on events about other cards all the
    * time, and "the vampire I am equipping" must not become "whatever card set this off".
    */
-  | { kind: 'host' };
+  | { kind: 'host' }
+  /**
+   * §4.2, §4.4 — the card under test in a predicate selector, bound once per candidate while a
+   * `matching` selector walks its wrapped set. Unbound anywhere else, and deliberately so: a
+   * criterion that reads `candidate` outside a `matching` has no card to mean, and answering with
+   * the triggering card (or with anything else) would make the predicate quietly test the wrong
+   * thing. It fails UNBOUND_REF like every other ref with nothing behind it.
+   */
+  | { kind: 'candidate' };
 
 export type ValueRef =
   | { kind: 'literal'; value: number | boolean }
@@ -303,7 +311,17 @@ export type TargetSelector =
    * attached card sitting in a completely different zone still resolves its host.
    */
   | { kind: 'attachedTo'; host: CardRef }
-  | { kind: 'hostOf'; card: CardRef };
+  | { kind: 'hostOf'; card: CardRef }
+  /**
+   * §4.4 — predicate targeting. `where` is evaluated ONCE PER CANDIDATE with `CardRef{kind:
+   * 'candidate'}` bound to the card under test.
+   *
+   * It wraps like `prompt` does and the two compose in either order: `prompt(matching(…))` is
+   * "choose a creature with power 3 or more", and `matching(prompt(…))` filters the set the
+   * prompt highlights. Either way the wrapped selector still defines the legal set — there is no
+   * second targeting language.
+   */
+  | { kind: 'matching'; from: TargetSelector; where: CriteriaNode };
 
 export type Effect =
   | { kind: 'moveCards'; target: TargetSelector; to: ZoneRef; position: InsertPosition }
@@ -469,6 +487,15 @@ export interface TriggerContext {
    * `CardRef{kind:'host'}` reads it today; `perInstance` activation (§5.8) is its second reader.
    */
   sourceCardId: Id | null;
+  /**
+   * §4.4 — the card `CardRef{kind:'candidate'}` names, set only while a `matching` selector is
+   * testing that card. OPTIONAL because it is never authored, never stamped onto a frame and never
+   * persisted: `targets.ts` derives `{...ctx, candidateCardId: id}` per candidate and hands the
+   * copy to `evalCriteria`, so the binding lives exactly as long as the one predicate that needs
+   * it. Threading it through a derived context rather than through module state is what makes
+   * nested `matching` selectors re-entrant — each level reads its own object.
+   */
+  candidateCardId?: Id | null;
 }
 
 /**
@@ -579,7 +606,8 @@ export type LogLevel = 'info' | 'warn' | 'reject' | 'error' | 'override';
 /** Display-only detail inside an entry. NOT a rewind target. */
 export interface LogLine {
   level: LogLevel;
-  kind: 'event' | 'rule' | 'effect' | 'change' | 'transition' | 'prompt' | 'skip';
+  /** `criteria` is §5.9 level 3's per-candidate include/exclude from a `matching` selector. */
+  kind: 'event' | 'rule' | 'effect' | 'change' | 'transition' | 'prompt' | 'skip' | 'criteria';
   message: string;
   change: { path: string; before: unknown; after: unknown } | null;
   ruleId: Id | null;

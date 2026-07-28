@@ -329,5 +329,17 @@ export function resolveCardRef(ref: CardRef, state: PlayState, ctx: TriggerConte
       const host = state.cards[self.attachedTo];
       return host ? { ok: true, card: host } : fail('TARGET_GONE', `Card "${self.attachedTo}" no longer exists.`);
     }
+    // §4.4 — bound only while a `matching` selector is testing this card, via the per-candidate
+    // context copy `targets.ts` derives. Outside one there is nothing to mean, so it is an unbound
+    // ref like any other rather than a silent fallback to `triggering`, which would make the
+    // predicate test a different card than the one being filtered.
+    case 'candidate': {
+      const id = ctx.candidateCardId ?? null;
+      if (id === null) {
+        return fail('UNBOUND_REF', 'Ref "candidate" is unbound: it resolves only inside a "matching" selector.');
+      }
+      const card = state.cards[id];
+      return card ? { ok: true, card } : fail('TARGET_GONE', `Card "${id}" no longer exists.`);
+    }
   }
 }

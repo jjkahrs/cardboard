@@ -415,6 +415,43 @@ describe('the recursive relative SeatRef', () => {
     expect(exportJson(imported(exportJson(def)))).toBe(exportJson(def));
   });
 
+  // §4.4's `matching` makes TargetSelector recursive in a SECOND place, and puts a whole
+  // CriteriaNode inside a selector for the first time. Both halves have to be walked or a `where`
+  // is a hole in gate 4 that imports clean and dies at runtime.
+  describe('the `matching` selector', () => {
+    /** Wraps the fixture's existing prompt target in a predicate on `power`. */
+    const withMatching = (indexId = 'power'): Record<string, any> => {
+      const d = clone();
+      const target = d.ruleSets[0].effects[1].target;
+      d.ruleSets[0].effects[1].target = {
+        kind: 'matching',
+        from: target,
+        where: {
+          kind: 'criteria',
+          left: { kind: 'cardIndex', card: { kind: 'candidate' }, indexId },
+          op: '>',
+          right: { kind: 'literal', value: 2 },
+        },
+      };
+      return d;
+    };
+
+    it('parses wrapping a prompt, and survives the round trip', () => {
+      const d = withMatching();
+      const def = imported(JSON.stringify(d));
+      expect(def.ruleSets[0].effects[1]).toMatchObject({
+        target: { kind: 'matching', from: { kind: 'prompt' }, where: { left: { card: { kind: 'candidate' } } } },
+      });
+      expect(exportJson(imported(exportJson(def)))).toBe(exportJson(def));
+    });
+
+    it('catches a dangling card index inside the `where`', () => {
+      expect(failed(JSON.stringify(withMatching('nope')))).toEqual([
+        'ruleSets.0.effects.1.target.where.left.indexId: Unknown card index id "nope"',
+      ]);
+    });
+  });
+
   it('catches a dangling zone id buried inside a SeatRef\'s card ref', () => {
     expect(
       failed(withSeat({ kind: 'owner', card: { kind: 'zoneTop', zone: { zoneId: 'nope', seat: null } } }))

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ACTIVE_PLAYER_POOL_ID,
   type CardInstance,
+  type CriteriaNode,
   type Id,
   type PlayState,
   type TargetSelector,
@@ -10,7 +11,7 @@ import {
   type ValueRef,
   type ZoneRef,
 } from './types';
-import { resolveTargets, type TargetResult } from './targets';
+import { type CandidateLine, resolveTargets, type TargetResult } from './targets';
 import { resolveValueRef, zoneKey } from './valueRef';
 import {
   ATTACKERS,
@@ -411,6 +412,176 @@ describe('attachedTo / hostOf', () => {
     expect(expectCards(res).cardIds).toEqual(['c1']);
     // …and the same selector spelled through `host` picks up c1's own host, of which there is none.
     expect(expectFail(run({ kind: 'hostOf', card: { kind: 'host' } }, attached(), ctx({ sourceCardId: 'c2' }))).reason).toBe('NO_TARGETS');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matching — §4.4. Predicate targeting: `where` evaluated once per candidate with
+// CardRef{kind:'candidate'} bound to the card under test.
+// ---------------------------------------------------------------------------
+
+describe('matching', () => {
+  /** `board()` seeds POWER from the id, so c1/c2/c3 have power 1/2/3 — c3 alone clears `> 2`. */
+  const powerAbove = (n: number): CriteriaNode => ({
+    kind: 'criteria',
+    left: { kind: 'cardIndex', card: { kind: 'candidate' }, indexId: POWER },
+    op: '>',
+    right: lit(n),
+  });
+
+  const overBattlefield = (where: CriteriaNode): TargetSelector => ({
+    kind: 'matching',
+    from: { kind: 'allInZone', zone: bfRef },
+    where,
+  });
+
+  /** Collects the §5.9 level-3 sink exactly as effects.ts's `candidateLog` feeds the real log. */
+  function runLogged(sel: TargetSelector, state: PlayState, c: TriggerContext = ctx()) {
+    const lines: CandidateLine[] = [];
+    return { res: resolveTargets(sel, state, c, duel, (line) => lines.push(line)), lines };
+  }
+
+  // AC: SP1 — only instances whose power exceeds 2 are targeted, and the log names the criteria
+  // that included or excluded each candidate (§9.1 SP1, §5.9 row 3).
+  it('selects only the qualifying candidates and logs one criteria line per candidate', () => {
+    const { res, lines } = runLogged(overBattlefield(powerAbove(2)), board());
+
+    // The power<=2 candidates are absent from the resolved id set; the power-3 one is not.
+    expect(expectCards(res).cardIds).toEqual(['c3']);
+
+    // One line per CANDIDATE, not per match: the excluded ones are the whole point of the level.
+    expect(lines).toHaveLength(3);
+    expect(lines.map((l) => l.kind)).toEqual(['criteria', 'criteria', 'criteria']);
+    expect(lines.map((l) => /\b(included|excluded)\b/.exec(l.message)?.[1])).toEqual([
+      'excluded',
+      'excluded',
+      'included',
+    ]);
+    // …and each line names the criterion with its RESOLVED values, not just its verdict.
+    expect(lines[1].message).toContain('c2');
+    expect(lines[1].message).toContain('not > 2');
+    expect(lines[2].message).toContain(`${POWER}(candidate) = 3 > 2`);
+  });
+
+  it('evaluates every candidate — no short-circuit once the verdict is decided (§5.7)', () => {
+    // An `or` whose first leaf already passes for c3 still logs both leaves' resolved values.
+    const where: CriteriaNode = {
+      kind: 'group',
+      combinator: 'or',
+      children: [powerAbove(2), powerAbove(99)],
+    };
+    const { res, lines } = runLogged(overBattlefield(where), board());
+    expect(expectCards(res).cardIds).toEqual(['c3']);
+    expect(lines).toHaveLength(3);
+    expect(lines[2].message).toContain('> 2');
+    expect(lines[2].message).toContain('not > 99');
+  });
+
+  it('a `where` that excludes everything is the ordinary NO_TARGETS, not a new failure', () => {
+    const { res, lines } = runLogged(overBattlefield(powerAbove(99)), board());
+    expect(expectFail(res).reason).toBe('NO_TARGETS');
+    expect(lines).toHaveLength(3); // still evaluated and still logged
+  });
+
+  it('propagates the wrapped selector s failure rather than matching nothing', () => {
+    const sel: TargetSelector = { kind: 'matching', from: { kind: 'triggeringCard' }, where: powerAbove(0) };
+    expect(expectFail(run(sel, board(), ctx({ triggeringCardId: null }))).reason).toBe('UNBOUND_REF');
+  });
+
+  it('a `where` whose refs are broken excludes the candidate instead of throwing', () => {
+    const where: CriteriaNode = {
+      kind: 'criteria',
+      left: { kind: 'cardIndex', card: { kind: 'candidate' }, indexId: 'idx_deleted' },
+      op: '>',
+      right: lit(0),
+    };
+    const { res, lines } = runLogged(overBattlefield(where), board());
+    expect(expectFail(res).reason).toBe('NO_TARGETS');
+    expect(lines[0].message).toContain('excluded');
+  });
+
+  // §4.4 — "matching wraps like prompt does, and the two compose in either order".
+  describe('composition with prompt', () => {
+    it('prompt(matching(…)) offers exactly the matching cards as the legal set', () => {
+      const sel: TargetSelector = {
+        kind: 'prompt',
+        from: overBattlefield(powerAbove(1)),
+        count: lit(1),
+        promptText: 'Choose a creature with power 2 or more',
+      };
+      const res = expectPrompt(run(sel, board()));
+      expect(res.candidates).toEqual(['c2', 'c3']);
+      expect([res.min, res.max]).toEqual([1, 1]);
+    });
+
+    it('matching(prompt(…)) narrows the SAME highlighted set — no second targeting language', () => {
+      const sel: TargetSelector = {
+        kind: 'matching',
+        from: {
+          kind: 'prompt',
+          from: { kind: 'allInZone', zone: bfRef },
+          count: lit(1),
+          promptText: 'Choose a creature with power 2 or more',
+        },
+        where: powerAbove(1),
+      };
+      const res = expectPrompt(run(sel, board()));
+      // Same candidates, same min/max, same promptText as the other nesting order above.
+      expect(res.candidates).toEqual(['c2', 'c3']);
+      expect([res.min, res.max]).toEqual([1, 1]);
+      expect(res.promptText).toBe('Choose a creature with power 2 or more');
+    });
+
+    it('filtering a prompt down to nothing is NO_TARGETS, so the prompt is never raised', () => {
+      const sel: TargetSelector = {
+        kind: 'matching',
+        from: { kind: 'prompt', from: { kind: 'allInZone', zone: bfRef }, count: lit(1), promptText: 'pick' },
+        where: powerAbove(99),
+      };
+      expect(expectFail(run(sel, board())).reason).toBe('NO_TARGETS');
+    });
+  });
+
+  describe('the candidate binding', () => {
+    it('is unbound outside a matching — an ordinary UNBOUND_REF, never a silent fallback', () => {
+      // Same criterion, same board, reached through a rule condition rather than a `where`.
+      const res = resolveValueRef(
+        { kind: 'cardIndex', card: { kind: 'candidate' }, indexId: POWER },
+        board(),
+        ctx({ triggeringCardId: 'c1', sourceCardId: 'c1' }),
+        duel
+      );
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.reason).toBe('UNBOUND_REF');
+    });
+
+    it('is not left behind on the caller s context', () => {
+      const c = ctx();
+      run(overBattlefield(powerAbove(2)), board(), c);
+      expect(c.candidateCardId ?? null).toBeNull();
+    });
+
+    it('nests without clobbering: each level reads its own candidate', () => {
+      // matching(matching(all)) — the inner narrows to power>1, the outer to power>2 over that.
+      const sel: TargetSelector = {
+        kind: 'matching',
+        from: overBattlefield(powerAbove(1)),
+        where: powerAbove(2),
+      };
+      const { res, lines } = runLogged(sel, board());
+      expect(expectCards(res).cardIds).toEqual(['c3']);
+      // Inner ran over all three, outer over the two it kept: five lines, none of them confused
+      // about which card it was testing.
+      expect(lines).toHaveLength(5);
+      expect(lines.map((l) => l.message.slice(0, 14))).toEqual([
+        'Candidate "c1"',
+        'Candidate "c2"',
+        'Candidate "c3"',
+        'Candidate "c2"',
+        'Candidate "c3"',
+      ]);
+    });
   });
 });
 

@@ -21,7 +21,7 @@
 
 import { parseZoneKey, resolveCardRef, resolvePoolDef, resolveSeat, resolveValueRef, zoneKey } from './valueRef';
 import type { ResolutionFail } from './valueRef';
-import { resolveTargets } from './targets';
+import { type CandidateLog, resolveTargets } from './targets';
 // Cyclic with `modifiers.ts` (it imports `clampValue` from here) by design (§5.4). Both directions
 // are function-body calls only, so module evaluation order never matters.
 import { effectiveIndex, invalidateEffective } from './modifiers';
@@ -113,6 +113,19 @@ function reject(ec: EffectContext, e: Effect, reason: RejectReason, message: str
 
 const failed = (ec: EffectContext, e: Effect, f: ResolutionFail): EffectResult =>
   reject(ec, e, f.reason, f.message);
+
+/**
+ * §4.4, §5.9 level 3 — the sink `resolveTargets` writes one include/exclude line into per candidate
+ * of a `matching` selector. Every targeted effect passes it, because a predicate selector is legal
+ * in any of their `target` slots and a line nobody wired up is a line that does not exist.
+ *
+ * Unconditional for now: §5.9's verbosity gate is step 30's, and it goes here rather than inside
+ * the resolver so that what gets EVALUATED never depends on who is listening.
+ */
+const candidateLog =
+  (ec: EffectContext, e: Effect): CandidateLog =>
+  (line) =>
+    emit(ec, e, 'info', line.message, null, line.kind);
 
 // ---------------------------------------------------------------------------
 // Zones
@@ -462,7 +475,7 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
   switch (effect.kind) {
     // -----------------------------------------------------------------------
     case 'moveCards': {
-      const targets = resolveTargets(effect.target, state, ctx, def);
+      const targets = resolveTargets(effect.target, state, ctx, def, candidateLog(ec, effect));
       if (!targets.ok) return failed(ec, effect, targets);
       if (targets.kind === 'prompt') {
         return reject(ec, effect, 'AWAITING_PROMPT', `Move: prompt "${targets.promptText}" has no answer bound.`);
@@ -624,7 +637,7 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
 
     // -----------------------------------------------------------------------
     case 'setCardIndex': {
-      const targets = resolveTargets(effect.target, state, ctx, def);
+      const targets = resolveTargets(effect.target, state, ctx, def, candidateLog(ec, effect));
       if (!targets.ok) return failed(ec, effect, targets);
       if (targets.kind === 'prompt') {
         return reject(ec, effect, 'AWAITING_PROMPT', `SetIndex: prompt "${targets.promptText}" has no answer bound.`);
@@ -680,7 +693,7 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
     // -----------------------------------------------------------------------
     case 'flipCard':
     case 'rotateCard': {
-      const targets = resolveTargets(effect.target, state, ctx, def);
+      const targets = resolveTargets(effect.target, state, ctx, def, candidateLog(ec, effect));
       if (!targets.ok) return failed(ec, effect, targets);
       if (targets.kind === 'prompt') {
         return reject(ec, effect, 'AWAITING_PROMPT', `${effect.kind}: prompt "${targets.promptText}" has no answer bound.`);
@@ -766,7 +779,7 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
 
     // -----------------------------------------------------------------------
     case 'destroyCards': {
-      const targets = resolveTargets(effect.target, state, ctx, def);
+      const targets = resolveTargets(effect.target, state, ctx, def, candidateLog(ec, effect));
       if (!targets.ok) return failed(ec, effect, targets);
       if (targets.kind === 'prompt') {
         return reject(ec, effect, 'AWAITING_PROMPT', `Destroy: prompt "${targets.promptText}" has no answer bound.`);
@@ -861,7 +874,7 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
 
     // -----------------------------------------------------------------------
     case 'setTag': {
-      const targets = resolveTargets(effect.target, state, ctx, def);
+      const targets = resolveTargets(effect.target, state, ctx, def, candidateLog(ec, effect));
       if (!targets.ok) return failed(ec, effect, targets);
       if (targets.kind === 'prompt') {
         return reject(ec, effect, 'AWAITING_PROMPT', `SetTag: prompt "${targets.promptText}" has no answer bound.`);
@@ -896,7 +909,7 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
     // -----------------------------------------------------------------------
     case 'attach':
     case 'detach': {
-      const targets = resolveTargets(effect.target, state, ctx, def);
+      const targets = resolveTargets(effect.target, state, ctx, def, candidateLog(ec, effect));
       if (!targets.ok) return failed(ec, effect, targets);
       if (targets.kind === 'prompt') {
         return reject(ec, effect, 'AWAITING_PROMPT', `${effect.kind}: prompt "${targets.promptText}" has no answer bound.`);
@@ -938,7 +951,7 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
 
     // -----------------------------------------------------------------------
     case 'setController': {
-      const targets = resolveTargets(effect.target, state, ctx, def);
+      const targets = resolveTargets(effect.target, state, ctx, def, candidateLog(ec, effect));
       if (!targets.ok) return failed(ec, effect, targets);
       if (targets.kind === 'prompt') {
         return reject(ec, effect, 'AWAITING_PROMPT', `SetController: prompt "${targets.promptText}" has no answer bound.`);

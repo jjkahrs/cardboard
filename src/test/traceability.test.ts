@@ -94,6 +94,9 @@ const IN_SCOPE: Criterion[] = [
   { id: 'SP2', prose: 'A runtime tag added by an effect and absent from the template reads true in criteria, and false once removed — asserted via effectiveTags(), not template.tags', expected: 'criteria.test.ts, effects.test.ts' },
   // v2 §9.1 — attachment. Both rows turn on attachment being a REFERENCE rather than a zone.
   { id: 'SP3', prose: 'An attached card\'s host reference survives the host moving zones — hostOf still resolves to the same host id', expected: 'effects.test.ts (attach)' },
+  // v2 §9.1 — predicate targeting. The log half is as load-bearing as the selection half: a
+  // predicate that silently drops a candidate is the failure mode the per-candidate line exists for.
+  { id: 'SP1', prose: '`matching{where: power>2}` over a zone selects only qualifying candidates; the resolved id set excludes the power<=2 candidate and a log line exists per candidate with `criteria` kind and a boolean outcome (§5.9 row 3)', expected: 'targets.test.ts' },
   { id: 'SP4', prose: 'Host destroyed -> the attachment is not cascaded; the card stays in state.cards with attachedTo null, and the detachment logs its own change line distinct from the destroy line', expected: 'effects.test.ts (destroyCards)' },
 ];
 

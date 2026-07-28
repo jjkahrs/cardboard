@@ -21,6 +21,7 @@ import type {
   ZoneRef,
 } from './types';
 import { type ResolutionFail, resolveCardRef, resolveSeat, resolveValueRef, zoneKey } from './valueRef';
+import { evalCriteria } from './criteria';
 // Cyclic with `modifiers.ts` (it calls `resolveTargets` for a modifier's scope) by design (§5.4).
 // Function-body calls only, so module evaluation order never matters.
 import { effectiveTags } from './modifiers';
@@ -71,6 +72,27 @@ function fail(reason: ResolutionFail['reason'], message: string): ResolutionFail
  * turn back into a card list. Effects stay unaware that a prompt happened at all.
  */
 export const CHOSEN_PROMPT_KEY = '@chosen';
+
+/**
+ * §5.9 level 3's "per-candidate include/exclude for predicate selectors". One call per candidate a
+ * `matching` selector evaluated.
+ *
+ * Carries the two fields that are a property of the LINE — its kind and its sentence — and none of
+ * the ones that are a property of the CALLER: `depth`, `ruleId`, `effectKind` and the level are
+ * stamped by whoever passed the sink, because this module is told none of them. `kind` is here
+ * rather than at the call sites so "a predicate selector emits `criteria` lines" is decided once.
+ *
+ * Emission is UNCONDITIONAL. §5.9's verbosity gate is step 30's and belongs at the caller; criteria
+ * evaluation itself never short-circuits at any level, so what the engine COMPUTES can never depend
+ * on whether anyone is listening.
+ */
+export interface CandidateLine {
+  kind: 'criteria';
+  /** Names the candidate, whether it was included or excluded, and every leaf that decided it. */
+  message: string;
+}
+
+export type CandidateLog = (line: CandidateLine) => void;
 
 // ---------------------------------------------------------------------------
 // Shared pieces
@@ -154,7 +176,8 @@ export function resolveTargets(
   sel: TargetSelector,
   state: PlayState,
   ctx: TriggerContext,
-  def: GameDefinition
+  def: GameDefinition,
+  onCandidate?: CandidateLog
 ): TargetResult {
   switch (sel.kind) {
     case 'triggeringCard': {
@@ -241,7 +264,7 @@ export function resolveTargets(
       const answered = ctx.promptAnswers[CHOSEN_PROMPT_KEY];
       if (answered !== undefined) return selection([...answered], answered.length, sel.kind, state);
 
-      const inner = resolveTargets(sel.from, state, ctx, def);
+      const inner = resolveTargets(sel.from, state, ctx, def, onCandidate);
       if (!inner.ok) return inner;
       if (inner.kind !== 'cards') {
         return fail('TYPE_MISMATCH', 'A "prompt" selector cannot wrap another "prompt".');
@@ -258,6 +281,40 @@ export function resolveTargets(
         max: n.count,
         promptText: sel.promptText,
       };
+    }
+
+    // §4.4 — predicate targeting. A FILTER over whatever the wrapped selector produced, which is
+    // what makes it compose with `prompt` in either order with no second targeting language:
+    // wrapping a cards result narrows the selection, wrapping a prompt result narrows the
+    // candidate set the UI highlights, and `min`/`max`/`promptText` still come from the prompt.
+    case 'matching': {
+      const inner = resolveTargets(sel.from, state, ctx, def, onCandidate);
+      if (!inner.ok) return inner;
+      const from = inner.kind === 'cards' ? inner.cardIds : inner.candidates;
+
+      const kept: Id[] = [];
+      for (const id of from) {
+        // The binding is a per-candidate COPY of the context, never a field written on the shared
+        // one: a `matching` wrapping another `matching` therefore reads its own `candidateCardId`
+        // at each level, and nothing can clobber an enclosing binding (§4.4).
+        const res = evalCriteria(sel.where, state, { ...ctx, candidateCardId: id }, def);
+        if (res.value) kept.push(id);
+        // §5.9 level 3. Emitted for EVERY candidate including the excluded ones — "why wasn't that
+        // one targeted" is the question this line exists to answer.
+        onCandidate?.({
+          kind: 'criteria',
+          message: `Candidate "${id}" ${res.value ? 'included' : 'excluded'}: ${res.leaves
+            .map((l) => l.description)
+            .join('; ')}.`,
+        });
+      }
+
+      // Existence, the zero check and the freeze, from the same place every other selector gets
+      // them: a `where` that excludes everything is the ordinary NO_TARGETS refusal (§5.9 row 2),
+      // not a new failure mode of its own.
+      const checked = selection(kept, kept.length, sel.kind, state);
+      if (!checked.ok || inner.kind === 'cards') return checked;
+      return { ...inner, candidates: checked.cardIds };
     }
   }
 }

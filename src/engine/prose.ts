@@ -119,6 +119,8 @@ function describeCardRef(def: GameDefinition, ref: CardRef): string {
       return `card ${ref.id}`;
     case 'host':
       return 'the card this is attached to';
+    case 'candidate':
+      return 'the card';
   }
 }
 
@@ -197,6 +199,11 @@ function describeTarget(selector: TargetSelector, def: GameDefinition): string {
       return `everything attached to ${describeCardRef(def, selector.host)}`;
     case 'hostOf':
       return `the card ${describeCardRef(def, selector.card)} is attached to`;
+    // Minimum arm, like `eliminateSeat` below: readable, but "the card" for a `candidate` inside
+    // the `where` is a placeholder a real pass would inflect ("…whose Power is above 2"). Step 19
+    // owns that, along with the rest of §4's new vocabulary.
+    case 'matching':
+      return `${describeTarget(selector.from, def)} where ${describeCriteria(selector.where, def)}`;
   }
 }
 

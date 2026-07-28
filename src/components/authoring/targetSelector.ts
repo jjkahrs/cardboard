@@ -20,6 +20,9 @@ export function danglingTarget(selector: TargetSelector, definition: GameDefinit
   // §4.4's attachment selectors name a card, not a zone. The CardRef inside can still carry a
   // deleted zone via `zoneTop`; descending into it is step 19's pass, not this chip's.
   if (selector.kind === 'attachedTo' || selector.kind === 'hostOf') return false;
+  // §4.4's predicate selector wraps another one; the `where` can dangle too, and descending into
+  // it is step 19's pass along with the CardRefs above.
+  if (selector.kind === 'matching') return danglingTarget(selector.from, definition);
   return isDanglingZone(selector.zone, definition);
 }
 
@@ -62,5 +65,13 @@ export function defaultSelector(
       return { kind, host: { kind: 'triggering' } };
     case 'hostOf':
       return { kind, card: { kind: 'triggering' } };
+    // An empty AND is true (criteria.ts), so the default predicate filters nothing out — the
+    // designer narrows it, and a half-built `where` never silently drops every candidate.
+    case 'matching':
+      return {
+        kind,
+        from: current && current.kind !== 'matching' ? current : { kind: 'triggeringCard' },
+        where: { kind: 'group', combinator: 'and', children: [] },
+      };
   }
 }

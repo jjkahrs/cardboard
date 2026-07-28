@@ -327,9 +327,23 @@ const tripLoopGuard = (state: PlayState, def: GameDefinition, lines: LogLine[], 
 // Effects — §5.2, §5.3
 // ---------------------------------------------------------------------------
 
-/** The five effects that carry a target; only a `prompt` target suspends. */
-function promptTarget(effect: Effect): Extract<TargetSelector, { kind: 'prompt' }> | null {
-  return 'target' in effect && effect.target.kind === 'prompt' ? effect.target : null;
+/**
+ * The effects that carry a target; only a target CONTAINING a prompt suspends.
+ *
+ * §4.4 lets `matching` wrap the prompt, so the prompt is not always the outermost selector. Both
+ * halves are returned because both are needed and neither substitutes for the other: the WHOLE
+ * target is what resolves (so a `matching` around the prompt narrows the highlighted legal set —
+ * there is no second targeting language), while the inner `prompt` carries the text the "0 legal
+ * targets" line has to name before anything has resolved.
+ */
+function promptTarget(
+  effect: Effect
+): { target: TargetSelector; prompt: Extract<TargetSelector, { kind: 'prompt' }> } | null {
+  if (!('target' in effect)) return null;
+  const inner = (s: TargetSelector): Extract<TargetSelector, { kind: 'prompt' }> | null =>
+    s.kind === 'prompt' ? s : s.kind === 'matching' ? inner(s.from) : null;
+  const prompt = inner(effect.target);
+  return prompt === null ? null : { target: effect.target, prompt };
 }
 
 const promptSeat = (state: PlayState, ctx: TriggerContext) => ctx.triggeringSeat ?? activeSeat(state);
@@ -360,7 +374,17 @@ function runEffect(
     if (chosen === undefined) {
       // §3.3 hard rule: raise BEFORE any mutation. This effect executes twice — once to raise, once
       // to complete — so it must be re-entrant by construction.
-      const candidates = resolveTargets(selector, state, frame.ctx, def);
+      const candidates = resolveTargets(selector.target, state, frame.ctx, def, (line) =>
+        // §5.9 level 3 — a `matching` around the prompt logs why each candidate is (not) offered.
+        log(lines, {
+          level: 'info',
+          kind: line.kind,
+          depth: frame.depth,
+          ruleId: rule.id,
+          effectKind: effect.kind,
+          message: line.message,
+        })
+      );
       if (!candidates.ok || candidates.kind !== 'prompt') {
         // Zero legal targets → the prompt is NOT raised (§5.9 row 8). A modal with nothing
         // clickable is a dead end; this holds even when min is 0.
@@ -371,7 +395,7 @@ function runEffect(
           depth: frame.depth,
           ruleId: rule.id,
           effectKind: effect.kind,
-          message: `Prompt "${selector.promptText}" (seat ${promptSeat(state, frame.ctx)}): ${
+          message: `Prompt "${selector.prompt.promptText}" (seat ${promptSeat(state, frame.ctx)}): ${
             candidates.ok ? '0 legal targets' : candidates.message
           } Prompt skipped.`,
         });

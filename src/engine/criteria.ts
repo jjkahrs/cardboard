@@ -78,6 +78,10 @@ function cardLabel(card: CardRef): string {
       return card.id;
     case 'host':
       return 'host';
+    // §4.4 — the card under test. Every candidate's line reads `Power(candidate) = 3 > 2`; which
+    // card that was is named by the per-candidate log line wrapping it, not repeated in the label.
+    case 'candidate':
+      return 'candidate';
   }
 }
 

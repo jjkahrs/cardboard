@@ -108,6 +108,10 @@ export const CardRefSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('instance'), id: IdSchema }),
   /** §4.2 — resolved off `TriggerContext.sourceCardId` at runtime; carries no authored id. */
   z.object({ kind: z.literal('host') }),
+  /** §4.4 — bound per candidate inside a `matching` selector; carries no authored id either. That
+   *  it is legal SHAPE anywhere a CardRef is legal is deliberate: nothing here knows whether a
+   *  criterion is a `where`, and the runtime already refuses it as an unbound ref elsewhere. */
+  z.object({ kind: z.literal('candidate') }),
 ]);
 
 export const ValueRefSchema = z.discriminatedUnion('kind', [
@@ -222,6 +226,13 @@ export const TargetSelectorSchema: z.ZodType<TargetSelector, z.ZodTypeDef, Targe
     /** §4.4 — the attachment relation, both directions. Neither names a zone. */
     z.object({ kind: z.literal('attachedTo'), host: CardRefSchema }),
     z.object({ kind: z.literal('hostOf'), card: CardRefSchema }),
+    /** §4.4 — predicate targeting. Recursive through `from` exactly as `prompt` is, hence the
+     *  second `z.lazy` the explicit annotation above exists to permit. */
+    z.object({
+      kind: z.literal('matching'),
+      from: z.lazy(() => TargetSelectorSchema),
+      where: CriteriaNodeSchema,
+    }),
   ]);
 
 export const EffectSchema = z.discriminatedUnion('kind', [
@@ -482,6 +493,13 @@ function checkSelector(s: TargetSelector, p: Path, r: Refs): void {
       break;
     case 'hostOf':
       checkCardRef(s.card, [...p, 'card'], r);
+      break;
+    // §4.4 — the `where` is a full CriteriaNode, so a card index deleted out from under it dangles
+    // exactly like one in a rule's `condition` does. Descending costs one line and the importer
+    // would otherwise pass a definition the resolver cannot evaluate.
+    case 'matching':
+      checkSelector(s.from, [...p, 'from'], r);
+      checkCriteria(s.where, [...p, 'where'], r);
       break;
     case 'triggeringCard':
       break;

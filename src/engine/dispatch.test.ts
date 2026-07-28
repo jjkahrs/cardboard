@@ -22,6 +22,7 @@ import {
   type PlayZone,
   type RuleSet,
   type StepResult,
+  type TargetSelector,
 } from './types';
 import { step } from './dispatch';
 import { appendPending } from './frames';
@@ -37,8 +38,10 @@ import {
   HAND,
   HP,
   MAIN,
+  POWER,
   RS_BOMB,
   STRIKE,
+  bombRule,
 } from '../test/fixtures/duel';
 import { emptyBoard, place } from '../test/board';
 import { ECHO, fanOut, mutualLoop, N, PING, selfLoop } from '../test/fixtures/loop';
@@ -358,6 +361,57 @@ describe('AC: R2 — prompt suspension', () => {
     play(state);
     expect(state.interaction?.candidates).toEqual(['g1']);
     expect(state.cards['g1']).toBeDefined();
+  });
+
+  /**
+   * §4.4 — a `matching` WRAPPING the prompt. The prompt is no longer the outermost selector, and
+   * the set the tester is offered is the filtered one: "there is no second targeting language"
+   * means the predicate narrows the same highlighted candidates, not a separate legality pass
+   * applied after the answer comes back.
+   */
+  it('raises the prompt through a wrapping `matching`, with the filtered set highlighted', () => {
+    const predicate: RuleSet = {
+      ...bombRule,
+      effects: [
+        {
+          kind: 'destroyCards',
+          target: {
+            kind: 'matching',
+            from: (bombRule.effects[0] as { target: TargetSelector }).target,
+            where: {
+              kind: 'criteria',
+              left: { kind: 'cardIndex', card: { kind: 'candidate' }, indexId: POWER },
+              op: '>',
+              right: { kind: 'literal', value: 2 },
+            },
+          },
+        },
+        bombRule.effects[1],
+      ],
+    };
+    const def: GameDefinition = {
+      ...duel,
+      ruleSets: duel.ruleSets.map((r) => (r.id === RS_BOMB ? predicate : r)),
+    };
+
+    const state = emptyBoard(def, MAIN);
+    place(state, def, BF, GRUNT, 'g1'); // Power 1 — a creature, but not a legal candidate
+    place(state, def, BF, GRUNT, 'g2');
+    place(state, def, HAND_0, BOMB, 'b1');
+    state.cards['g2'].indexValues[POWER] = 3;
+
+    const { lines, result } = driveEvent(state, def, 'onCardPlayed', 'b1');
+
+    expect(result.suspended).toBe(true);
+    expect(state.interaction?.candidates).toEqual(['g2']);
+    expect(state.interaction?.promptText).toBe(BOMB_PROMPT_TEXT);
+    // §5.9 row 3 — and the tester can see WHY g1 was not offered.
+    const criteria = lines.filter((l) => l.kind === 'criteria');
+    expect(criteria.map((l) => l.message)).toEqual([
+      expect.stringContaining('Candidate "g1" excluded'),
+      expect.stringContaining('Candidate "g2" included'),
+    ]);
+    expect(criteria.every((l) => l.ruleId === RS_BOMB && l.effectKind === 'destroyCards')).toBe(true);
   });
 
   it('cancel rejects the prompting effect but the RuleSet continues', () => {
