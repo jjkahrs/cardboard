@@ -12,6 +12,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { describeValueRef } from '../../engine/prose';
 import type { CriteriaGroup, GameDefinition, ValueRef } from '../../engine/types';
+import type { RefContext } from '../authoring/refs';
 import { ATTACKERS, BATTLEFIELD, FIRST_BLOOD, HAND, HP, POWER, duel } from '../../test/fixtures/duel';
 import { empty } from '../../test/fixtures/empty';
 import { CriteriaGroupEditor } from './CriteriaGroupEditor';
@@ -25,16 +26,19 @@ function LiveValueRef({
   initial,
   definition = duel,
   onChange,
+  context,
 }: {
   initial: ValueRef;
   definition?: GameDefinition;
   onChange?: (v: ValueRef) => void;
+  context?: RefContext;
 }) {
   const [value, setValue] = useState(initial);
   return (
     <ValueRefPicker
       value={value}
       definition={definition}
+      context={context}
       ariaLabel="Left side"
       onChange={(next) => {
         setValue(next);
@@ -101,7 +105,7 @@ describe('<ValueRefPicker>', () => {
     await openChip(user);
     await user.selectOptions(screen.getByLabelText('Pool'), 'HP');
 
-    expect(screen.getByLabelText('Of')).toHaveValue('active');
+    expect(screen.getByRole('button', { name: 'Of' })).toHaveTextContent('the active player');
   });
 
   it('picks a seat by index as well as by role', async () => {
@@ -112,9 +116,11 @@ describe('<ValueRefPicker>', () => {
     );
 
     await openChip(user);
-    await user.selectOptions(screen.getByLabelText('Of'), 'seat:1');
+    await user.click(screen.getByRole('button', { name: 'Of' }));
+    await user.click(screen.getByRole('radio', { name: /a specific seat/i }));
+    await user.selectOptions(screen.getByLabelText('Seat'), '1');
 
-    expect(onChange).toHaveBeenCalledWith({
+    expect(onChange).toHaveBeenLastCalledWith({
       kind: 'pool',
       poolId: HP,
       seat: { kind: 'seat', index: 1 },
@@ -162,7 +168,7 @@ describe('<ValueRefPicker>', () => {
       kind: 'zoneCount',
       zone: { zoneId: BATTLEFIELD, seat: null },
     });
-    expect(screen.queryByLabelText('Owned by')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Owned by' })).not.toBeInTheDocument();
   });
 
   it('lists card indexes with the card that declares them', async () => {
@@ -209,15 +215,170 @@ describe('<ValueRefPicker>', () => {
     expect(isDangling({ kind: 'cardIndex', card: { kind: 'triggering' }, indexId: 'nope' }, duel)).toBe(
       true
     );
+    expect(isDangling({ kind: 'activeSeatCount' }, duel)).toBe(false);
+    expect(isDangling({ kind: 'replacedAmount' }, duel)).toBe(false);
+    expect(isDangling({ kind: 'promptNumber', key: 'x' }, duel)).toBe(false);
+    expect(
+      isDangling({ kind: 'actionField', action: { kind: 'topOfStack' }, field: 'controller' }, duel)
+    ).toBe(false);
+    expect(isDangling({ kind: 'cardTag', card: { kind: 'triggering' }, tag: 'x' }, duel)).toBe(false);
+  });
+
+  // §4.1 made the three ref unions mutually recursive, so a shallow check on the outermost id would
+  // call a ref healthy while the zone three levels down had been deleted.
+  it('isDangling descends through the seat and card a ref carries', () => {
+    const gone = { kind: 'zoneTop', zone: { zoneId: 'zone_gone', seat: null } } as const;
+    const live = { kind: 'zoneTop', zone: { zoneId: HAND, seat: { kind: 'active' } } } as const;
+
+    expect(isDangling({ kind: 'cardTag', card: gone, tag: 'x' }, duel)).toBe(true);
+    expect(isDangling({ kind: 'cardTag', card: live, tag: 'x' }, duel)).toBe(false);
+    expect(isDangling({ kind: 'cardIndex', card: gone, indexId: POWER }, duel)).toBe(true);
+    expect(isDangling({ kind: 'pool', poolId: HP, seat: { kind: 'owner', card: gone } }, duel)).toBe(
+      true
+    );
+    expect(
+      isDangling(
+        {
+          kind: 'zoneCount',
+          zone: {
+            zoneId: HAND,
+            seat: { kind: 'relative', from: { kind: 'controller', card: gone }, offset: 1 },
+          },
+        },
+        duel
+      )
+    ).toBe(true);
+  });
+
+  describe('v2 §4.2 — the four new kinds', () => {
+    it('counts the players still in the game, with nothing to configure', async () => {
+      const user = userEvent.setup();
+      const onChange = vi.fn();
+      render(<LiveValueRef initial={literal(0)} onChange={onChange} />);
+
+      await openChip(user);
+      await user.click(screen.getByRole('radio', { name: /players still in the game/i }));
+
+      expect(onChange).toHaveBeenLastCalledWith({ kind: 'activeSeatCount' });
+      expect(screen.getByRole('button', { name: /left side/i })).toHaveTextContent(
+        'the number of players still in the game'
+      );
+    });
+
+    it('asks whether a card has a tag, through a real CardRef', async () => {
+      const user = userEvent.setup();
+      const onChange = vi.fn();
+      render(<LiveValueRef initial={literal(0)} onChange={onChange} />);
+
+      await openChip(user);
+      await user.click(screen.getByRole('radio', { name: /whether a card has a tag/i }));
+      expect(onChange).toHaveBeenLastCalledWith({
+        kind: 'cardTag',
+        card: { kind: 'triggering' },
+        tag: '',
+      });
+
+      await user.type(screen.getByLabelText('Tag'), 'creature');
+      expect(onChange).toHaveBeenLastCalledWith({
+        kind: 'cardTag',
+        card: { kind: 'triggering' },
+        tag: 'creature',
+      });
+
+      // The CardRef is editable now — `ValueRefPicker` used to hard-code `{kind:'triggering'}`.
+      await user.click(screen.getByRole('button', { name: 'Card' }));
+      await user.click(screen.getByRole('radio', { name: /the card this is attached to/i }));
+      expect(onChange).toHaveBeenLastCalledWith({
+        kind: 'cardTag',
+        card: { kind: 'host' },
+        tag: 'creature',
+      });
+    });
+
+    it('lets a card index name its own card rather than always the triggering one', async () => {
+      const user = userEvent.setup();
+      const onChange = vi.fn();
+      render(<LiveValueRef initial={literal(0)} onChange={onChange} />);
+
+      await openChip(user);
+      await user.click(screen.getByRole('radio', { name: /a card index/i }));
+      await user.click(screen.getByRole('button', { name: 'Card' }));
+      await user.click(screen.getByRole('radio', { name: /the top card of a zone/i }));
+
+      expect(onChange).toHaveBeenLastCalledWith({
+        kind: 'cardIndex',
+        indexId: POWER,
+        card: { kind: 'zoneTop', zone: { zoneId: 'zone_deck', seat: { kind: 'active' } } },
+      });
+    });
+
+    it('reads a field off a pending action, and never offers a runtime action id', async () => {
+      const user = userEvent.setup();
+      const onChange = vi.fn();
+      render(<LiveValueRef initial={literal(0)} onChange={onChange} />);
+
+      await openChip(user);
+      await user.click(screen.getByRole('radio', { name: /something about a pending action/i }));
+      expect(onChange).toHaveBeenLastCalledWith({
+        kind: 'actionField',
+        action: { kind: 'topOfStack' },
+        field: 'controller',
+      });
+
+      // `{kind:'action', id}` names an id no author can know — same omission as `promptAnswer`.
+      const actions = within(screen.getByLabelText('Action')).getAllByRole('option');
+      expect(actions.map((o) => o.getAttribute('value'))).toEqual([
+        'triggeringAction',
+        'topOfStack',
+      ]);
+
+      await user.selectOptions(screen.getByLabelText('Action'), 'triggeringAction');
+      await user.selectOptions(screen.getByLabelText('Field'), 'targetCount');
+      expect(onChange).toHaveBeenLastCalledWith({
+        kind: 'actionField',
+        action: { kind: 'triggeringAction' },
+        field: 'targetCount',
+      });
+    });
+
+    it('disables the replaced amount outside a replacement rule, and says why', async () => {
+      const user = userEvent.setup();
+      render(<LiveValueRef initial={literal(0)} />);
+
+      await openChip(user);
+
+      expect(screen.getByRole('radio', { name: /the replaced amount/i })).toBeDisabled();
+      expect(screen.getByText(/only inside a replacement rule/i)).toBeInTheDocument();
+    });
+
+    it('enables the replaced amount inside one', async () => {
+      const user = userEvent.setup();
+      const onChange = vi.fn();
+      render(<LiveValueRef initial={literal(0)} onChange={onChange} context="replacement" />);
+
+      await openChip(user);
+      await user.click(screen.getByRole('radio', { name: /the replaced amount/i }));
+
+      expect(onChange).toHaveBeenLastCalledWith({ kind: 'replacedAmount' });
+    });
   });
 });
 
-function LiveGroup({ initial, onChange }: { initial: CriteriaGroup; onChange?: (g: CriteriaGroup) => void }) {
+function LiveGroup({
+  initial,
+  onChange,
+  context,
+}: {
+  initial: CriteriaGroup;
+  onChange?: (g: CriteriaGroup) => void;
+  context?: RefContext;
+}) {
   const [node, setNode] = useState(initial);
   return (
     <CriteriaGroupEditor
       node={node}
       definition={duel}
+      context={context}
       onChange={(next) => {
         setNode(next);
         onChange?.(next);
@@ -330,5 +491,61 @@ describe('<CriteriaGroupEditor>', () => {
   it('says what an empty group does, rather than looking broken', () => {
     render(<LiveGroup initial={groupWith()} />);
     expect(screen.getByText(/passes until you add a condition/i)).toBeInTheDocument();
+  });
+
+  /**
+   * §6.11's prop chain, asserted end to end: `CriteriaGroupEditor` -> `CriteriaRow` ->
+   * `ValueRefPicker` -> `CardRefChip`. Calling `CardRefChip` directly would prove the chip works and
+   * nothing about whether the four hand-offs between here and it are wired.
+   */
+  const openCardChip = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByRole('button', { name: 'Left side' }));
+    await user.click(screen.getByRole('radio', { name: /whether a card has a tag/i }));
+    await user.click(screen.getByRole('button', { name: 'Card' }));
+  };
+
+  const tagCriteria = groupWith({
+    kind: 'criteria',
+    left: literal(0),
+    op: '=',
+    right: literal(0),
+  });
+
+  it('disables the card under test outside a matching subtree, and says why', async () => {
+    const user = userEvent.setup();
+    render(<LiveGroup initial={tagCriteria} />);
+
+    await openCardChip(user);
+
+    expect(screen.getByRole('radio', { name: /the card under test/i })).toBeDisabled();
+    expect(screen.getByText(/only inside a "cards matching/i)).toBeInTheDocument();
+  });
+
+  it('enables the card under test inside one, all four props deep', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<LiveGroup initial={tagCriteria} onChange={onChange} context="candidate" />);
+
+    await openCardChip(user);
+    await user.click(screen.getByRole('radio', { name: /the card under test/i }));
+
+    expect(onChange).toHaveBeenLastCalledWith(
+      groupWith({
+        kind: 'criteria',
+        left: { kind: 'cardTag', card: { kind: 'candidate' }, tag: '' },
+        op: '=',
+        right: literal(0),
+      })
+    );
+  });
+
+  it('keeps the two contexts apart', async () => {
+    const user = userEvent.setup();
+    render(<LiveGroup initial={tagCriteria} context="replacement" />);
+
+    await openCardChip(user);
+
+    expect(screen.getByRole('radio', { name: /the replaced target/i })).toBeEnabled();
+    expect(screen.getByRole('radio', { name: /the card under test/i })).toBeDisabled();
   });
 });

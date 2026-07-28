@@ -1,8 +1,8 @@
-import type { Effect, GameDefinition, InsertPosition, NumericOp, SeatRef } from '../../engine/types';
-import { optionToSeat, seatOptions, seatToOption } from '../criteria/seatRef';
+import type { Effect, GameDefinition, InsertPosition, NumericOp } from '../../engine/types';
 import { ValueRefPicker } from '../criteria/ValueRefPicker';
 import { allIndexes } from '../criteria/isDangling';
 import { InlineNumber, InlineSelect } from '../ui/fields';
+import { SeatRefChip } from './SeatRefChip';
 import { TargetSelectorChip } from './TargetSelectorChip';
 import { prompts } from './targetSelector';
 import { ZoneRefChip } from './ZoneRefChip';
@@ -222,7 +222,8 @@ function EffectSentence({
           {effect.seat !== null && (
             <>
               {' of '}
-              <SeatInline
+              <SeatRefChip
+                ariaLabel="Whose"
                 seat={effect.seat}
                 definition={definition}
                 onChange={(seat) => onChange({ ...effect, seat })}
@@ -412,25 +413,5 @@ function PositionControl({
         />
       )}
     </>
-  );
-}
-
-/** The seat, mid-sentence. `SeatSelect` is the labelled-field form; both read the same option list. */
-function SeatInline({
-  seat,
-  definition,
-  onChange,
-}: {
-  seat: SeatRef;
-  definition: GameDefinition;
-  onChange: (seat: SeatRef) => void;
-}) {
-  return (
-    <InlineSelect
-      label="Whose"
-      value={seatToOption(seat)}
-      options={seatOptions(definition)}
-      onChange={(value) => onChange(optionToSeat(value))}
-    />
   );
 }
