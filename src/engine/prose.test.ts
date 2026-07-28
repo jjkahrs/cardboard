@@ -666,3 +666,70 @@ describe('generateRulesProse — the four new RuleSet panels', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Step 46 — the panel half of §8's trap 2. `EVERY_EFFECT` above proves no effect kind renders
+// blank; a rule can also take ALL of its text from a panel, and a `modifier` rule takes it with
+// `effects` empty, which is the shape most likely to come out blank somewhere. Keyed by the four
+// panel names so a fifth panel has to be added here deliberately rather than slip through.
+// ---------------------------------------------------------------------------
+
+const PANEL_BASE: RuleSet = {
+  id: 'r-panel',
+  name: 'Panel',
+  trigger: 'onGameStart',
+  stateFilter: null,
+  condition: null,
+  effects: [{ kind: 'changePool', poolId: 'score', seat: null, op: 'add', amount: { kind: 'literal', value: 1 } }],
+  priority: 0,
+  onRejection: 'continue',
+  modifier: null,
+  continuous: false,
+  replaces: null,
+  activation: null,
+};
+
+const PANEL_RULE: Record<'continuous' | 'modifier' | 'replaces' | 'activation', RuleSet> = {
+  continuous: {
+    ...PANEL_BASE,
+    continuous: true,
+    condition: { kind: 'criteria', left: { kind: 'pool', poolId: 'score', seat: null }, op: '>=', right: { kind: 'literal', value: 10 } },
+  },
+  // Effects deliberately empty: §5.4 says a modifier rule never fires one, so this is the real shape.
+  modifier: {
+    ...PANEL_BASE,
+    effects: [],
+    modifier: { scope: { kind: 'triggeringCard' }, indexId: 'power', op: 'adjust', amount: { kind: 'literal', value: 1 }, activeZones: ['bf'] },
+  },
+  replaces: {
+    ...PANEL_BASE,
+    replaces: { effectKind: 'drawCards', match: { kind: 'criteria', left: { kind: 'replacedAmount' }, op: '>', right: { kind: 'literal', value: 1 } } },
+  },
+  activation: {
+    ...PANEL_BASE,
+    activation: {
+      costCheck: { kind: 'criteria', left: { kind: 'pool', poolId: 'score', seat: null }, op: '>', right: { kind: 'literal', value: 0 } },
+      cost: [{ kind: 'changePool', poolId: 'score', seat: null, op: 'subtract', amount: { kind: 'literal', value: 1 } }],
+      window: 'window-referenced',
+      perInstance: true,
+      label: 'Zap',
+    },
+  },
+};
+
+describe('generateRulesProse — exhaustive over the four RuleSet panels', () => {
+  it.each(Object.entries(PANEL_RULE))('%s renders prose with no missing referent', (panel, rule) => {
+    // Guards the samples: the panel a row claims to exercise must be the one that is actually set.
+    const set = (['continuous', 'modifier', 'replaces', 'activation'] as const).filter(
+      (k) => rule[k] !== false && rule[k] !== null
+    );
+    expect(set).toEqual([panel]);
+
+    const text = generateRulesProse([rule], def);
+    expect(text).not.toBe('');
+    expect(text.trim()).toBe(text);
+    expect(text).not.toContain('[deleted');
+    // A panel that fell through to the ordinary trigger sentence would still be non-empty.
+    expect(text.startsWith('When ')).toBe(false);
+  });
+});

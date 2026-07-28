@@ -1,11 +1,26 @@
 /**
  * Step 23 — the catalog, the card editor and the deck builder.
+ *
+ * Step 46 adds the prose-completeness half at the bottom: the READS AS preview and the card face
+ * both have to render a rule whose text comes from a panel rather than from `effects`.
  */
 
 import 'fake-indexeddb/auto';
-import { screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { CardTemplate, Deck, GameDefinition, PlayZone, RuleSet } from '../../engine/types';
+import type {
+  CardTemplate,
+  Deck,
+  Effect,
+  GameDefinition,
+  PlayZone,
+  PriorityWindow,
+  RuleSet,
+} from '../../engine/types';
+import { describeEffect, generateRulesProse } from '../../engine/prose';
+import { Card } from '../../components/card/Card';
+import { RulesProsePreview } from '../../components/authoring/RulesProsePreview';
+import { BATTLEFIELD, GRUNT, POWER, RS_STRIKE, duel } from '../../test/fixtures/duel';
 import { definition, openRoute, resetGames, seedGame } from '../../test/routeHarness';
 
 const zone = (id: string, name: string, scope: PlayZone['scope'] = 'player'): PlayZone => ({
@@ -130,6 +145,15 @@ describe('the card editor (/cards/:cardId)', () => {
 
     await user.type(screen.getByRole('textbox', { name: 'Tags' }), 'creature,  fire ,');
     expect(only().tags).toEqual(['creature', 'fire']);
+  });
+
+  // §4.3 — `CardInstance.tags` is a COPY seeded from the template at creation and mutable per copy
+  // after that. Without saying so the field reads as a static label and `setTag` looks global.
+  it('says the tags seed each copy in play rather than labelling the template', async () => {
+    await openEditor();
+    expect(
+      screen.getByText(/every copy dealt into play starts with these tags and keeps its own list/i)
+    ).toBeInTheDocument();
   });
 
   it('picks a face icon from the searchable sprite', async () => {
@@ -324,5 +348,198 @@ describe('the deck builder (/decks)', () => {
     await user.click(screen.getByRole('button', { name: /remove entry 1/i }));
 
     expect(definition().decks[0].entries).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 46 — prose completeness. §8's trap 2: a construct with no prose renders BLANK on the card
+// face and in the rule editor's READS AS, and neither throws. `prose.test.ts` is the gate on the
+// generator itself; these are the gate on the two components that show what it generates.
+// ---------------------------------------------------------------------------
+
+const proseWindow: PriorityWindow = {
+  id: 'pw1',
+  name: 'Responses',
+  start: 'active',
+  direction: 'forward',
+  includeStart: true,
+  passesToClose: null,
+  collapseEmptyOffers: true,
+};
+
+const proseDef: GameDefinition = { ...duel, priorityWindows: [proseWindow] };
+
+const proseRule = (over: Partial<RuleSet>): RuleSet => ({
+  id: 'rs-prose',
+  name: 'Prose',
+  trigger: 'onGameStart',
+  stateFilter: null,
+  condition: null,
+  effects: [],
+  priority: 0,
+  onRejection: 'continue',
+  modifier: null,
+  continuous: false,
+  replaces: null,
+  activation: null,
+  ...over,
+});
+
+/** Every effect kind v2 added, in one rule — the face and the preview show them or they are lost. */
+const V2_EFFECTS: Effect[] = [
+  { kind: 'eliminateSeat', seat: { kind: 'relative', from: { kind: 'active' }, offset: -1 } },
+  {
+    kind: 'attach',
+    target: { kind: 'triggeringCard' },
+    host: { kind: 'zoneTop', zone: { zoneId: BATTLEFIELD, seat: null } },
+  },
+  { kind: 'detach', target: { kind: 'hostOf', card: { kind: 'triggering' } } },
+  { kind: 'setTag', target: { kind: 'attachedTo', host: { kind: 'host' } }, tag: 'blocking', on: true },
+  {
+    kind: 'setController',
+    target: { kind: 'triggeringCard' },
+    seat: { kind: 'owner', card: { kind: 'triggering' } },
+  },
+  { kind: 'announceAction', ruleId: RS_STRIKE, window: proseWindow.id },
+  { kind: 'counterAction', action: { kind: 'allOnStack', where: null } },
+  { kind: 'openPriority', window: proseWindow.id },
+  {
+    kind: 'sealedChoice',
+    choiceId: 'c1',
+    seats: { kind: 'all' },
+    options: [
+      { id: 'a', label: 'Bid one' },
+      { id: 'b', label: 'Pass' },
+    ],
+  },
+  {
+    kind: 'chooseMode',
+    promptText: 'Pick',
+    seat: { kind: 'active' },
+    modes: [
+      { label: 'Burn', effects: [] },
+      { label: 'Draw', effects: [] },
+    ],
+  },
+  {
+    kind: 'chooseNumber',
+    promptText: 'How many',
+    seat: { kind: 'controller', card: { kind: 'triggering' } },
+    min: { kind: 'literal', value: 0 },
+    max: { kind: 'activeSeatCount' },
+    key: 'n',
+  },
+];
+
+/** One rule per panel, each taking ALL of its text from the panel. `modifier` has no effects at
+ *  all (§5.4 — it never fires one), which is the shape a preview gated on `effects.length` blanks. */
+const PANEL_RULES: Record<string, RuleSet> = {
+  continuous: proseRule({
+    continuous: true,
+    condition: {
+      kind: 'criteria',
+      left: { kind: 'zoneCount', zone: { zoneId: BATTLEFIELD, seat: null } },
+      op: '>=',
+      right: { kind: 'literal', value: 3 },
+    },
+    effects: [{ kind: 'shuffleZone', zone: { zoneId: BATTLEFIELD, seat: null } }],
+  }),
+  modifier: proseRule({
+    modifier: {
+      scope: {
+        kind: 'matching',
+        from: { kind: 'allInZone', zone: { zoneId: BATTLEFIELD, seat: null } },
+        where: {
+          kind: 'criteria',
+          left: { kind: 'cardTag', card: { kind: 'candidate' }, tag: 'creature' },
+          op: '=',
+          right: { kind: 'literal', value: true },
+        },
+      },
+      indexId: POWER,
+      op: 'adjust',
+      amount: { kind: 'literal', value: 1 },
+      activeZones: [BATTLEFIELD],
+    },
+  }),
+  replaces: proseRule({
+    replaces: {
+      effectKind: 'drawCards',
+      match: {
+        kind: 'criteria',
+        left: { kind: 'replacedAmount' },
+        op: '>',
+        right: { kind: 'literal', value: 1 },
+      },
+    },
+    effects: [{ kind: 'shuffleZone', zone: { zoneId: BATTLEFIELD, seat: null } }],
+  }),
+  activation: proseRule({
+    activation: {
+      costCheck: null,
+      cost: [{ kind: 'rotateCard', target: { kind: 'triggeringCard' }, to: 'rotated' }],
+      window: proseWindow.id,
+      perInstance: true,
+      label: 'Tap for value',
+    },
+    effects: [{ kind: 'shuffleZone', zone: { zoneId: BATTLEFIELD, seat: null } }],
+  }),
+};
+
+describe('READS AS renders every construct (step 46)', () => {
+  const readsAs = (rule: RuleSet) => {
+    render(<RulesProsePreview rule={rule} definition={proseDef} />);
+    return screen.getByRole('region', { name: 'Reads as' });
+  };
+
+  it.each(Object.entries(PANEL_RULES))(
+    'a %s rule reads as its panel, not as the empty-effects placeholder',
+    (_panel, rule) => {
+      const region = readsAs(rule);
+      const expected = generateRulesProse([rule], proseDef);
+
+      expect(expected).not.toContain('[deleted');
+      expect(within(region).getByText(expected)).toBeInTheDocument();
+      expect(within(region).queryByText(/nothing yet/i)).not.toBeInTheDocument();
+    }
+  );
+
+  it('spells out every effect kind v2 added', () => {
+    const region = readsAs(proseRule({ effects: V2_EFFECTS }));
+
+    for (const effect of V2_EFFECTS) {
+      expect(region).toHaveTextContent(describeEffect(effect, proseDef));
+    }
+    expect(region.textContent).not.toContain('[deleted');
+  });
+
+  it('still says nothing yet for a rule that really is empty', () => {
+    expect(within(readsAs(proseRule({}))).getByText(/nothing yet/i)).toBeInTheDocument();
+  });
+});
+
+describe('the card face renders every construct (step 46)', () => {
+  const faceOf = (rule: RuleSet) => {
+    const grunt = proseDef.templates.find((t) => t.id === GRUNT)!;
+    const { container } = render(
+      <Card
+        template={{ ...grunt, ruleSetIds: [rule.id] }}
+        definition={{ ...proseDef, ruleSets: [...proseDef.ruleSets, rule] }}
+      />
+    );
+    return container.querySelector('.cb-card__rules')!;
+  };
+
+  it.each(Object.entries(PANEL_RULES))('prints a %s rule', (_panel, rule) => {
+    expect(faceOf(rule)).toHaveTextContent(generateRulesProse([rule], proseDef));
+  });
+
+  it('prints every effect kind v2 added', () => {
+    const face = faceOf(proseRule({ effects: V2_EFFECTS }));
+
+    for (const effect of V2_EFFECTS) {
+      expect(face).toHaveTextContent(describeEffect(effect, proseDef));
+    }
+    expect(face.textContent).not.toContain('[deleted');
   });
 });

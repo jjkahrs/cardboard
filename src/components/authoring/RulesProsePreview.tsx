@@ -21,11 +21,17 @@ export function RulesProsePreview({
   const attached = definition.templates.filter((t) => t.ruleSetIds.includes(rule.id));
   const global = definition.globalRuleSetIds.includes(rule.id);
 
+  // §5.4 — a modifier rule never fires an effect; its whole text comes from the panel. Gating the
+  // preview on `effects.length` alone rendered every modifier-only rule as "Nothing yet", i.e. as
+  // blank, which is exactly the failure §8's trap 2 is about. The other three panels do read
+  // `effects`, so for them an empty list really is nothing yet.
+  const nothingYet = rule.effects.length === 0 && rule.modifier === null;
+
   return (
     <section className="cb-panel cb-prose" aria-label="Reads as">
       <span className="cb-rough" aria-hidden="true" />
       <h3>Reads as</h3>
-      {rule.effects.length === 0 ? (
+      {nothingYet ? (
         <p className="cb-hint">Nothing yet — add an effect and this fills in.</p>
       ) : (
         <p className="cb-prose__text">{generateRulesProse([rule], definition)}</p>
