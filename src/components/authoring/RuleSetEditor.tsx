@@ -1,16 +1,9 @@
 import { useId } from 'react';
 import { BUILTIN_EVENTS } from '../../engine/types';
-import type {
-  CriteriaGroup,
-  CriteriaNode,
-  Effect,
-  GameDefinition,
-  RuleSet,
-} from '../../engine/types';
+import type { CriteriaGroup, CriteriaNode, GameDefinition, RuleSet } from '../../engine/types';
 import { CriteriaGroupEditor } from '../criteria/CriteriaGroupEditor';
 import { FormErrors, InlineNumber, InlineSelect, SelectField } from '../ui/fields';
-import { EffectPicker } from './EffectPicker';
-import { EffectRow } from './EffectRow';
+import { EffectList } from './EffectList';
 import { RulesProsePreview } from './RulesProsePreview';
 
 /** Only these two triggers can be narrowed to one state; for the rest `stateFilter` is ignored (§4.7). */
@@ -48,17 +41,6 @@ export function RuleSetEditor({
   // A trigger imported from a file the picker doesn't list still has to be selectable, or opening
   // the rule would silently rewrite it to something else.
   const triggerOptions = [...new Set([...BUILTIN_EVENTS, ...definition.customEvents, rule.trigger])];
-
-  const setEffect = (index: number, effect: Effect) =>
-    onChange({ effects: rule.effects.map((e, i) => (i === index ? effect : e)) });
-
-  const moveEffect = (from: number, to: number) => {
-    if (to < 0 || to >= rule.effects.length) return;
-    const effects = [...rule.effects];
-    const [moved] = effects.splice(from, 1);
-    effects.splice(to, 0, moved);
-    onChange({ effects });
-  };
 
   return (
     <div className="cb-rule">
@@ -143,30 +125,11 @@ export function RuleSetEditor({
           }
         />
 
-        {rule.effects.length === 0 ? (
-          <p className="cb-hint">No effects yet — this rule does nothing.</p>
-        ) : (
-          <ol className="cb-list" aria-label="Effects">
-            {rule.effects.map((effect, index) => (
-              <EffectRow
-                // Index as key: effects have no id, and the list is reordered wholesale by the ▲▼
-                // buttons rather than edited in place while shifting.
-                key={index}
-                effect={effect}
-                index={index}
-                total={rule.effects.length}
-                definition={definition}
-                onChange={(next) => setEffect(index, next)}
-                onMove={moveEffect}
-                onRemove={() => onChange({ effects: rule.effects.filter((_, i) => i !== index) })}
-              />
-            ))}
-          </ol>
-        )}
-
-        <EffectPicker
+        <EffectList
+          effects={rule.effects}
           definition={definition}
-          onAdd={(effect) => onChange({ effects: [...rule.effects, effect] })}
+          ruleId={rule.id}
+          onChange={(effects) => onChange({ effects })}
         />
       </section>
 
