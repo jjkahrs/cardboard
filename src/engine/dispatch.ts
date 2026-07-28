@@ -40,6 +40,7 @@ import {
   type ZoneRef,
 } from './types';
 import { evalCriteria } from './criteria';
+import { scanContinuous } from './continuous';
 import { applyEffect, canMove, type EffectContext } from './effects';
 import { appendPending, pop, promotePending, push, top } from './frames';
 import { clear, isResuming, isSuspended, promptIdOf, raise, validateAnswer } from './interaction';
@@ -626,6 +627,26 @@ function advanceRule(
 }
 
 /**
+ * Shared by both settle slots (§5.3): re-entering settle — whether slot 1 fired a continuous rule or
+ * slot 2 fired an auto-transition — costs one `settleIterations` tick against the SAME bound, so a
+ * fixpoint alternating between the two slots trips exactly as fast as one that loops inside a single
+ * slot. Returns the halt result when the cap is exceeded, `null` when it is fine to continue.
+ */
+function bumpSettleIterations(state: PlayState, def: GameDefinition, lines: LogLine[]): StepResult | null {
+  state.budget.settleIterations += 1;
+  if (state.budget.settleIterations > def.limits.maxSettleIterations) {
+    return haltChain(
+      state,
+      def,
+      lines,
+      'Settle did not converge — chain halted.',
+      `SETTLE_DIVERGED: settleIterations ${state.budget.settleIterations} > limit ${def.limits.maxSettleIterations}`
+    );
+  }
+  return null;
+}
+
+/**
  * §5.3's settle point, in its fixed order. Popped first: the slots either finish the transaction or
  * append work whose completion pushes a fresh settle frame, so termination is natural and re-entry
  * is bounded by `budget.settleIterations`.
@@ -638,11 +659,16 @@ function advanceSettle(
 ): StepResult {
   pop(state);
 
-  // ---- Slot 1: continuous-condition fixpoint scan (§5.6). ----
-  // DELIBERATE NO-OP until step 26, which drops `continuous.ts`'s scan in HERE, ahead of slot 2.
-  // The ordering exists now precisely so that step lands as an insertion and nothing around it has
-  // to be re-plumbed: "a creature with lethal damage dies" and "a player at zero pool is ousted"
-  // must both land before the state machine decides whether the phase is over.
+  // ---- Slot 1: continuous-condition fixpoint scan (§5.6, v2 step 26). ----
+  // "a creature with lethal damage dies" and "a player at zero pool is ousted" must both land before
+  // slot 2 decides whether the phase is over — that ordering is the entire reason this is slot 1.
+  // `continuous.ts` owns the scan itself (bindings, §5.1 order, the fired/cleared bookkeeping);
+  // this only wires it into the settle sequence and shares slot 2's own re-entry/divergence bound,
+  // so a fixpoint that never settles halts identically regardless of which slot is looping.
+  if (scanContinuous(state, def)) {
+    const halted = bumpSettleIterations(state, def, lines);
+    return halted ?? MORE; // re-enter settle once the newly-pushed rule frame(s) drain.
+  }
 
   // ---- Slot 2: auto-transition scan (v1 §5.6, unchanged). ----
   const auto = findAutoTransition(state, def, baseCtx(state));
@@ -650,16 +676,8 @@ function advanceSettle(
   // ---- Slot 3: nothing fired, so the world is settled and the transaction commits. ----
   if (!auto) return DONE;
 
-  state.budget.settleIterations += 1;
-  if (state.budget.settleIterations > def.limits.maxSettleIterations) {
-    return haltChain(
-      state,
-      def,
-      lines,
-      'Settle did not converge — chain halted.',
-      `SETTLE_DIVERGED: settleIterations ${state.budget.settleIterations} > limit ${def.limits.maxSettleIterations}`
-    );
-  }
+  const halted = bumpSettleIterations(state, def, lines);
+  if (halted) return halted;
 
   state.budget.causalDepth += 1;
   if (state.budget.causalDepth > def.limits.maxDepth) {
