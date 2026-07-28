@@ -6,6 +6,7 @@ import type {
   GameCriteria,
   GameDefinition,
 } from '../../engine/types';
+import type { RefContext } from '../authoring/refs';
 import { ValueRefPicker } from './ValueRefPicker';
 
 const OPS: { op: ComparisonOp; label: string }[] = [
@@ -36,6 +37,13 @@ export interface CriteriaGroupEditorProps {
   /** Root group has no delete control — removing the condition entirely is the caller's business. */
   onDelete?: () => void;
   depth?: number;
+  /**
+   * §6.11 — where this tree sits, so the refs that bind only inside a `matching` subtree or a
+   * replacement rule's match are offered only there. An explicit prop rather than React context:
+   * this editor is used by two unrelated screens, and an implicit provider would make "why is this
+   * row offering *the card under test*" invisible at the call site.
+   */
+  context?: RefContext;
 }
 
 /**
@@ -51,6 +59,7 @@ export function CriteriaGroupEditor({
   definition,
   onDelete,
   depth = 0,
+  context,
 }: CriteriaGroupEditorProps) {
   const groupId = useId();
   const combinatorLabel = node.combinator === 'and' ? 'all of' : 'any of';
@@ -110,6 +119,7 @@ export function CriteriaGroupEditor({
               node={child}
               definition={definition}
               depth={depth + 1}
+              context={context}
               onChange={(next) => replaceChild(i, next)}
               onDelete={() => removeChild(i)}
             />
@@ -118,6 +128,7 @@ export function CriteriaGroupEditor({
               key={i}
               criteria={child}
               definition={definition}
+              context={context}
               onChange={(next) => replaceChild(i, next)}
               onDelete={() => removeChild(i)}
             />
@@ -150,11 +161,13 @@ function CriteriaRow({
   onChange,
   onDelete,
   definition,
+  context,
 }: {
   criteria: GameCriteria;
   onChange: (next: GameCriteria) => void;
   onDelete: () => void;
   definition: GameDefinition;
+  context?: RefContext;
 }) {
   const opId = useId();
   return (
@@ -163,6 +176,7 @@ function CriteriaRow({
         ariaLabel="Left side"
         value={criteria.left}
         definition={definition}
+        context={context}
         onChange={(left) => onChange({ ...criteria, left })}
       />
       {/* Six fixed values with no parameters and nothing to search: a native select beats a chip
@@ -186,6 +200,7 @@ function CriteriaRow({
         ariaLabel="Right side"
         value={criteria.right}
         definition={definition}
+        context={context}
         onChange={(right) => onChange({ ...criteria, right })}
       />
       <button type="button" className="cb-btn" data-variant="ghost" onClick={onDelete} aria-label="Remove condition">

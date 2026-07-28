@@ -1,4 +1,5 @@
 import type { GameDefinition, ZoneRef } from '../../engine/types';
+import { danglingZone } from '../criteria/isDangling';
 
 /** A shared zone has exactly one instance, so carrying a seat on the reference would be a lie. */
 export function zoneRefFor(
@@ -16,5 +17,5 @@ export function defaultZoneRef(definition: GameDefinition): ZoneRef | null {
   return zone ? zoneRefFor(definition, zone.id, null) : null;
 }
 
-export const isDanglingZone = (zone: ZoneRef, definition: GameDefinition): boolean =>
-  !definition.zones.some((z) => z.id === zone.zoneId);
+/** One implementation, in `isDangling.ts` — §4.1 made the seat under a zone able to dangle too. */
+export const isDanglingZone = danglingZone;

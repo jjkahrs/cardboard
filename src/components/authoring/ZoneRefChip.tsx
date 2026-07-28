@@ -1,8 +1,8 @@
 import { describeZoneRef } from '../../engine/prose';
 import type { GameDefinition, ZoneRef } from '../../engine/types';
-import { SeatSelect } from '../criteria/SeatSelect';
 import { ChipPopover } from '../ui/ChipPopover';
 import { SelectField } from '../ui/fields';
+import { SeatRefChip } from './SeatRefChip';
 import { isDanglingZone, zoneRefFor } from './zoneRef';
 
 /**
@@ -30,12 +30,15 @@ export function ZoneRefFields({
         onChange={(zoneId) => onChange(zoneRefFor(definition, zoneId, zone.seat))}
       />
       {zone.seat !== null && (
-        <SeatSelect
-          label="Owned by"
-          seat={zone.seat}
-          definition={definition}
-          onChange={(seat) => onChange({ ...zone, seat })}
-        />
+        <div className="cb-field">
+          <span>Owned by</span>
+          <SeatRefChip
+            ariaLabel="Owned by"
+            seat={zone.seat}
+            definition={definition}
+            onChange={(seat) => onChange({ ...zone, seat })}
+          />
+        </div>
       )}
     </>
   );
