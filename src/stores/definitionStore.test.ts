@@ -284,6 +284,70 @@ describe('deleting a referenced entity', () => {
     );
   });
 
+  // §8 trap 1, end to end. `SeatRef -> CardRef -> ZoneRef` is three levels of a recursion the v1
+  // walker had none of — a v1 SeatRef held no id at all — and this zone is named from nowhere else
+  // in the definition, so nothing but `walkSeatRef` can find it.
+  it('blocks deleting a zone reachable only through SeatRef{kind:owner}.card.zone', () => {
+    const { store } = storeWith(duel);
+    const exile = ok(store.getState().addZone({ ...handZone, name: 'Exile', scope: 'shared' }))!;
+    ok(
+      store.getState().addRuleSet({
+        name: 'Oust',
+        trigger: 'onCardPlayed',
+        stateFilter: null,
+        condition: null,
+        effects: [
+          {
+            kind: 'eliminateSeat',
+            seat: { kind: 'owner', card: { kind: 'zoneTop', zone: { zoneId: exile, seat: null } } },
+          },
+        ],
+        priority: 0,
+        onRejection: 'continue',
+        modifier: null,
+      })
+    );
+
+    const errors = errorsOf(store.getState().removeZone(exile));
+
+    expect(errors[0]).toContain('Cannot delete zone');
+    expect(errors.join('\n')).toContain('Rule set "Oust"');
+    expect(errors.some((e) => e.includes('.seat.card.zone.zoneId'))).toBe(true);
+    expect(store.getState().definition.zones.map((z) => z.id)).toContain(exile);
+  });
+
+  // The step-19 deviation: §4.5's `modifier` sub-tree is walked now rather than in step 31, because
+  // `modifier` has existed since step 13 and an unwalked sub-tree is an unprotected delete.
+  it('blocks deleting a zone and an index reachable only through RuleSet.modifier', () => {
+    const { store } = storeWith(duel);
+    const aura = ok(store.getState().addZone({ ...handZone, name: 'Aura', scope: 'shared' }))!;
+    ok(
+      store.getState().addRuleSet({
+        name: 'Anthem',
+        trigger: 'onGameStart',
+        stateFilter: null,
+        condition: null,
+        effects: [],
+        priority: 0,
+        onRejection: 'continue',
+        modifier: {
+          scope: { kind: 'allInZone', zone: { zoneId: BATTLEFIELD, seat: null } },
+          indexId: POWER,
+          op: 'adjust',
+          amount: { kind: 'literal', value: 1 },
+          activeZones: [aura],
+        },
+      })
+    );
+
+    expect(errorsOf(store.getState().removeZone(aura)).join('\n')).toContain(
+      'modifier.activeZones.0'
+    );
+    expect(errorsOf(store.getState().removeCardIndex('tpl_grunt', POWER)).join('\n')).toContain(
+      'Rule set "Anthem"'
+    );
+  });
+
   it('blocks deleting a machine state other states can reach', () => {
     const { store } = storeWith(duel);
 
@@ -328,6 +392,57 @@ describe('findReferrers', () => {
     const refs = findReferrers(duel, 'pool', ATTACKERS);
     expect(refs.map((r) => r.path)).toContain('machine.states.2.entryCriteria.left.poolId');
     expect(refs.find((r) => r.ownerKind === 'state')?.ownerName).toBe('Combat');
+  });
+
+  // The other two new recursions: `matching.where` is a full CriteriaNode, and `attach.host` is a
+  // CardRef whose ZoneRef is itself seated by a `controller` SeatRef holding another CardRef.
+  it("descends §4.4's new selectors — matching.where and attach.host", () => {
+    const withNew: GameDefinition = {
+      ...duel,
+      ruleSets: [
+        ...duel.ruleSets,
+        {
+          id: 'rs_rig',
+          name: 'Rig',
+          trigger: 'onCardPlayed',
+          stateFilter: null,
+          condition: null,
+          effects: [
+            {
+              kind: 'destroyCards',
+              target: {
+                kind: 'matching',
+                from: { kind: 'allInZone', zone: { zoneId: BATTLEFIELD, seat: null } },
+                where: {
+                  kind: 'criteria',
+                  left: { kind: 'cardIndex', card: { kind: 'candidate' }, indexId: POWER },
+                  op: '>',
+                  right: { kind: 'literal', value: 2 },
+                },
+              },
+            },
+            {
+              kind: 'attach',
+              target: { kind: 'triggeringCard' },
+              host: {
+                kind: 'zoneTop',
+                zone: { zoneId: HAND, seat: { kind: 'controller', card: { kind: 'triggering' } } },
+              },
+            },
+          ],
+          priority: 0,
+          onRejection: 'continue',
+          modifier: null,
+        },
+      ],
+    };
+
+    expect(findReferrers(withNew, 'cardIndex', POWER).map((r) => r.path)).toContain(
+      'ruleSets.4.effects.0.target.where.left.indexId'
+    );
+    expect(findReferrers(withNew, 'zone', HAND).map((r) => r.path)).toContain(
+      'ruleSets.4.effects.1.host.zone.zoneId'
+    );
   });
 
   it('returns nothing for an id no one references', () => {

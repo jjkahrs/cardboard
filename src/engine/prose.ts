@@ -58,8 +58,14 @@ function stateName(def: GameDefinition, stateId: string): string {
 // Seats — §4.2. `their`/`its` reads naturally as a possessive with no assumed gender.
 // ---------------------------------------------------------------------------
 
-/** Noun phrase used as a sentence subject/object: "the next player". */
-function seatNoun(seat: SeatRef): string {
+/**
+ * Noun phrase used as a sentence subject/object: "the next player".
+ *
+ * Takes `def` because §4.1's `owner`/`controller` hold a `CardRef` that has to be named — which is
+ * also why this and `describeCardRef` are mutually recursive (a card can be "the top card of their
+ * Hand", and that Hand is seated).
+ */
+function seatNoun(def: GameDefinition, seat: SeatRef): string {
   switch (seat.kind) {
     case 'active':
       return 'the active player';
@@ -72,30 +78,33 @@ function seatNoun(seat: SeatRef): string {
     case 'seat':
       return `player ${seat.index + 1}`;
     // Counted round the live ring, so "2 seats after" is the phrasing that survives an elimination.
-    case 'relative':
-      return seat.offset >= 0
-        ? `the player ${seat.offset} seats after ${seatNoun(seat.from)}`
-        : `the player ${-seat.offset} seats before ${seatNoun(seat.from)}`;
+    case 'relative': {
+      const n = Math.abs(seat.offset);
+      const seats = `${n} ${n === 1 ? 'seat' : 'seats'}`;
+      const dir = seat.offset >= 0 ? 'after' : 'before';
+      return `the player ${seats} ${dir} ${seatNoun(def, seat.from)}`;
+    }
+    // §4.1 — `sum` totals across the live ring rather than quantifying over it, so it needs a
+    // phrasing that reads as one number: "HP of all players combined", never "of each player".
     case 'all':
-      return seat.quantifier === 'some' ? 'any player' : 'each player';
-    // Minimum arms so the card face and rule-editor preview are not blank. Naming the card would
-    // need `def` threaded through `seatNoun` and every caller of it — step 19 owns that pass, along
-    // with the rest of §4.1's new vocabulary (`sum`, `relative`, `activeSeatCount`, …).
+      if (seat.quantifier === 'some') return 'any player';
+      if (seat.quantifier === 'sum') return 'all players combined';
+      return 'each player';
     case 'owner':
-      return "the card's owner";
+      return `the owner of ${describeCardRef(def, seat.card)}`;
     case 'controller':
-      return "the card's controller";
+      return `the controller of ${describeCardRef(def, seat.card)}`;
   }
 }
 
 /** Possessive form used right before a noun: "their Hand", "the next player's Hand". */
-function seatPossessive(seat: SeatRef): string {
-  return seat.kind === 'triggeringSeat' ? 'their' : `${seatNoun(seat)}'s`;
+function seatPossessive(def: GameDefinition, seat: SeatRef): string {
+  return seat.kind === 'triggeringSeat' ? 'their' : `${seatNoun(def, seat)}'s`;
 }
 
 function zonePhrase(def: GameDefinition, zone: ZoneRef): string {
   const name = zoneName(def, zone.zoneId);
-  return zone.seat === null ? name : `${seatPossessive(zone.seat)} ${name}`;
+  return zone.seat === null ? name : `${seatPossessive(def, zone.seat)} ${name}`;
 }
 
 /** Argument order mirrors `describeValueRef` — the rule editor's zone chip reads its label here. */
@@ -148,7 +157,7 @@ export function describeValueRef(ref: ValueRef, def: GameDefinition): string {
     case 'pool':
       return ref.seat === null
         ? poolName(def, ref.poolId)
-        : `${poolName(def, ref.poolId)} of ${seatNoun(ref.seat)}`;
+        : `${poolName(def, ref.poolId)} of ${seatNoun(def, ref.seat)}`;
     case 'cardIndex':
       return `${indexName(def, ref.indexId)} of ${describeCardRef(def, ref.card)}`;
     case 'zoneCount':
@@ -173,7 +182,7 @@ function positionPhrase(position: InsertPosition): string {
 }
 
 // ---------------------------------------------------------------------------
-// Targets — §4.7, six kinds
+// Targets — §4.4, nine kinds
 // ---------------------------------------------------------------------------
 
 /** Exported for the rule editor's target chip, so its label and the card's text are one string. */
@@ -199,16 +208,16 @@ function describeTarget(selector: TargetSelector, def: GameDefinition): string {
       return `everything attached to ${describeCardRef(def, selector.host)}`;
     case 'hostOf':
       return `the card ${describeCardRef(def, selector.card)} is attached to`;
-    // Minimum arm, like `eliminateSeat` below: readable, but "the card" for a `candidate` inside
-    // the `where` is a placeholder a real pass would inflect ("…whose Power is above 2"). Step 19
-    // owns that, along with the rest of §4's new vocabulary.
+    // §4.4 — `where` is described with `candidate` reading as "the card", so the clause comes out
+    // as "…where Power of the card is above 2". Unambiguous inside the `where`, where "the card" can
+    // only be the one under test.
     case 'matching':
       return `${describeTarget(selector.from, def)} where ${describeCriteria(selector.where, def)}`;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Effects — §4.7, eleven kinds
+// Effects — §4.5, fifteen kinds
 // ---------------------------------------------------------------------------
 
 export function describeEffect(effect: Effect, def: GameDefinition): string {
@@ -220,7 +229,7 @@ export function describeEffect(effect: Effect, def: GameDefinition): string {
     case 'shuffleZone':
       return `shuffle ${zonePhrase(def, effect.zone)}`;
     case 'changePool': {
-      const pool = effect.seat === null ? poolName(def, effect.poolId) : `${poolName(def, effect.poolId)} of ${seatNoun(effect.seat)}`;
+      const pool = effect.seat === null ? poolName(def, effect.poolId) : `${poolName(def, effect.poolId)} of ${seatNoun(def, effect.seat)}`;
       const amount = describeValueRef(effect.amount, def);
       if (effect.op === 'add') return `add ${amount} to ${pool}`;
       if (effect.op === 'subtract') return `subtract ${amount} from ${pool}`;
@@ -249,10 +258,8 @@ export function describeEffect(effect: Effect, def: GameDefinition): string {
       return `fire the "${effect.name}" event`;
     case 'forceTransition':
       return `transition to ${stateName(def, effect.toStateId)}`;
-    // Minimum arm to keep the card face and the rule-editor preview non-blank. Step 19 owns the
-    // real prose pass, including `sum` / `relative` / the rest of §4.1's new vocabulary.
     case 'eliminateSeat':
-      return `eliminate ${seatNoun(effect.seat)}`;
+      return `eliminate ${seatNoun(def, effect.seat)}`;
     case 'attach':
       return `attach ${describeTarget(effect.target, def)} to ${describeCardRef(def, effect.host)}`;
     case 'detach':
@@ -264,7 +271,7 @@ export function describeEffect(effect: Effect, def: GameDefinition): string {
     case 'setController':
       return effect.seat === null
         ? `give up control of ${describeTarget(effect.target, def)}`
-        : `give control of ${describeTarget(effect.target, def)} to ${seatNoun(effect.seat)}`;
+        : `give control of ${describeTarget(effect.target, def)} to ${seatNoun(def, effect.seat)}`;
   }
 }
 

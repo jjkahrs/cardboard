@@ -45,6 +45,7 @@ import type {
   PlayZone,
   PointPool,
   RuleSet,
+  SeatRef,
   TargetSelector,
   ValueRef,
   ZoneRef,
@@ -87,29 +88,83 @@ interface Walk {
 const hit = (w: Walk, kind: RefKind, id: Id, path: string): void =>
   w.visit(kind, id, path, w.owner);
 
+/**
+ * Structural trap 1 (§8). Every `walk*` switch below has **no `default:` arm** and every case
+ * `return`s, so TypeScript narrows the discriminant to `never` here — and the next §4 kind added to
+ * any of these unions is a compile error at this line rather than a reference that silently stops
+ * being walked. Without it the switches are exhaustive by accident only: these walkers return
+ * `void`, so a missing arm is invisible to `tsc` (unlike `prose.ts`, whose `string` return type
+ * catches its own gaps).
+ */
+const unwalked = (x: never): void => x;
+
 function walkZoneRef(z: ZoneRef, p: string, w: Walk): void {
   hit(w, 'zone', z.zoneId, `${p}.zoneId`);
+  if (z.seat !== null) walkSeatRef(z.seat, `${p}.seat`, w);
+}
+
+/**
+ * §4.1. v1 needed no such walker: a v1 `SeatRef` held no id at all. `owner`/`controller` now hold a
+ * `CardRef`, which holds a `ZoneRef`, which holds a `SeatRef` again — so these four walkers are
+ * mutually recursive, and a zone reachable *only* through `SeatRef{kind:'owner'}.card.zone` is
+ * delete-protected exactly like one named directly. Mirrors `schema.ts`'s `checkSeatRef`.
+ */
+function walkSeatRef(s: SeatRef, p: string, w: Walk): void {
+  switch (s.kind) {
+    case 'owner':
+    case 'controller':
+      return walkCardRef(s.card, `${p}.card`, w);
+    case 'relative':
+      return walkSeatRef(s.from, `${p}.from`, w);
+    // Positional or quantified: no authored entity is named.
+    case 'active':
+    case 'next':
+    case 'previous':
+    case 'triggeringSeat':
+    case 'seat':
+    case 'all':
+      return;
+  }
+  return unwalked(s);
 }
 
 function walkCardRef(c: CardRef, p: string, w: Walk): void {
-  if (c.kind === 'zoneTop') walkZoneRef(c.zone, `${p}.zone`, w);
+  switch (c.kind) {
+    case 'zoneTop':
+      return walkZoneRef(c.zone, `${p}.zone`, w);
+    // §4.2 — `host` and `candidate` are runtime bindings, and `instance`/`promptAnswer` address a
+    // card by a per-session id, not by anything the definition declares.
+    case 'triggering':
+    case 'promptAnswer':
+    case 'instance':
+    case 'host':
+    case 'candidate':
+      return;
+  }
+  return unwalked(c);
 }
 
 function walkValueRef(v: ValueRef, p: string, w: Walk): void {
   switch (v.kind) {
     case 'pool':
       hit(w, 'pool', v.poolId, `${p}.poolId`);
-      break;
+      if (v.seat !== null) walkSeatRef(v.seat, `${p}.seat`, w);
+      return;
     case 'cardIndex':
       walkCardRef(v.card, `${p}.card`, w);
       hit(w, 'cardIndex', v.indexId, `${p}.indexId`);
-      break;
+      return;
     case 'zoneCount':
-      walkZoneRef(v.zone, `${p}.zone`, w);
-      break;
+      return walkZoneRef(v.zone, `${p}.zone`, w);
+    // §4.3 — `tag` is a free-form string naming nothing declared, but the CardRef it reads from can
+    // still carry a ZoneRef.
+    case 'cardTag':
+      return walkCardRef(v.card, `${p}.card`, w);
     case 'literal':
-      break;
+    case 'activeSeatCount':
+      return;
   }
+  return unwalked(v);
 }
 
 function walkCriteria(n: CriteriaNode, p: string, w: Walk): void {
@@ -127,18 +182,27 @@ function walkSelector(s: TargetSelector, p: string, w: Walk): void {
     case 'bottomOfZone':
       walkZoneRef(s.zone, `${p}.zone`, w);
       walkValueRef(s.count, `${p}.count`, w);
-      break;
+      return;
     case 'allInZone':
     case 'taggedInZone':
-      walkZoneRef(s.zone, `${p}.zone`, w);
-      break;
+      return walkZoneRef(s.zone, `${p}.zone`, w);
     case 'prompt':
       walkSelector(s.from, `${p}.from`, w);
       walkValueRef(s.count, `${p}.count`, w);
-      break;
+      return;
+    // §4.4 — the `where` is a full CriteriaNode, so it holds ids exactly like a rule's `condition`.
+    case 'matching':
+      walkSelector(s.from, `${p}.from`, w);
+      walkCriteria(s.where, `${p}.where`, w);
+      return;
+    case 'attachedTo':
+      return walkCardRef(s.host, `${p}.host`, w);
+    case 'hostOf':
+      return walkCardRef(s.card, `${p}.card`, w);
     case 'triggeringCard':
-      break;
+      return;
   }
+  return unwalked(s);
 }
 
 function walkEffect(e: Effect, p: string, w: Walk): void {
@@ -146,41 +210,55 @@ function walkEffect(e: Effect, p: string, w: Walk): void {
     case 'moveCards':
       walkSelector(e.target, `${p}.target`, w);
       walkZoneRef(e.to, `${p}.to`, w);
-      break;
+      return;
     case 'drawCards':
       walkZoneRef(e.from, `${p}.from`, w);
       walkZoneRef(e.to, `${p}.to`, w);
       walkValueRef(e.count, `${p}.count`, w);
-      break;
+      return;
     case 'shuffleZone':
-      walkZoneRef(e.zone, `${p}.zone`, w);
-      break;
+      return walkZoneRef(e.zone, `${p}.zone`, w);
     case 'changePool':
       hit(w, 'pool', e.poolId, `${p}.poolId`);
+      if (e.seat !== null) walkSeatRef(e.seat, `${p}.seat`, w);
       walkValueRef(e.amount, `${p}.amount`, w);
-      break;
+      return;
     case 'setCardIndex':
       walkSelector(e.target, `${p}.target`, w);
       hit(w, 'cardIndex', e.indexId, `${p}.indexId`);
       walkValueRef(e.amount, `${p}.amount`, w);
-      break;
+      return;
+    // §4.3 — `setTag.tag` is a free-form string and `detach` takes no second operand, so for both
+    // of the new arms here the target selector is the whole of what can dangle.
     case 'flipCard':
     case 'rotateCard':
     case 'destroyCards':
+    case 'setTag':
+    case 'detach':
+      return walkSelector(e.target, `${p}.target`, w);
+    case 'attach':
       walkSelector(e.target, `${p}.target`, w);
-      break;
+      walkCardRef(e.host, `${p}.host`, w);
+      return;
+    case 'setController':
+      walkSelector(e.target, `${p}.target`, w);
+      if (e.seat !== null) walkSeatRef(e.seat, `${p}.seat`, w);
+      return;
+    case 'eliminateSeat':
+      return walkSeatRef(e.seat, `${p}.seat`, w);
     case 'createCard':
       hit(w, 'template', e.templateId, `${p}.templateId`);
       walkZoneRef(e.zone, `${p}.zone`, w);
       walkValueRef(e.count, `${p}.count`, w);
-      break;
+      return;
     case 'forceTransition':
       hit(w, 'state', e.toStateId, `${p}.toStateId`);
-      break;
+      return;
     // `fireEvent.name` is free-form by design (§4.6) — no declared entity to reference.
     case 'fireEvent':
-      break;
+      return;
   }
+  return unwalked(e);
 }
 
 /**
@@ -210,6 +288,18 @@ function walkRefs(d: GameDefinition, visit: Visit): void {
     if (rs.stateFilter !== null) hit(w, 'state', rs.stateFilter, `ruleSets.${i}.stateFilter`);
     if (rs.condition !== null) walkCriteria(rs.condition, `ruleSets.${i}.condition`, w);
     rs.effects.forEach((e, j) => walkEffect(e, `ruleSets.${i}.effects.${j}`, w));
+    // §4.5's `modifier` sub-tree. The plan assigns this to step 31 alongside phase 2's other new
+    // `RuleSet` panels, but `modifier` itself landed in step 13 — leaving it unwalked until then is
+    // precisely §8's first trap: an index or zone reachable only from a modifier would delete with
+    // no protection and resurface as a runtime MISSING_REFERENT. `.replaces` / `.activation` do not
+    // exist yet, and stay with step 31.
+    if (rs.modifier !== null) {
+      const m = `ruleSets.${i}.modifier`;
+      walkSelector(rs.modifier.scope, `${m}.scope`, w);
+      hit(w, 'cardIndex', rs.modifier.indexId, `${m}.indexId`);
+      walkValueRef(rs.modifier.amount, `${m}.amount`, w);
+      rs.modifier.activeZones.forEach((id, j) => hit(w, 'zone', id, `${m}.activeZones.${j}`));
+    }
   });
 
   d.globalRuleSetIds.forEach((id, i) => visit('ruleSet', id, `globalRuleSetIds.${i}`, self));

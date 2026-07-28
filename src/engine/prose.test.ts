@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { describeCriteria, describeEffect, generateRulesProse } from './prose';
+import { describeCriteria, describeEffect, describeValueRef, generateRulesProse } from './prose';
 import { cantripRule, duel } from '../test/fixtures/duel';
 import {
   DEFAULT_MAX_DEPTH,
@@ -250,6 +250,123 @@ describe('describeEffect — all six target selectors (via destroyCards)', () =>
         def
       )
     ).toBe('destroy 1 card chosen by the player from all cards in Battlefield');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §8 trap 2 — a kind with no prose arm renders BLANK on the card face and in the rule editor
+// preview, and neither throws. One sample per kind, in a Record keyed by the union itself: adding a
+// kind to `Effect` without a sample is a compile error here, and adding one without a prose arm is
+// a compile error in `describeEffect` (its `string` return type has no `undefined` in it).
+// ---------------------------------------------------------------------------
+
+const EVERY_EFFECT: Record<Effect['kind'], Effect> = {
+  moveCards: { kind: 'moveCards', target: { kind: 'triggeringCard' }, to: { zoneId: 'discard', seat: null }, position: 'top' },
+  drawCards: { kind: 'drawCards', from: { zoneId: 'bf', seat: null }, to: { zoneId: 'hand', seat: { kind: 'active' } }, count: { kind: 'literal', value: 1 } },
+  shuffleZone: { kind: 'shuffleZone', zone: { zoneId: 'bf', seat: null } },
+  changePool: { kind: 'changePool', poolId: 'hp', seat: { kind: 'all', quantifier: 'every' }, op: 'subtract', amount: { kind: 'literal', value: 1 } },
+  setCardIndex: { kind: 'setCardIndex', target: { kind: 'triggeringCard' }, indexId: 'power', op: 'add', amount: { kind: 'literal', value: 1 } },
+  flipCard: { kind: 'flipCard', target: { kind: 'triggeringCard' }, to: 'toggle' },
+  rotateCard: { kind: 'rotateCard', target: { kind: 'triggeringCard' }, to: 'rotated' },
+  createCard: { kind: 'createCard', templateId: 'grunt', zone: { zoneId: 'bf', seat: null }, position: 'bottom', count: { kind: 'literal', value: 2 } },
+  destroyCards: { kind: 'destroyCards', target: { kind: 'allInZone', zone: { zoneId: 'bf', seat: null } } },
+  fireEvent: { kind: 'fireEvent', name: 'customBoom' },
+  forceTransition: { kind: 'forceTransition', toStateId: 'combat' },
+  setTag: { kind: 'setTag', target: { kind: 'triggeringCard' }, tag: 'blocking', on: true },
+  attach: { kind: 'attach', target: { kind: 'triggeringCard' }, host: { kind: 'zoneTop', zone: { zoneId: 'bf', seat: null } } },
+  detach: { kind: 'detach', target: { kind: 'triggeringCard' } },
+  setController: { kind: 'setController', target: { kind: 'triggeringCard' }, seat: { kind: 'next' } },
+  eliminateSeat: { kind: 'eliminateSeat', seat: { kind: 'relative', from: { kind: 'active' }, offset: -1 } },
+};
+
+describe('describeEffect — exhaustive over Effect["kind"]', () => {
+  it.each(Object.entries(EVERY_EFFECT))('%s renders prose with no missing referent', (kind, effect) => {
+    // Guards the samples themselves: a copy-pasted duplicate would leave a kind unexercised while
+    // the Record still type-checks.
+    expect(effect.kind).toBe(kind);
+
+    const text = describeEffect(effect, def);
+    expect(text).not.toBe('');
+    expect(text.trim()).toBe(text);
+    expect(text).not.toContain('[deleted');
+  });
+});
+
+describe('describeEffect — the phase-1 kinds', () => {
+  it('setTag — added and removed', () => {
+    expect(describeEffect({ kind: 'setTag', target: { kind: 'triggeringCard' }, tag: 'blocking', on: true }, def)).toBe('tag this card "blocking"');
+    expect(describeEffect({ kind: 'setTag', target: { kind: 'triggeringCard' }, tag: 'blocking', on: false }, def)).toBe(
+      'remove the "blocking" tag from this card'
+    );
+  });
+
+  it('attach and detach', () => {
+    expect(
+      describeEffect({ kind: 'attach', target: { kind: 'triggeringCard' }, host: { kind: 'zoneTop', zone: { zoneId: 'bf', seat: null } } }, def)
+    ).toBe('attach this card to the top card of Battlefield');
+    expect(describeEffect({ kind: 'detach', target: { kind: 'triggeringCard' } }, def)).toBe('detach this card');
+  });
+
+  it('setController — granted and cleared', () => {
+    expect(describeEffect({ kind: 'setController', target: { kind: 'triggeringCard' }, seat: { kind: 'next' } }, def)).toBe(
+      'give control of this card to the next player'
+    );
+    expect(describeEffect({ kind: 'setController', target: { kind: 'triggeringCard' }, seat: null }, def)).toBe('give up control of this card');
+  });
+
+  it('eliminateSeat', () => {
+    expect(describeEffect({ kind: 'eliminateSeat', seat: { kind: 'seat', index: 1 } }, def)).toBe('eliminate player 2');
+  });
+});
+
+describe('the phase-1 vocabulary — §4.1, §4.2, §4.4', () => {
+  it('relative counts round the ring in both directions, singular at one seat', () => {
+    const at = (offset: number) => describeEffect({ kind: 'eliminateSeat', seat: { kind: 'relative', from: { kind: 'active' }, offset } }, def);
+    expect(at(2)).toBe('eliminate the player 2 seats after the active player');
+    expect(at(-1)).toBe('eliminate the player 1 seat before the active player');
+  });
+
+  it('sum reads as one total rather than as a quantifier', () => {
+    expect(describeValueRef({ kind: 'pool', poolId: 'hp', seat: { kind: 'all', quantifier: 'sum' } }, def)).toBe('HP of all players combined');
+    expect(describeValueRef({ kind: 'pool', poolId: 'hp', seat: { kind: 'all', quantifier: 'every' } }, def)).toBe('HP of each player');
+    expect(describeValueRef({ kind: 'pool', poolId: 'hp', seat: { kind: 'all', quantifier: 'some' } }, def)).toBe('HP of any player');
+  });
+
+  it('owner and controller name the card they are read from', () => {
+    const card = { kind: 'zoneTop', zone: { zoneId: 'hand', seat: { kind: 'active' } } } as const;
+    expect(describeValueRef({ kind: 'pool', poolId: 'hp', seat: { kind: 'owner', card } }, def)).toBe(
+      "HP of the owner of the top card of the active player's Hand"
+    );
+    expect(describeValueRef({ kind: 'pool', poolId: 'hp', seat: { kind: 'controller', card: { kind: 'triggering' } } }, def)).toBe(
+      'HP of the controller of this card'
+    );
+  });
+
+  it('activeSeatCount and cardTag', () => {
+    expect(describeValueRef({ kind: 'activeSeatCount' }, def)).toBe('the number of players still in the game');
+    expect(describeValueRef({ kind: 'cardTag', card: { kind: 'host' }, tag: 'vampire' }, def)).toBe(
+      'whether the card this is attached to is tagged "vampire"'
+    );
+  });
+
+  it('matching wraps its selector and spells out the predicate', () => {
+    const target: TargetSelector = {
+      kind: 'matching',
+      from: { kind: 'allInZone', zone: { zoneId: 'bf', seat: null } },
+      where: { kind: 'criteria', left: { kind: 'cardIndex', card: { kind: 'candidate' }, indexId: 'power' }, op: '>', right: { kind: 'literal', value: 2 } },
+    };
+    expect(describeEffect({ kind: 'destroyCards', target }, def)).toBe(
+      'destroy all cards in Battlefield where Power of the card is above 2'
+    );
+  });
+
+  it('attachedTo and hostOf read the relation in both directions', () => {
+    expect(describeEffect({ kind: 'destroyCards', target: { kind: 'attachedTo', host: { kind: 'triggering' } } }, def)).toBe(
+      'destroy everything attached to this card'
+    );
+    expect(describeEffect({ kind: 'destroyCards', target: { kind: 'hostOf', card: { kind: 'triggering' } } }, def)).toBe(
+      'destroy the card this card is attached to'
+    );
   });
 });
 
