@@ -11,7 +11,14 @@ import { RouterProvider, createMemoryRouter } from 'react-router-dom';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { CardTemplate, GameDefinition, PlayZone, RuleSet } from '../../engine/types';
+import type {
+  CardIndex,
+  CardTemplate,
+  GameDefinition,
+  PlayZone,
+  PriorityWindow,
+  RuleSet,
+} from '../../engine/types';
 import { defaultEffect, missingFor } from '../../components/authoring/effectKinds';
 import { defaultSelector } from '../../components/authoring/targetSelector';
 import { createEmptyDefinition, useDefinitionStore } from '../../stores/definitionStore';
@@ -309,6 +316,326 @@ describe('the rule editor (/rules/:ruleSetId)', () => {
     expect(picker.getByText('needs a pool')).toBeInTheDocument();
     // Nothing to reference — always available.
     expect(picker.getByRole('button', { name: 'Destroy' })).toBeEnabled();
+  });
+});
+
+/**
+ * Step 45 — the four mutually-exclusive rule modes (§4.5, §6.10).
+ *
+ * The exclusivity claim is only worth testing against the REAL store: every assertion below reads
+ * the definition back, so a patch the zod refinement rejected shows up as an unchanged rule rather
+ * than as a green test.
+ */
+describe('the four rule-mode panels', () => {
+  const index = (id: string, name: string): CardIndex => ({
+    id,
+    value: { type: 'integer', name, defaultValue: 1, min: null, max: null },
+    icon: 'gi-sword',
+    position: 'topLeft',
+  });
+
+  const window_ = (id: string, name: string): PriorityWindow => ({
+    id,
+    name,
+    start: 'active',
+    direction: 'forward',
+    includeStart: true,
+    passesToClose: null,
+    collapseEmptyOffers: true,
+  });
+
+  const openEditor = async (over: Partial<GameDefinition> = {}) => {
+    await seed({
+      ruleSets: [rule()],
+      templates: [template({ indexes: [index('idx1', 'Power'), index('idx2', 'Toughness')] })],
+      priorityWindows: [window_('w1', 'Response')],
+      ...over,
+    });
+    const handle = await openRules('/game/g1/rules/rs1');
+    await screen.findByRole('heading', { level: 1 });
+    return handle;
+  };
+
+  /** Nothing rejected: a refused patch leaves `FormErrors` shouting through `role="alert"`. */
+  const accepted = () => expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+  const pick = (user: ReturnType<typeof userEvent.setup>, mode: string) =>
+    user.click(screen.getByRole('radio', { name: mode }));
+
+  it('is a single choice of five, and each switch clears the other three panels', async () => {
+    const { user } = await openEditor();
+    expect(screen.getByRole('radio', { name: 'trigger' })).toBeChecked();
+
+    await pick(user, 'value modifier');
+    expect(only()).toMatchObject({ continuous: false, replaces: null, activation: null });
+    expect(only().modifier).toEqual({
+      scope: { kind: 'triggeringCard' },
+      indexId: 'idx1',
+      op: 'adjust',
+      amount: { kind: 'literal', value: 1 },
+      activeZones: [],
+    });
+    accepted();
+
+    await pick(user, 'replacement');
+    expect(only()).toMatchObject({ continuous: false, modifier: null, activation: null });
+    expect(only().replaces).toEqual({ effectKind: 'drawCards', match: null });
+    accepted();
+
+    await pick(user, 'activation');
+    expect(only()).toMatchObject({ continuous: false, modifier: null, replaces: null });
+    expect(only().activation).toEqual({
+      costCheck: null,
+      cost: [],
+      window: null,
+      perInstance: false,
+      label: 'Activate',
+    });
+    accepted();
+
+    await pick(user, 'continuous condition');
+    expect(only()).toMatchObject({
+      continuous: true,
+      modifier: null,
+      replaces: null,
+      activation: null,
+    });
+    accepted();
+
+    await pick(user, 'trigger');
+    expect(only()).toMatchObject({
+      continuous: false,
+      modifier: null,
+      replaces: null,
+      activation: null,
+    });
+    accepted();
+  });
+
+  it('disables the modifier mode, with the reason, when the game has no card index', async () => {
+    await openEditor({ templates: [] });
+    expect(screen.getByRole('radio', { name: /value modifier/ })).toBeDisabled();
+    expect(screen.getByText('— no card indexes yet')).toBeInTheDocument();
+  });
+
+  it('drops the trigger select entirely for a continuous rule (§4.5 ignores it)', async () => {
+    const { user } = await openEditor();
+    expect(screen.getByRole('combobox', { name: 'Trigger' })).toBeInTheDocument();
+
+    await pick(user, 'continuous condition');
+    expect(screen.queryByRole('combobox', { name: 'Trigger' })).not.toBeInTheDocument();
+    expect(screen.getByText(/whenever the condition below becomes true/)).toBeInTheDocument();
+
+    await pick(user, 'trigger');
+    expect(screen.getByRole('combobox', { name: 'Trigger' })).toBeInTheDocument();
+  });
+
+  describe('the modifier panel', () => {
+    const openModifier = async (over: Partial<GameDefinition> = {}) => {
+      const handle = await openEditor(over);
+      await handle.user.click(screen.getByRole('radio', { name: 'value modifier' }));
+      return handle;
+    };
+
+    it('edits scope, index, set-or-adjust, amount and active zones', async () => {
+      const { user } = await openModifier();
+
+      await user.click(screen.getByRole('button', { name: 'Which cards are modified' }));
+      await user.click(screen.getByRole('radio', { name: 'Every card in a zone' }));
+      expect(only().modifier).toMatchObject({ scope: { kind: 'allInZone' } });
+
+      await user.selectOptions(screen.getByRole('combobox', { name: 'Index' }), 'idx2');
+      expect(only().modifier).toMatchObject({ indexId: 'idx2' });
+
+      await user.selectOptions(screen.getByRole('combobox', { name: 'Set or adjust' }), 'set');
+      expect(only().modifier).toMatchObject({ op: 'set' });
+
+      await user.click(screen.getByRole('button', { name: 'Amount' }));
+      const amount = within(screen.getByRole('dialog', { name: 'Amount' }));
+      await user.clear(amount.getByRole('spinbutton', { name: 'Value' }));
+      await user.type(amount.getByRole('spinbutton', { name: 'Value' }), '3');
+      expect(only().modifier).toMatchObject({ amount: { kind: 'literal', value: 3 } });
+
+      await user.click(screen.getByRole('checkbox', { name: 'Deck' }));
+      expect(only().modifier).toMatchObject({ activeZones: ['z1'] });
+      await user.click(screen.getByRole('checkbox', { name: 'Hand' }));
+      expect(only().modifier).toMatchObject({ activeZones: ['z1', 'z2'] });
+
+      await user.click(screen.getByRole('checkbox', { name: 'Deck' }));
+      expect(only().modifier).toMatchObject({ activeZones: ['z2'] });
+      accepted();
+    });
+
+    it('does not call a modifier-only rule with no effects "nothing", and reads as English', async () => {
+      // §5.4 — the whole rule IS the panel; gating the hint on `effects.length` alone told the
+      // designer their working rule did nothing. Step 46 fixed the twin in `RulesProsePreview`.
+      await openModifier();
+      expect(only().effects).toEqual([]);
+      expect(screen.queryByText(/this rule does nothing/)).not.toBeInTheDocument();
+      expect(screen.getByText(/A modifier needs no effects/)).toBeInTheDocument();
+
+      const prose = screen.getByRole('region', { name: 'Reads as' });
+      expect(prose).not.toHaveTextContent(/Nothing yet/);
+      expect(prose).toHaveTextContent(/Power is adjusted by 1/);
+    });
+  });
+
+  describe('the replacement panel', () => {
+    const openReplacement = async () => {
+      const handle = await openEditor();
+      await handle.user.click(screen.getByRole('radio', { name: 'replacement' }));
+      return handle;
+    };
+
+    it('offers exactly §5.7’s five interceptable kinds and nothing else', async () => {
+      await openReplacement();
+      const options = within(screen.getByRole('combobox', { name: 'Replaced effect' })).getAllByRole(
+        'option'
+      );
+      expect(options.map((o) => (o as HTMLOptionElement).value)).toEqual([
+        'drawCards',
+        'changePool',
+        'moveCards',
+        'destroyCards',
+        'setCardIndex',
+      ]);
+    });
+
+    it('edits the kind and the match tree', async () => {
+      const { user } = await openReplacement();
+
+      await user.selectOptions(
+        screen.getByRole('combobox', { name: 'Replaced effect' }),
+        'destroyCards'
+      );
+      expect(only().replaces).toMatchObject({ effectKind: 'destroyCards' });
+
+      const match = within(screen.getByRole('group', { name: 'where' }));
+      await user.click(match.getByRole('button', { name: '+ condition' }));
+      expect(only().replaces?.match).toEqual({
+        kind: 'group',
+        combinator: 'and',
+        children: [
+          {
+            kind: 'criteria',
+            left: { kind: 'literal', value: 0 },
+            op: '=',
+            right: { kind: 'literal', value: 0 },
+          },
+        ],
+      });
+      accepted();
+    });
+
+    it('binds replacedAmount and replacedTarget inside the match tree and nowhere else', async () => {
+      const { user } = await openReplacement();
+
+      // Inside: the match tree is the one place either ref means anything (§5.7).
+      const match = within(screen.getByRole('group', { name: 'where' }));
+      await user.click(match.getByRole('button', { name: '+ condition' }));
+      await user.click(match.getByRole('button', { name: 'Left side' }));
+      const left = within(screen.getByRole('dialog', { name: 'Left side' }));
+      expect(left.getByRole('radio', { name: 'The replaced amount' })).toBeEnabled();
+
+      // The replaced TARGET is a CardRef, so it is reachable through any value that carries a card.
+      await user.click(left.getByRole('radio', { name: 'A card index' }));
+      await user.click(match.getByRole('button', { name: 'Card' }));
+      const card = within(screen.getByRole('dialog', { name: 'Card' }));
+      await user.click(card.getByRole('radio', { name: 'The replaced target' }));
+      expect(only().replaces?.match).toMatchObject({
+        children: [{ left: { kind: 'cardIndex', card: { kind: 'replacedTarget' } } }],
+      });
+      accepted();
+
+      // Outside: the rule's own IF tree, disabled with the reason rather than silently missing.
+      const iff = within(screen.getByRole('region', { name: 'If' }));
+      await user.click(iff.getByRole('button', { name: /add a condition/i }));
+      await user.click(iff.getByRole('button', { name: '+ condition' }));
+      await user.click(iff.getByRole('button', { name: 'Left side' }));
+      const outside = within(iff.getByRole('dialog', { name: 'Left side' }));
+      expect(outside.getByRole('radio', { name: /The replaced amount/ })).toBeDisabled();
+      expect(outside.getByText('— only inside a replacement rule')).toBeInTheDocument();
+
+      await user.click(outside.getByRole('radio', { name: 'A card index' }));
+      await user.click(iff.getByRole('button', { name: 'Card' }));
+      const outsideCard = within(iff.getByRole('dialog', { name: 'Card' }));
+      expect(outsideCard.getByRole('radio', { name: /The replaced target/ })).toBeDisabled();
+    });
+  });
+
+  describe('the activation panel', () => {
+    const openActivation = async (over: Partial<GameDefinition> = {}) => {
+      const handle = await openEditor(over);
+      await handle.user.click(screen.getByRole('radio', { name: 'activation' }));
+      return handle;
+    };
+
+    it('edits the label, the window, per-instance and the cost check', async () => {
+      const { user } = await openActivation();
+
+      await user.clear(screen.getByRole('textbox', { name: 'Button label' }));
+      await user.type(screen.getByRole('textbox', { name: 'Button label' }), 'Tap: draw');
+      expect(only().activation).toMatchObject({ label: 'Tap: draw' });
+
+      await user.selectOptions(screen.getByRole('combobox', { name: 'Priority window' }), 'w1');
+      expect(only().activation).toMatchObject({ window: 'w1' });
+      await user.selectOptions(screen.getByRole('combobox', { name: 'Priority window' }), '');
+      expect(only().activation).toMatchObject({ window: null });
+
+      await user.click(screen.getByRole('checkbox', { name: /a button on each card/i }));
+      expect(only().activation).toMatchObject({ perInstance: true });
+
+      const check = within(screen.getByRole('group', { name: 'Cost check' }));
+      await user.click(check.getByRole('button', { name: '+ condition' }));
+      expect(only().activation?.costCheck).toMatchObject({ kind: 'group', combinator: 'and' });
+      accepted();
+    });
+
+    it('shows no window to choose, disabled with the reason, when the game has none', async () => {
+      await openActivation({ priorityWindows: [] });
+
+      const select = screen.getByRole('combobox', { name: 'Priority window' });
+      expect(select).toBeDisabled();
+      expect(within(select).queryAllByRole('option')).toHaveLength(0);
+      expect(screen.getByText(/no priority windows yet/)).toBeInTheDocument();
+    });
+
+    it('builds the cost out of the shared effect list — add, reorder, remove', async () => {
+      const { user } = await openActivation();
+
+      await user.click(screen.getByRole('button', { name: 'Add a cost effect' }));
+      await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Destroy' }));
+      await user.click(screen.getByRole('button', { name: 'Add a cost effect' }));
+      await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Shuffle' }));
+
+      expect(only().activation?.cost.map((e) => e.kind)).toEqual(['destroyCards', 'shuffleZone']);
+      // The rule's own effects are a different list on the same screen and must not have moved.
+      expect(only().effects).toEqual([]);
+      accepted();
+
+      const cost = within(screen.getByRole('list', { name: 'Cost' }));
+      await user.click(cost.getByRole('button', { name: 'Move effect 1 down' }));
+      expect(only().activation?.cost.map((e) => e.kind)).toEqual(['shuffleZone', 'destroyCards']);
+
+      await user.click(cost.getByRole('button', { name: 'Remove effect 2' }));
+      expect(only().activation?.cost.map((e) => e.kind)).toEqual(['shuffleZone']);
+      accepted();
+    });
+
+    it('refuses a cost effect that can suspend — the draft could then never be discarded (§5.8)', async () => {
+      // ponytail: the shared `EffectList`/`EffectPicker` offer every kind (their contract has no
+      // filter and step 45 does not own them), so this boundary is held by the store's refinement
+      // and reported, not prevented. Filter the picker when `EffectPicker` is next opened.
+      const { user } = await openActivation();
+
+      await user.click(screen.getByRole('button', { name: 'Add a cost effect' }));
+      await user.click(
+        within(screen.getByRole('dialog')).getByRole('button', { name: 'Choose a number' })
+      );
+
+      expect(only().activation?.cost).toEqual([]);
+      expect(screen.getByRole('alert')).toHaveTextContent(/may suspend/);
+    });
   });
 });
 
