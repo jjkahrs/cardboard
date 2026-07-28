@@ -8,6 +8,7 @@ import { CatalogScreen } from './screens/authoring/CatalogScreen';
 import { DecksScreen } from './screens/authoring/DecksScreen';
 import { EventsScreen } from './screens/authoring/EventsScreen';
 import { PoolsScreen } from './screens/authoring/PoolsScreen';
+import { PriorityWindowsScreen } from './screens/authoring/PriorityWindowsScreen';
 import { RuleSetEditorScreen } from './screens/authoring/RuleSetEditorScreen';
 import { RuleSetsScreen } from './screens/authoring/RuleSetsScreen';
 import { StateMachineScreen } from './screens/authoring/StateMachineScreen';
@@ -38,6 +39,9 @@ export const routes: RouteObject[] = [
       { path: 'events', element: <EventsScreen /> },
       { path: 'rules', element: <RuleSetsScreen /> },
       { path: 'rules/:ruleSetId', element: <RuleSetEditorScreen /> },
+      // Between rules and states (§6.12): a window is referenced BY rules and references nothing
+      // itself, and the rail reads in authoring order.
+      { path: 'priority', element: <PriorityWindowsScreen /> },
       { path: 'states', element: <StateMachineScreen /> },
     ],
   },

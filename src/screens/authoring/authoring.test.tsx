@@ -9,12 +9,16 @@
 import { useState } from 'react';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ValueRefPicker } from '../../components/criteria/ValueRefPicker';
-import type { GameDefinition, RuleSet, ValueRef } from '../../engine/types';
+import type { GameDefinition, PriorityWindow, RuleSet, ValueRef } from '../../engine/types';
 import { createEmptyDefinition, useDefinitionStore } from '../../stores/definitionStore';
+import { Rail } from '../AuthoringLayout';
+import { bucketErrors } from '../surfaces';
 import { EventsScreen } from './EventsScreen';
 import { PoolsScreen } from './PoolsScreen';
+import { PollOrderPreview, PriorityWindowsScreen } from './PriorityWindowsScreen';
 import { ZonesScreen } from './ZonesScreen';
 import { uniqueName } from './uniqueName';
 
@@ -365,5 +369,236 @@ describe('uniqueName', () => {
     expect(uniqueName(['New zone', 'New zone 2', 'New zone 3'], 'New zone')).toBe('New zone 4');
     // A gap is not filled: the point is a free name, not the smallest free number.
     expect(uniqueName(['New zone', 'New zone 3'], 'New zone')).toBe('New zone 2');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 41 — Priority windows (§4.6, §6.9)
+// ---------------------------------------------------------------------------
+
+describe('<PriorityWindowsScreen>', () => {
+  const addWindows = async (n: number) => {
+    const user = userEvent.setup();
+    render(<PriorityWindowsScreen />);
+    for (let i = 0; i < n; i += 1)
+      await user.click(screen.getByRole('button', { name: 'Add window' }));
+    return user;
+  };
+
+  /** A rule set with only the field under test filled in. */
+  const ruleWith = (over: Partial<RuleSet>): RuleSet => ({
+    id: 'rs1',
+    name: 'Block',
+    trigger: 'onCardPlayed',
+    stateFilter: null,
+    condition: null,
+    effects: [],
+    priority: 0,
+    onRejection: 'continue',
+    modifier: null,
+    continuous: false,
+    replaces: null,
+    activation: null,
+    ...over,
+  });
+
+  const aWindow: PriorityWindow = {
+    id: 'w1',
+    name: 'Block window',
+    start: 'active',
+    direction: 'forward',
+    includeStart: true,
+    passesToClose: null,
+    collapseEmptyOffers: true,
+  };
+
+  it('adds a window with §4.6 defaults, selects it, and never proposes a name twice', async () => {
+    const user = await addWindows(1);
+    expect(definition().priorityWindows[0]).toMatchObject({
+      name: 'New window',
+      start: 'active',
+      direction: 'forward',
+      includeStart: true,
+      passesToClose: null,
+      collapseEmptyOffers: true,
+    });
+    expect(screen.getByRole('heading', { name: 'New window' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Add window' }));
+    expect(definition().priorityWindows.map((w) => w.name)).toEqual(['New window', 'New window 2']);
+  });
+
+  it('renames through the store', async () => {
+    const user = await addWindows(1);
+    const input = screen.getByRole('textbox', { name: /rename new window/i });
+    await user.clear(input);
+    await user.type(input, 'MTG priority{Enter}');
+
+    expect(definition().priorityWindows[0].name).toBe('MTG priority');
+  });
+
+  it('edits start, direction and includeStart, and summarises them in the row', async () => {
+    const user = await addWindows(1);
+    await user.keyboard('{Escape}'); // Leave the name field the add opened.
+
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Poll starts at' }),
+      'triggeringSeat'
+    );
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Direction' }), 'backward');
+    await user.click(screen.getByRole('checkbox', { name: 'Include the starting seat' }));
+
+    expect(definition().priorityWindows[0]).toMatchObject({
+      start: 'triggeringSeat',
+      direction: 'backward',
+      includeStart: false,
+    });
+    expect(rowsOf('Windows')[0]).toHaveTextContent(
+      /from the triggering seat · backward · skips the start · closes on a full table pass/
+    );
+  });
+
+  it('deletes a window nothing points at', async () => {
+    const user = await addWindows(1);
+    await user.keyboard('{Escape}');
+
+    await user.click(within(rowsOf('Windows')[0]).getByRole('button', { name: 'Delete' }));
+    await user.click(screen.getByRole('button', { name: 'Delete for good' }));
+
+    expect(definition().priorityWindows).toEqual([]);
+  });
+
+  // §6.9's delete protection, over two of `walkRefs`' three reference sites.
+  it.each([
+    [
+      'a rule’s activation window',
+      ruleWith({
+        activation: { costCheck: null, cost: [], window: 'w1', perInstance: false, label: 'Block' },
+      }),
+    ],
+    ['an openPriority effect', ruleWith({ effects: [{ kind: 'openPriority', window: 'w1' }] })],
+  ])('refuses to delete a window still used by %s, and names the referrer', async (_what, rule) => {
+    useDefinitionStore
+      .getState()
+      .setDefinition(blank({ priorityWindows: [aWindow], ruleSets: [rule] }));
+    const user = userEvent.setup();
+    render(<PriorityWindowsScreen />);
+
+    await user.click(within(rowsOf('Windows')[0]).getByRole('button', { name: 'Delete' }));
+
+    expect(screen.getByText(/Used by Block/)).toBeInTheDocument();
+    expect(definition().priorityWindows).toHaveLength(1);
+  });
+
+  // §6.9 — `passesToClose: null` is a checkbox, not a number field with a magic empty state.
+  it('swaps the pass count for null, and writes null rather than 0 or ""', async () => {
+    const user = await addWindows(1);
+    await user.keyboard('{Escape}');
+
+    const wholeTable = screen.getByRole('checkbox', { name: 'Poll the whole table instead' });
+    expect(wholeTable).toBeChecked();
+    expect(screen.queryByRole('spinbutton', { name: 'Consecutive passes to close' })).toBeNull();
+
+    await user.click(wholeTable);
+    expect(definition().priorityWindows[0].passesToClose).toBe(1);
+
+    const count = screen.getByRole('spinbutton', { name: 'Consecutive passes to close' });
+    await user.clear(count);
+    await user.type(count, '3');
+    expect(definition().priorityWindows[0].passesToClose).toBe(3);
+    expect(rowsOf('Windows')[0]).toHaveTextContent(/closes after 3 passes/);
+
+    await user.click(wholeTable);
+    // Null, not 0 and not '': the number field is gone, so there is no empty state to mean it.
+    expect(definition().priorityWindows[0].passesToClose).toBeNull();
+    expect(screen.queryByRole('spinbutton', { name: 'Consecutive passes to close' })).toBeNull();
+  });
+
+  it('shows collapseEmptyOffers as a checked, disabled checkbox that says why', async () => {
+    await addWindows(1);
+    const box = screen.getByRole('checkbox', { name: 'Skip seats with no legal response' });
+
+    expect(box).toBeChecked();
+    expect(box).toBeDisabled();
+    expect(screen.getByText(/Always on, and not editable/)).toBeInTheDocument();
+    expect(screen.getByText(/auto-passes and writes no log entry/)).toBeInTheDocument();
+  });
+});
+
+describe('<PollOrderPreview>', () => {
+  const aWindow = (over: Partial<PriorityWindow> = {}): PriorityWindow => ({
+    id: 'w1',
+    name: 'Block window',
+    start: 'active',
+    direction: 'forward',
+    includeStart: true,
+    passesToClose: null,
+    collapseEmptyOffers: true,
+    ...over,
+  });
+
+  const order = () =>
+    within(screen.getByRole('list', { name: 'Poll order' }))
+      .getAllByRole('listitem')
+      .map((li) => li.textContent);
+
+  it('asks every seat from the start, forward', () => {
+    render(<PollOrderPreview window={aWindow()} playerCount={4} />);
+    expect(order()).toEqual(['P1 start · #1', '→ P2 · #2', '→ P3 · #3', '→ P4 · #4']);
+  });
+
+  it('shows the start seat as skipped when includeStart is false, without renumbering it', () => {
+    render(<PollOrderPreview window={aWindow({ includeStart: false })} playerCount={4} />);
+    expect(order()).toEqual(['P1 start · skipped', '→ P2 · #1', '→ P3 · #2', '→ P4 · #3']);
+  });
+
+  it('walks the ring the other way when the direction is backward', () => {
+    render(<PollOrderPreview window={aWindow({ direction: 'backward' })} playerCount={4} />);
+    expect(order()).toEqual(['P1 start · #1', '→ P4 · #2', '→ P3 · #3', '→ P2 · #4']);
+  });
+
+  // §6.9 — the limit is stated, not implied: the live order comes from `seatOrder` at run time.
+  it('says out loud that it is a nominal table with nobody eliminated', () => {
+    render(<PollOrderPreview window={aWindow()} playerCount={4} />);
+    expect(screen.getByText(/nominal table of 4 seats with nobody eliminated/)).toBeInTheDocument();
+    expect(screen.getByText(/the real poll is shorter/)).toBeInTheDocument();
+  });
+});
+
+describe('the Priority rail surface', () => {
+  it('carries the window count and buckets a priorityWindows error to itself, not the game', () => {
+    expect(
+      bucketErrors(['priorityWindows.0.passesToClose: Expected number, received string'])
+    ).toEqual({ priority: ['priorityWindows.0.passesToClose: Expected number, received string'] });
+
+    // The store REFUSES to hold an invalid definition, so the rail is driven directly here — same
+    // reasoning as routing.test.tsx's badge test.
+    render(
+      <MemoryRouter>
+        <Rail
+          definition={blank({
+            priorityWindows: [
+              {
+                id: 'w1',
+                name: 'Block window',
+                start: 'active',
+                direction: 'forward',
+                includeStart: true,
+                passesToClose: null,
+                collapseEmptyOffers: true,
+              },
+            ],
+          })}
+          errors={{ priority: ['priorityWindows.0.passesToClose: Expected number'] }}
+        />
+      </MemoryRouter>
+    );
+
+    const link = within(screen.getByRole('navigation', { name: 'Authoring' })).getByRole('link', {
+      name: /Priority/,
+    });
+    expect(link).toHaveTextContent('1');
+    // Colour is never the sole carrier: the badge is joined by a counted, visually-hidden note.
+    expect(within(link).getByText('1 problem')).toBeInTheDocument();
   });
 });
