@@ -90,6 +90,8 @@ const IN_SCOPE: Criterion[] = [
   { id: 'MTG8', prose: 'Card returned to its owner\'s hand after its controller changed -> owner\'s hand, not the controller\'s', expected: 'effects.test.ts' },
   { id: 'V1', prose: '5 seats; the predator of the triggering card\'s owner resolves relative to that seat, not the active seat', expected: 'seats.test.ts' },
   { id: 'V9', prose: 'Unique card contested; the controller changes without changing which zone instance holds it', expected: 'effects.test.ts' },
+  // v2 §9.1 — per-instance tags.
+  { id: 'SP2', prose: 'A runtime tag added by an effect and absent from the template reads true in criteria, and false once removed — asserted via effectiveTags(), not template.tags', expected: 'criteria.test.ts, effects.test.ts' },
 ];
 
 // Every criterion in §9.1 now has a home: step 25 landed the play screen, which was the last one

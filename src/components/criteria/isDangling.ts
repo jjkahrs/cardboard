@@ -20,8 +20,10 @@ export function isDangling(ref: ValueRef, def: GameDefinition): boolean {
       return !def.zones.some((z) => z.id === ref.zone.zoneId);
     case 'cardIndex':
       return !allIndexes(def).some(({ index }) => index.id === ref.indexId);
-    // Reads `seatOrder.length` — no authored id, so it can never dangle.
+    // `activeSeatCount` reads `seatOrder.length`; a tag is a free-form string declared nowhere
+    // (§4.3). Neither carries an authored id, so neither can dangle.
     case 'activeSeatCount':
+    case 'cardTag':
       return false;
   }
 }

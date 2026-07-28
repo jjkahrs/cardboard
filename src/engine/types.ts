@@ -114,6 +114,12 @@ export type ValueRef =
   | { kind: 'cardIndex'; card: CardRef; indexId: Id }
   | { kind: 'zoneCount'; zone: ZoneRef }
   /**
+   * §4.2 — resolves to a BOOLEAN, read through `effectiveTags()` and never `template.tags`. Tags
+   * became per-instance in §4.3, so a criterion reading the template would be blind to every tag
+   * `setTag` has added or removed on this particular copy.
+   */
+  | { kind: 'cardTag'; card: CardRef; tag: string }
+  /**
    * §4.2 — `seatOrder.length`, NOT `playerCount`. Storage stays dense and full-length (§3.5), so
    * this is the only reading of "table size" that is still correct after an oust, and it needs no
    * per-game configuration to be so.
@@ -303,6 +309,11 @@ export type Effect =
    * zone instances and cards all stay, and `finished` is untouched. Elimination is not session end.
    */
   | { kind: 'eliminateSeat'; seat: SeatRef }
+  /**
+   * §4.3 — adds or removes a tag on the INSTANCE. `template.tags` is only ever the seed, so this
+   * never edits the definition that every other copy of the card shares.
+   */
+  | { kind: 'setTag'; target: TargetSelector; tag: string; on: boolean }
   /**
    * §4.3 — overrides the holding zone's seat for `controllerOf`. `null` clears the override, so
    * control reverts to being derived from wherever the card currently sits.

@@ -97,6 +97,8 @@ function labelOf(ref: ValueRef, def: GameDefinition): string {
     }
     case 'activeSeatCount':
       return 'active seats';
+    case 'cardTag':
+      return `tag "${ref.tag}"(${cardLabel(ref.card)})`;
   }
 }
 

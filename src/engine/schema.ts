@@ -113,6 +113,8 @@ export const ValueRefSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('pool'), poolId: IdSchema, seat: SeatRefSchema.nullable() }),
   z.object({ kind: z.literal('cardIndex'), card: CardRefSchema, indexId: IdSchema }),
   z.object({ kind: z.literal('zoneCount'), zone: ZoneRefSchema }),
+  /** §4.2 — boolean. `tag` is free-form like `fireEvent.name`: tags are declared nowhere. */
+  z.object({ kind: z.literal('cardTag'), card: CardRefSchema, tag: z.string() }),
   z.object({ kind: z.literal('activeSeatCount') }),
 ]);
 
@@ -266,6 +268,12 @@ export const EffectSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('fireEvent'), name: z.string() }),
   z.object({ kind: z.literal('forceTransition'), toStateId: IdSchema }),
   z.object({ kind: z.literal('eliminateSeat'), seat: SeatRefSchema }),
+  z.object({
+    kind: z.literal('setTag'),
+    target: TargetSelectorSchema,
+    tag: z.string(),
+    on: z.boolean(),
+  }),
   z.object({
     kind: z.literal('setController'),
     target: TargetSelectorSchema,
@@ -426,6 +434,11 @@ function checkValueRef(v: z.infer<typeof ValueRefSchema>, p: Path, r: Refs): voi
     case 'zoneCount':
       checkZoneRef(v.zone, [...p, 'zone'], r);
       break;
+    // `tag` names nothing declared (§4.3 — tags are free-form strings), but the CardRef it reads
+    // from can still carry a ZoneRef that was deleted from under it.
+    case 'cardTag':
+      checkCardRef(v.card, [...p, 'card'], r);
+      break;
     case 'literal':
     case 'activeSeatCount':
       break;
@@ -492,6 +505,7 @@ function checkEffect(e: Effect, p: Path, r: Refs): void {
     case 'flipCard':
     case 'rotateCard':
     case 'destroyCards':
+    case 'setTag':
       checkSelector(e.target, [...p, 'target'], r);
       break;
     case 'createCard':

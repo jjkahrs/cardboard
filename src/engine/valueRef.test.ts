@@ -614,6 +614,50 @@ describe('resolveValueRef', () => {
   });
 
   // -------------------------------------------------------------------------
+  // cardTag — §4.2, §4.3. A BOOLEAN, read through effectiveTags.
+  // -------------------------------------------------------------------------
+
+  describe('cardTag', () => {
+    const tagged = (tags: string[]): PlayState =>
+      makeState(2, 0, { cards: { c1: { ...card('c1'), tags } } });
+
+    it('resolves true when the instance carries the tag', () => {
+      expect(
+        resolveValueRef({ kind: 'cardTag', card: { kind: 'instance', id: 'c1' }, tag: 'enchanted' }, tagged(['enchanted']), makeCtx(), makeDef())
+      ).toEqual({ ok: true, values: [true], quantifier: 'every' });
+    });
+
+    it('a tag the card does not carry is false, not MISSING_REFERENT', () => {
+      // Unlike a card Index, a tag has no declaration to dangle from — "is this tagged" has to be
+      // askable of the cards that aren't, or the ref is only usable where the answer is known.
+      expect(
+        resolveValueRef({ kind: 'cardTag', card: { kind: 'instance', id: 'c1' }, tag: 'enchanted' }, tagged([]), makeCtx(), makeDef())
+      ).toEqual({ ok: true, values: [false], quantifier: 'every' });
+    });
+
+    it('reads the INSTANCE, not the template — a template tag the instance lost reads false', () => {
+      const def = makeDef({
+        templates: [{ id: 't1', name: 'T', marquee: 'T', faceIcon: 'sword', borderColor: '#000', tags: ['creature'], indexes: [], ruleSetIds: [], rulesTextOverride: null }],
+      });
+      expect(
+        resolveValueRef({ kind: 'cardTag', card: { kind: 'instance', id: 'c1' }, tag: 'creature' }, tagged([]), makeCtx(), def)
+      ).toEqual({ ok: true, values: [false], quantifier: 'every' });
+    });
+
+    it('propagates the CardRef failure rather than answering false', () => {
+      const res = resolveValueRef({ kind: 'cardTag', card: { kind: 'triggering' }, tag: 'x' }, tagged([]), makeCtx(), makeDef());
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.reason).toBe('UNBOUND_REF');
+    });
+
+    it('a dead instance ref is TARGET_GONE, not false', () => {
+      const res = resolveValueRef({ kind: 'cardTag', card: { kind: 'instance', id: 'ghost' }, tag: 'x' }, tagged([]), makeCtx(), makeDef());
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.reason).toBe('TARGET_GONE');
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // activeSeatCount — §3.5, §4.2
   // -------------------------------------------------------------------------
 

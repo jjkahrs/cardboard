@@ -12,8 +12,12 @@ import { applyEffect, canMove, clampValue, type EffectContext } from './effects'
 import { createPlayState } from './setup';
 import { zoneKey } from './valueRef';
 import { controllerOf, ownerOf } from './seats';
+import { evalCriteria } from './criteria';
+import { effectiveTags } from './modifiers';
+import { resolveTargets } from './targets';
 import { ACTIVE_PLAYER_POOL_ID } from './types';
 import type {
+  CriteriaNode,
   Effect,
   EventName,
   GameValue,
@@ -861,6 +865,143 @@ describe('prompt selectors', () => {
 // ---------------------------------------------------------------------------
 // Cross-cutting: nothing here dispatches, and every rejection leaves state alone
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// setTag, and ValueRef{kind:'cardTag'} — §4.3, §4.5. Tags are PER-INSTANCE.
+// ---------------------------------------------------------------------------
+
+describe('setTag (§4.3)', () => {
+  /** Deliberately absent from every template in `duel` — SP2 is only a proof if it is. */
+  const ENCHANTED = 'enchanted';
+
+  const onField = (): Id => {
+    const [id] = h.state.zones[DECK0].cardIds.splice(0, 1);
+    h.state.zones[FIELD].cardIds.push(id);
+    return id;
+  };
+
+  const setTag = (tag: string, on: boolean): Effect => ({
+    kind: 'setTag',
+    target: { kind: 'topOfZone', zone: { zoneId: BATTLEFIELD, seat: null }, count: lit(1) },
+    tag,
+    on,
+  });
+
+  const hasTag = (id: Id, tag: string): CriteriaNode => ({
+    kind: 'criteria',
+    left: { kind: 'cardTag', card: { kind: 'instance', id }, tag },
+    op: '=',
+    right: lit(true),
+  });
+
+  // AC: SP2 — the whole cycle in one test, read through `evalCriteria` on the criteria side and
+  // `effectiveTags` on the state side. `template.tags` is asserted UNCHANGED at every step: if the
+  // effect wrote there instead, both reads would still pass and every other copy of the card in the
+  // definition would silently gain the tag.
+  it('SP2: a tag absent from the template reads false, true once set, false once cleared', () => {
+    const id = onField();
+    const template = duel.templates.find((t) => t.id === h.state.cards[id].templateId);
+    expect(template?.tags).not.toContain(ENCHANTED);
+
+    const read = () => evalCriteria(hasTag(id, ENCHANTED), h.state, h.ec.ctx, duel).value;
+
+    expect(read()).toBe(false);
+
+    expect(applyEffect(setTag(ENCHANTED, true), h.ec)).toEqual({ ok: true });
+    expect(read()).toBe(true);
+    expect(effectiveTags(h.state, duel, id)).toContain(ENCHANTED);
+    expect(template?.tags).not.toContain(ENCHANTED);
+
+    expect(applyEffect(setTag(ENCHANTED, false), h.ec)).toEqual({ ok: true });
+    expect(read()).toBe(false);
+    expect(effectiveTags(h.state, duel, id)).not.toContain(ENCHANTED);
+    expect(template?.tags).not.toContain(ENCHANTED);
+  });
+
+  it('a runtime tag makes the card selectable by taggedInZone, which reads effectiveTags', () => {
+    const id = onField();
+    applyEffect(setTag(ENCHANTED, true), h.ec);
+    expect(
+      resolveTargets({ kind: 'taggedInZone', zone: { zoneId: BATTLEFIELD, seat: null }, tag: ENCHANTED }, h.state, h.ec.ctx, duel)
+    ).toMatchObject({ ok: true, cardIds: [id] });
+  });
+
+  it('logs one change line per card carrying the tag list either side', () => {
+    const id = onField();
+    const before = [...h.state.cards[id].tags];
+    applyEffect(setTag(ENCHANTED, true), h.ec);
+    expect(changeLines(h.lines)).toHaveLength(1);
+    expect(changeLines(h.lines)[0].change).toEqual({
+      path: `cards.${id}.tags`,
+      before,
+      after: [...before, ENCHANTED],
+    });
+    expect(messages(h.lines)).toContain(`tag "${ENCHANTED}" added`);
+  });
+
+  it('is a set, not a list: tagging twice adds one entry and one removal clears it (§5.1)', () => {
+    const id = onField();
+    applyEffect(setTag(ENCHANTED, true), h.ec);
+    h.lines.length = 0;
+    expect(applyEffect(setTag(ENCHANTED, true), h.ec)).toEqual({ ok: true });
+    expect(changeLines(h.lines)).toEqual([]); // no-op write, no change line
+    expect(h.state.cards[id].tags.filter((t) => t === ENCHANTED)).toHaveLength(1);
+
+    applyEffect(setTag(ENCHANTED, false), h.ec);
+    expect(h.state.cards[id].tags).not.toContain(ENCHANTED);
+  });
+
+  it('removing a tag the card never had is a no-op that logs no change', () => {
+    onField();
+    expect(applyEffect(setTag(ENCHANTED, false), h.ec)).toEqual({ ok: true });
+    expect(changeLines(h.lines)).toEqual([]);
+  });
+
+  it('removes a tag the card inherited from its template without touching the template', () => {
+    const [id] = idsOfTemplate(h.state, GRUNT);
+    h.state.zones[FIELD].cardIds.push(id);
+    expect(h.state.cards[id].tags).toContain(CREATURE_TAG);
+
+    applyEffect(setTag(CREATURE_TAG, false), h.ec);
+
+    expect(effectiveTags(h.state, duel, id)).not.toContain(CREATURE_TAG);
+    // Every OTHER Grunt still reads as a creature — the seed was copied, not shared.
+    const other = idsOfTemplate(h.state, GRUNT).find((o) => o !== id);
+    expect(effectiveTags(h.state, duel, other as Id)).toContain(CREATURE_TAG);
+    expect(duel.templates.find((t) => t.id === GRUNT)?.tags).toContain(CREATURE_TAG);
+  });
+
+  it('rejects the whole batch when a target no longer exists, tagging nothing', () => {
+    const id = onField();
+    const survivor = onField();
+    delete h.state.cards[id];
+    const result = applyEffect(
+      { kind: 'setTag', target: { kind: 'allInZone', zone: { zoneId: BATTLEFIELD, seat: null } }, tag: ENCHANTED, on: true },
+      h.ec
+    );
+    expect(result).toMatchObject({ ok: false, reason: 'TARGET_GONE' });
+    expect(h.state.cards[survivor].tags).not.toContain(ENCHANTED);
+  });
+
+  it('refuses an unanswered prompt rather than tagging the candidate set', () => {
+    onField();
+    const result = applyEffect(
+      {
+        kind: 'setTag',
+        target: {
+          kind: 'prompt',
+          from: { kind: 'allInZone', zone: { zoneId: BATTLEFIELD, seat: null } },
+          count: lit(1),
+          promptText: 'Choose',
+        },
+        tag: ENCHANTED,
+        on: true,
+      },
+      h.ec
+    );
+    expect(result).toMatchObject({ ok: false, reason: 'AWAITING_PROMPT' });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // setController, and the owner / controller / holder split — §4.3

@@ -151,6 +151,8 @@ export function describeValueRef(ref: ValueRef, def: GameDefinition): string {
       return `the number of cards in ${zonePhrase(def, ref.zone)}`;
     case 'activeSeatCount':
       return 'the number of players still in the game';
+    case 'cardTag':
+      return `whether ${describeCardRef(def, ref.card)} is tagged "${ref.tag}"`;
   }
 }
 
@@ -238,6 +240,10 @@ export function describeEffect(effect: Effect, def: GameDefinition): string {
     // real prose pass, including `sum` / `relative` / the rest of §4.1's new vocabulary.
     case 'eliminateSeat':
       return `eliminate ${seatNoun(effect.seat)}`;
+    case 'setTag':
+      return effect.on
+        ? `tag ${describeTarget(effect.target, def)} "${effect.tag}"`
+        : `remove the "${effect.tag}" tag from ${describeTarget(effect.target, def)}`;
     case 'setController':
       return effect.seat === null
         ? `give up control of ${describeTarget(effect.target, def)}`

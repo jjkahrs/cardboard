@@ -59,6 +59,8 @@ export function ValueRefPicker({ value, onChange, definition, ariaLabel }: Value
       // here for the exhaustiveness check alone.
       case 'activeSeatCount':
         return { kind: 'activeSeatCount' };
+      case 'cardTag':
+        return { kind: 'cardTag', card: { kind: 'triggering' }, tag: '' };
     }
   };
 

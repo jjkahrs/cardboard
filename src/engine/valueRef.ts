@@ -20,7 +20,7 @@ import { fail, resolveCardRef, resolveSeat, resolveZoneKeys } from './seats';
 import type { ResolutionFail } from './seats';
 // Cyclic with `modifiers.ts` by design (§5.4): a computed value is defined in terms of the refs it
 // reads. Only ever called from inside a function body, so module evaluation order is irrelevant.
-import { effectiveIndex } from './modifiers';
+import { effectiveIndex, effectiveTags } from './modifiers';
 
 // `resolveSeat` moved to seats.ts with the ring (§3.5); `zoneKey`/`parseZoneKey`/`resolveCardRef`
 // followed it in step 17, because §4.1's `owner`/`controller` make SeatRef, CardRef and ZoneRef one
@@ -137,6 +137,24 @@ export function resolveValueRef(
       // inherits this through its two `resolveValueRef` calls and needs no change of its own.
       const value = effectiveIndex(state, def, cardRes.card.id, ref.indexId);
       return { ok: true, values: [value], quantifier: 'every' };
+    }
+
+    // §4.2, §4.3. A BOOLEAN, so it is usable on either side of an `=` against a boolean literal and
+    // nowhere arithmetic. Read through `effectiveTags` for the same reason `cardIndex` reads through
+    // `effectiveIndex`: `template.tags` is the creation-time SEED, and a criterion that consulted it
+    // would answer for the card's whole print run rather than for this instance (§5.4 read site).
+    //
+    // An absent tag is `false`, not MISSING_REFERENT — unlike an index, a tag has no declaration to
+    // dangle from. `taggedInZone` already treats "not tagged" the same way, and "does this card have
+    // the tag" would otherwise be unaskable of the cards that don't.
+    case 'cardTag': {
+      const cardRes = resolveCardRef(ref.card, state, ctx);
+      if (!cardRes.ok) return cardRes;
+      return {
+        ok: true,
+        values: [effectiveTags(state, def, cardRes.card.id).includes(ref.tag)],
+        quantifier: 'every',
+      };
     }
 
     case 'zoneCount': {

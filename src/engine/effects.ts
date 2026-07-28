@@ -809,6 +809,40 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
     }
 
     // -----------------------------------------------------------------------
+    case 'setTag': {
+      const targets = resolveTargets(effect.target, state, ctx, def);
+      if (!targets.ok) return failed(ec, effect, targets);
+      if (targets.kind === 'prompt') {
+        return reject(ec, effect, 'AWAITING_PROMPT', `SetTag: prompt "${targets.promptText}" has no answer bound.`);
+      }
+      // Plan then mutate (§5.3): one dead target rejects the batch rather than half-tagging it.
+      for (const id of targets.cardIds) {
+        if (!state.cards[id]) {
+          return reject(ec, effect, 'TARGET_GONE', `SetTag("${effect.tag}") on ${id}: card no longer exists.`);
+        }
+      }
+      for (const id of targets.cardIds) {
+        const tags = state.cards[id].tags;
+        const at = tags.indexOf(effect.tag);
+        // §5.1 — tagging an already-tagged card writes nothing and logs no change. Tags are a SET,
+        // so a second `on:true` must not append a duplicate that one `on:false` then fails to clear.
+        if ((at >= 0) === effect.on) continue;
+        const before = [...tags];
+        if (effect.on) tags.push(effect.tag);
+        else tags.splice(at, 1);
+        emit(
+          ec,
+          effect,
+          'info',
+          `${id}: tag "${effect.tag}" ${effect.on ? 'added' : 'removed'}.`,
+          { path: `cards.${id}.tags`, before, after: [...tags] },
+          'change'
+        );
+      }
+      return { ok: true };
+    }
+
+    // -----------------------------------------------------------------------
     case 'setController': {
       const targets = resolveTargets(effect.target, state, ctx, def);
       if (!targets.ok) return failed(ec, effect, targets);

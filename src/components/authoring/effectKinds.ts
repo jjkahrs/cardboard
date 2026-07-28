@@ -83,6 +83,8 @@ export function defaultEffect(
       return { kind, seat: { kind: 'active' } };
     case 'setController':
       return { kind, target, seat: { kind: 'active' } };
+    case 'setTag':
+      return { kind, target, tag: '', on: true };
   }
 }
 
