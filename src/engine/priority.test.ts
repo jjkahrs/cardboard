@@ -26,10 +26,12 @@ import {
   type PriorityWindow,
   type PlayZone,
   type RuleSet,
+  type SeatRef,
   type StepResult,
 } from './types';
 import { step } from './dispatch';
 import { createPlayState } from './setup';
+import { resolveSeat } from './seats';
 import { END_NODE, FIXTURE_UPDATED_AT, START_NODE } from '../test/fixtures/empty';
 
 // ---------------------------------------------------------------------------
@@ -496,5 +498,62 @@ describe('§9.5 edge case 16 — PRIORITY_EXHAUSTED trips fast at the new defaul
     const trip = run.lines.filter((l) => l.level === 'reject' && l.message.includes('PRIORITY_EXHAUSTED'));
     expect(trip).toHaveLength(1);
     expect(run.lines.some((l) => l.level === 'override')).toBe(false); // never logged as one — it wasn't
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §9.4(b) — seat-elimination determinism. Two 5-seat sessions, same seed, seat 3 eliminated at a
+// DIFFERENT point in each (once mid-priority-window, once between transactions entirely) but
+// converging on the same eventual game state — `seatOrder` and every `relative` resolution must
+// agree regardless of WHEN within a transaction the elimination landed.
+// ---------------------------------------------------------------------------
+
+describe('§9.4(b) seat-elimination determinism — mid-window vs. between-transaction, same result', () => {
+  const triggeringCtx = { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {}, sourceCardId: null };
+  const relativeFrom = (index: number, offset: number): SeatRef => ({ kind: 'relative', from: { kind: 'seat', index }, offset });
+
+  it('converges on the same seatOrder and the same relative resolution either way', () => {
+    // Session A — eliminated MID-WINDOW, between two of the round's own auto-passes.
+    const dA = defNoResponder(5, winMtg());
+    const stateA = createPlayState(dA, 'seed-9-4-b-elim');
+    const linesA: LogLine[] = [];
+    stepUntilPriority(stateA, dA, linesA, { kind: 'fireEvent', name: 'doAnnounce', seat: 0 });
+    expect(priorityFrame(stateA).order).toEqual([0, 1, 2, 3, 4]);
+    stepOnce(stateA, dA, linesA); // seat 0 auto-passes
+    stepOnce(stateA, dA, linesA); // seat 1 auto-passes
+    stateA.seatOrder = stateA.seatOrder.filter((s) => s !== 3); // eliminated mid-round, seat 3 next up
+    stateA.eliminated.push(3);
+    let n = 0;
+    while (stateA.stack.some((f) => f.kind === 'priority')) {
+      if (++n > 10_000) throw new Error('runaway');
+      stepOnce(stateA, dA, linesA);
+    }
+
+    // Session B — same seed, same window, but eliminated only AFTER the window has fully closed and
+    // the action resolved — an entirely separate later transaction, no window open at all.
+    const dB = defNoResponder(5, winMtg());
+    const stateB = createPlayState(dB, 'seed-9-4-b-elim');
+    const runB = drive(stateB, dB, { kind: 'fireEvent', name: 'doAnnounce', seat: 0 });
+    expect(runB.result.done).toBe(true);
+    expect(stateB.stack.some((f) => f.kind === 'priority')).toBe(false); // window fully closed already
+    stateB.seatOrder = stateB.seatOrder.filter((s) => s !== 3);
+    stateB.eliminated.push(3);
+
+    // Converged: same seatOrder, same eliminated set, regardless of timing.
+    expect(stateA.seatOrder).toEqual([0, 1, 2, 4]);
+    expect(stateB.seatOrder).toEqual([0, 1, 2, 4]);
+    expect(stateA.seatOrder).toEqual(stateB.seatOrder);
+    expect(stateA.eliminated).toEqual(stateB.eliminated);
+
+    // And every `relative` resolution agrees too — "the seat after 2" and "the seat before 4" both
+    // land on the same answer in both sessions.
+    const nextAfter2A = resolveSeat(relativeFrom(2, 1), stateA, triggeringCtx);
+    const nextAfter2B = resolveSeat(relativeFrom(2, 1), stateB, triggeringCtx);
+    expect(nextAfter2A).toEqual(nextAfter2B);
+    expect(nextAfter2A).toMatchObject({ ok: true, seats: [4] });
+
+    const beforeElim0A = resolveSeat(relativeFrom(0, -1), stateA, triggeringCtx);
+    const beforeElim0B = resolveSeat(relativeFrom(0, -1), stateB, triggeringCtx);
+    expect(beforeElim0A).toEqual(beforeElim0B);
   });
 });
