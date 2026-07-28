@@ -85,6 +85,10 @@ export function defaultEffect(
       return { kind, target, seat: { kind: 'active' } };
     case 'setTag':
       return { kind, target, tag: '', on: true };
+    case 'attach':
+      return { kind, target, host: { kind: 'triggering' } };
+    case 'detach':
+      return { kind, target };
   }
 }
 

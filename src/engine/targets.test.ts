@@ -43,7 +43,7 @@ const bfRef: ZoneRef = { zoneId: BATTLEFIELD, seat: null };
 const lit = (value: number | boolean): ValueRef => ({ kind: 'literal', value });
 
 function ctx(over: Partial<TriggerContext> = {}): TriggerContext {
-  return { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {}, ...over };
+  return { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {}, sourceCardId: null, ...over };
 }
 
 /** POWER is seeded from the numeric part of the id, so the valueRef cross-check can name a card. */
@@ -363,6 +363,54 @@ describe('prompt', () => {
       promptText: 'outer',
     };
     expect(expectFail(run(sel, board())).reason).toBe('TYPE_MISMATCH');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// attachedTo / hostOf — §4.4. Attachment is a REFERENCE, so neither reads a zone.
+// ---------------------------------------------------------------------------
+
+describe('attachedTo / hostOf', () => {
+  /** c1 is the host on the Battlefield; c2 and c3 hang off it from seat 0's Hand. */
+  const attached = (): PlayState =>
+    makeState(
+      [card('c1', GRUNT), card('c2', GRUNT, { attachedTo: 'c1' }), card('c3', GRUNT, { attachedTo: 'c1' })],
+      { [BF]: ['c1'], [HAND_0]: ['c2', 'c3'] }
+    );
+
+  it('attachedTo collects every card hanging off the host, in sorted id order', () => {
+    const res = expectCards(run({ kind: 'attachedTo', host: { kind: 'instance', id: 'c1' } }, attached()));
+    expect(res.cardIds).toEqual(['c2', 'c3']);
+  });
+
+  it('hostOf resolves the other direction', () => {
+    expect(expectCards(run({ kind: 'hostOf', card: { kind: 'instance', id: 'c2' } }, attached())).cardIds).toEqual(['c1']);
+  });
+
+  it('crosses zones freely — the attachments are in a Hand, the host on the Battlefield', () => {
+    const state = attached();
+    expect(state.zones[BF].cardIds).toEqual(['c1']);
+    expect(state.zones[HAND_0].cardIds).toEqual(['c2', 'c3']);
+    // Neither selector consults a zone at all, which is what makes SP3 hold for free.
+    expect(expectCards(run({ kind: 'attachedTo', host: { kind: 'instance', id: 'c1' } }, state)).cardIds).toHaveLength(2);
+  });
+
+  it('a host with nothing attached is NO_TARGETS, and so is an unattached card', () => {
+    expect(expectFail(run({ kind: 'attachedTo', host: { kind: 'instance', id: 'c2' } }, board())).reason).toBe('NO_TARGETS');
+    expect(expectFail(run({ kind: 'hostOf', card: { kind: 'instance', id: 'c1' } }, board())).reason).toBe('NO_TARGETS');
+  });
+
+  it('propagates the inner CardRef failure rather than matching nothing', () => {
+    expect(expectFail(run({ kind: 'hostOf', card: { kind: 'triggering' } }, board())).reason).toBe('UNBOUND_REF');
+    expect(expectFail(run({ kind: 'attachedTo', host: { kind: 'instance', id: 'ghost' } }, board())).reason).toBe('TARGET_GONE');
+  });
+
+  it('reads host through CardRef{kind:"host"}, which follows the RULE\'s card and not the trigger', () => {
+    // c2 is the equipment whose rule is running; c1 is its host; c3 is what set the event off.
+    const res = run({ kind: 'hostOf', card: { kind: 'instance', id: 'c2' } }, attached(), ctx({ sourceCardId: 'c2', triggeringCardId: 'c3' }));
+    expect(expectCards(res).cardIds).toEqual(['c1']);
+    // …and the same selector spelled through `host` picks up c1's own host, of which there is none.
+    expect(expectFail(run({ kind: 'hostOf', card: { kind: 'host' } }, attached(), ctx({ sourceCardId: 'c2' }))).reason).toBe('NO_TARGETS');
   });
 });
 

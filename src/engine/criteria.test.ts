@@ -86,6 +86,7 @@ const CTX: TriggerContext = {
   zoneKey: null,
   triggeringSeat: null,
   promptAnswers: {},
+  sourceCardId: null,
 };
 
 // ValueRef shorthands

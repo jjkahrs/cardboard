@@ -264,6 +264,7 @@ describe('the reserved activePlayer pool is authorable', () => {
       zoneKey: null,
       triggeringSeat: 0,
       promptAnswers: {},
+      sourceCardId: null,
     }, def).leaves[0];
 
     expect(leaf.left.label).toBe('Active Player');
@@ -301,7 +302,7 @@ describe('a state whose entry criteria has no criteria yet', () => {
     const state = createPlayState(def, 'seed');
 
     expect(
-      findAutoTransition(state, def, { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {} })
+      findAutoTransition(state, def, { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {}, sourceCardId: null })
     ).toBeNull();
 
     // …and one real criterion makes it eligible again, so the guard is about emptiness only.
@@ -335,6 +336,7 @@ describe('a state whose entry criteria has no criteria yet', () => {
         zoneKey: null,
         triggeringSeat: 0,
         promptAnswers: {},
+        sourceCardId: null,
       })
     ).toEqual({ toStateId: target.id, eligible: [target.id] });
   });

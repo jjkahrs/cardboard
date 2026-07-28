@@ -92,6 +92,9 @@ const IN_SCOPE: Criterion[] = [
   { id: 'V9', prose: 'Unique card contested; the controller changes without changing which zone instance holds it', expected: 'effects.test.ts' },
   // v2 §9.1 — per-instance tags.
   { id: 'SP2', prose: 'A runtime tag added by an effect and absent from the template reads true in criteria, and false once removed — asserted via effectiveTags(), not template.tags', expected: 'criteria.test.ts, effects.test.ts' },
+  // v2 §9.1 — attachment. Both rows turn on attachment being a REFERENCE rather than a zone.
+  { id: 'SP3', prose: 'An attached card\'s host reference survives the host moving zones — hostOf still resolves to the same host id', expected: 'effects.test.ts (attach)' },
+  { id: 'SP4', prose: 'Host destroyed -> the attachment is not cascaded; the card stays in state.cards with attachedTo null, and the detachment logs its own change line distinct from the destroy line', expected: 'effects.test.ts (destroyCards)' },
 ];
 
 // Every criterion in §9.1 now has a home: step 25 landed the play screen, which was the last one

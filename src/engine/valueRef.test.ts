@@ -70,7 +70,7 @@ function makeState(playerCount: number, activePlayer: number, overrides: Partial
 }
 
 function makeCtx(overrides: Partial<TriggerContext> = {}): TriggerContext {
-  return { triggeringCardId: null, zoneKey: null, triggeringSeat: null, promptAnswers: {}, ...overrides };
+  return { triggeringCardId: null, zoneKey: null, triggeringSeat: null, promptAnswers: {}, sourceCardId: null, ...overrides };
 }
 
 function card(id: string, indexValues: Record<string, number | boolean> = {}): CardInstance {
@@ -610,6 +610,47 @@ describe('resolveValueRef', () => {
       const res = resolveValueRef({ kind: 'zoneCount', zone: { zoneId: 'discard', seat: null } }, state, makeCtx(), def);
       expect(res.ok).toBe(false);
       if (!res.ok) expect(res.reason).toBe('MISSING_REFERENT');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // CardRef{kind:'host'} — §4.2. Reads `ctx.sourceCardId`, never `triggeringCardId`.
+  // -------------------------------------------------------------------------
+
+  describe('host', () => {
+    const ref = { kind: 'cardTag', card: { kind: 'host' }, tag: 'x' } as const;
+    const boardWith = (self: Partial<CardInstance>, host?: Partial<CardInstance>) =>
+      makeState(2, 0, {
+        cards: {
+          c1: { ...card('c1'), ...self },
+          ...(host ? { c2: { ...card('c2'), ...host } } : {}),
+        },
+      });
+
+    it('resolves the host of the card whose RULE is running, ignoring the triggering card', () => {
+      const state = boardWith({ attachedTo: 'c2' }, { tags: ['x'] });
+      // `triggeringCardId` deliberately points at a third card: if the two refs were conflated
+      // this would resolve nothing at all, which is the failure mode this asserts against.
+      const res = resolveValueRef(ref, state, makeCtx({ sourceCardId: 'c1', triggeringCardId: 'c9' }), makeDef());
+      expect(res).toEqual({ ok: true, values: [true], quantifier: 'every' });
+    });
+
+    it('no source card at all is UNBOUND_REF — a global rule has no "self"', () => {
+      const res = resolveValueRef(ref, boardWith({ attachedTo: 'c2' }, {}), makeCtx({ triggeringCardId: 'c1' }), makeDef());
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.reason).toBe('UNBOUND_REF');
+    });
+
+    it('a source card that is attached to nothing is MISSING_REFERENT, not UNBOUND_REF', () => {
+      const res = resolveValueRef(ref, boardWith({ attachedTo: null }), makeCtx({ sourceCardId: 'c1' }), makeDef());
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.reason).toBe('MISSING_REFERENT');
+    });
+
+    it('a host id naming no card is TARGET_GONE', () => {
+      const res = resolveValueRef(ref, boardWith({ attachedTo: 'ghost' }), makeCtx({ sourceCardId: 'c1' }), makeDef());
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.reason).toBe('TARGET_GONE');
     });
   });
 

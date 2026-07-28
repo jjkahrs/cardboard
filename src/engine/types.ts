@@ -106,7 +106,13 @@ export type CardRef =
   | { kind: 'triggering' }
   | { kind: 'zoneTop'; zone: ZoneRef }
   | { kind: 'promptAnswer'; promptId: string; ordinal: number }
-  | { kind: 'instance'; id: Id };
+  | { kind: 'instance'; id: Id }
+  /**
+   * §4.2 — the host of the card THIS RULE is attached to, i.e. of `TriggerContext.sourceCardId`.
+   * Deliberately not `triggering`: an equipment's rule fires on events about other cards all the
+   * time, and "the vampire I am equipping" must not become "whatever card set this off".
+   */
+  | { kind: 'host' };
 
 export type ValueRef =
   | { kind: 'literal'; value: number | boolean }
@@ -290,7 +296,14 @@ export type TargetSelector =
   | { kind: 'bottomOfZone'; zone: ZoneRef; count: ValueRef }
   | { kind: 'allInZone'; zone: ZoneRef }
   | { kind: 'taggedInZone'; zone: ZoneRef; tag: string }
-  | { kind: 'prompt'; from: TargetSelector; count: ValueRef; promptText: string };
+  | { kind: 'prompt'; from: TargetSelector; count: ValueRef; promptText: string }
+  /**
+   * §4.4 — the two halves of the attachment relation, read in either direction. Neither consults a
+   * zone: attachment is a REFERENCE, so a host in the graveyard still has its attachments and an
+   * attached card sitting in a completely different zone still resolves its host.
+   */
+  | { kind: 'attachedTo'; host: CardRef }
+  | { kind: 'hostOf'; card: CardRef };
 
 export type Effect =
   | { kind: 'moveCards'; target: TargetSelector; to: ZoneRef; position: InsertPosition }
@@ -314,6 +327,12 @@ export type Effect =
    * never edits the definition that every other copy of the card shares.
    */
   | { kind: 'setTag'; target: TargetSelector; tag: string; on: boolean }
+  /**
+   * §4.3 — writes `attachedTo`. Moves nothing: attachment is a reference, not a zone, so an
+   * equipment attaches from wherever it already is and stays there.
+   */
+  | { kind: 'attach'; target: TargetSelector; host: CardRef }
+  | { kind: 'detach'; target: TargetSelector }
   /**
    * §4.3 — overrides the holding zone's seat for `controllerOf`. `null` clears the override, so
    * control reverts to being derived from wherever the card currently sits.
@@ -439,6 +458,17 @@ export interface TriggerContext {
   zoneKey: ZoneKey | null;
   triggeringSeat: number | null;
   promptAnswers: Record<string, Id[]>;
+  /**
+   * §4.2 — the card instance whose template carries the RULE now executing, i.e. "self". NOT the
+   * same thing as `triggeringCardId`, which is the card the EVENT is about: a global rule watching
+   * `onZoneEnter` has a triggering card and no source card, while an equipment's rule reacting to
+   * another creature entering play has both, and they are different cards.
+   *
+   * Mirrors the `rule` frame's `sourceCardId`. `dispatch.ts` stamps it per binding; every other
+   * context — a fired event, a tester's direct action — has no rule and so carries null. Only
+   * `CardRef{kind:'host'}` reads it today; `perInstance` activation (§5.8) is its second reader.
+   */
+  sourceCardId: Id | null;
 }
 
 /**

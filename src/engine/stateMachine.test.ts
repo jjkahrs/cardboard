@@ -21,7 +21,7 @@ import {
   type TriggerContext,
 } from './types';
 
-const CTX: TriggerContext = { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {} };
+const CTX: TriggerContext = { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {}, sourceCardId: null };
 
 function stateAt(stateId: string, def: GameDefinition = duel): PlayState {
   const state = createPlayState(def, 'seed');
@@ -382,7 +382,7 @@ describe('event context', () => {
     const ec = {
       state,
       def: duel,
-      ctx: { triggeringCardId: 'c1', zoneKey: 'zone_hand#0', triggeringSeat: 1, promptAnswers: {} },
+      ctx: { triggeringCardId: 'c1', zoneKey: 'zone_hand#0', triggeringSeat: 1, promptAnswers: {}, sourceCardId: null },
       depth: 2,
       override: false,
       log: () => {},

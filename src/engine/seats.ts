@@ -309,5 +309,25 @@ export function resolveCardRef(ref: CardRef, state: PlayState, ctx: TriggerConte
       const card = state.cards[ref.id];
       return card ? { ok: true, card } : fail('TARGET_GONE', `Card "${ref.id}" no longer exists.`);
     }
+    // §4.2, §4.3 — the host of the card whose rule is running, read off `ctx.sourceCardId` and
+    // deliberately NOT off `triggeringCardId`: an equipment's rule fires on events about other
+    // cards, and "the vampire I am equipping" must never collapse into "whatever set this off".
+    //
+    // Three distinct failures, none of them collapsed into one: no rule card at all (a global rule,
+    // or a direct tester action), a rule card that is not attached to anything, and a host id that
+    // no longer names a card. The last is what a dangling `attachedTo` would look like — the
+    // destroy path detaches instead of leaving one, so reaching it means something else did not.
+    case 'host': {
+      if (ctx.sourceCardId === null) {
+        return fail('UNBOUND_REF', 'Ref "host" is unbound: this rule has no source card.');
+      }
+      const self = state.cards[ctx.sourceCardId];
+      if (!self) return fail('TARGET_GONE', `Card "${ctx.sourceCardId}" no longer exists.`);
+      if (self.attachedTo === null) {
+        return fail('MISSING_REFERENT', `Ref "host": card "${self.id}" is not attached to anything.`);
+      }
+      const host = state.cards[self.attachedTo];
+      return host ? { ok: true, card: host } : fail('TARGET_GONE', `Card "${self.attachedTo}" no longer exists.`);
+    }
   }
 }

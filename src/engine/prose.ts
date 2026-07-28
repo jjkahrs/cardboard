@@ -117,6 +117,8 @@ function describeCardRef(def: GameDefinition, ref: CardRef): string {
       return 'the chosen card';
     case 'instance':
       return `card ${ref.id}`;
+    case 'host':
+      return 'the card this is attached to';
   }
 }
 
@@ -191,6 +193,10 @@ function describeTarget(selector: TargetSelector, def: GameDefinition): string {
       return `all cards tagged "${selector.tag}" in ${zonePhrase(def, selector.zone)}`;
     case 'prompt':
       return `${describeCount(selector.count, def)} chosen by the player from ${describeTarget(selector.from, def)}`;
+    case 'attachedTo':
+      return `everything attached to ${describeCardRef(def, selector.host)}`;
+    case 'hostOf':
+      return `the card ${describeCardRef(def, selector.card)} is attached to`;
   }
 }
 
@@ -240,6 +246,10 @@ export function describeEffect(effect: Effect, def: GameDefinition): string {
     // real prose pass, including `sum` / `relative` / the rest of §4.1's new vocabulary.
     case 'eliminateSeat':
       return `eliminate ${seatNoun(effect.seat)}`;
+    case 'attach':
+      return `attach ${describeTarget(effect.target, def)} to ${describeCardRef(def, effect.host)}`;
+    case 'detach':
+      return `detach ${describeTarget(effect.target, def)}`;
     case 'setTag':
       return effect.on
         ? `tag ${describeTarget(effect.target, def)} "${effect.tag}"`

@@ -190,6 +190,9 @@ export function applyTransition(
     zoneKey: null,
     triggeringSeat: ec.ctx.triggeringSeat,
     promptAnswers: ec.ctx.promptAnswers,
+    // An EVENT context, not a rule one. `advanceEvent` stamps each binding's own source card over
+    // this; carrying the transitioning rule's card here would make `host` mean the wrong card.
+    sourceCardId: null,
   };
   ec.fireEvent('onStateExit', eventCtx, fromId);
   ec.fireEvent('onStateEnter', eventCtx);

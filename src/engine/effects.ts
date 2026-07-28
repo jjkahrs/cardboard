@@ -19,7 +19,7 @@
  * pending FIFO.
  */
 
-import { parseZoneKey, resolvePoolDef, resolveSeat, resolveValueRef, zoneKey } from './valueRef';
+import { parseZoneKey, resolveCardRef, resolvePoolDef, resolveSeat, resolveValueRef, zoneKey } from './valueRef';
 import type { ResolutionFail } from './valueRef';
 import { resolveTargets } from './targets';
 // Cyclic with `modifiers.ts` (it imports `clampValue` from here) by design (§5.4). Both directions
@@ -185,6 +185,47 @@ function zoneKeyOf(state: PlayState, cardId: Id): ZoneKey | null {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Attachment — §4.3. A reference, not a zone.
+// ---------------------------------------------------------------------------
+
+/** Mutates + logs one change line. Shared by `attach`, `detach` and the destroy choke point. */
+function writeAttachment(ec: EffectContext, e: Effect, cardId: Id, to: Id | null, why: string): void {
+  const before = ec.state.cards[cardId].attachedTo;
+  if (before === to) return; // §5.1 — a no-op write logs no change
+  ec.state.cards[cardId].attachedTo = to;
+  emit(ec, e, 'info', `${cardId}: ${why}`, { path: `cards.${cardId}.attachedTo`, before, after: to }, 'change');
+}
+
+/**
+ * Every card attached to `hostId` becomes unattached, one change line each.
+ *
+ * THE choke point. It is called from the one place a card leaves `state.cards` — the `delete` in
+ * `destroyCards` — rather than from each effect that might plausibly orphan an attachment, for the
+ * reason §5.4 gives for deriving modifiers instead of materializing them: the bug always lives in
+ * the route someone forgot. Attachment is the one relation here that genuinely has to be
+ * materialized (§9.1 SP4 wants `attachedTo === null` in state and a change line in the log, neither
+ * of which a read-time fixup produces), so the discipline is instead that removal has exactly one
+ * site and the detach lives inside it. Any future removal route must go through that same site.
+ *
+ * Deliberately does NOT cascade: the attached card is not destroyed, moved, or otherwise touched.
+ * v1's standing refusal to cascade destruction implicitly (§4.3) — "destroy the creature, destroy
+ * its equipment" is authorable as a second effect and must not be assumed.
+ *
+ * Also deliberately NOT called from `moveCards`: a host changing zones changes nothing at all,
+ * which is the entire point of attachment being a reference (§9.1 SP3).
+ */
+function detachDependents(ec: EffectContext, e: Effect, hostId: Id): void {
+  // Sorted for the same reason `targets.ts`'s `attachedTo` sorts — key order is not rewind-stable,
+  // and these lines are part of the log a rewind replays.
+  const attached = Object.keys(ec.state.cards)
+    .filter((id) => ec.state.cards[id].attachedTo === hostId)
+    .sort();
+  for (const id of attached) {
+    writeAttachment(ec, e, id, null, `detached from ${hostId} (host destroyed). Not destroyed with it.`);
+  }
+}
+
 /** Index 0 is the TOP of `cardIds` (valueRef.ts and targets.ts share this). */
 function insertIndex(position: InsertPosition, length: number): number {
   if (position === 'top') return 0;
@@ -292,6 +333,7 @@ function performMove(ec: EffectContext, plan: MovePlan, toKey: ZoneKey, position
         zoneKey: src,
         triggeringSeat: parseZoneKey(src).seat,
         promptAnswers: ec.ctx.promptAnswers,
+        sourceCardId: null,
       });
     }
     ec.fireEvent('onZoneEnter', {
@@ -299,6 +341,7 @@ function performMove(ec: EffectContext, plan: MovePlan, toKey: ZoneKey, position
       zoneKey: toKey,
       triggeringSeat: toSeat,
       promptAnswers: ec.ctx.promptAnswers,
+        sourceCardId: null,
     });
   }
 }
@@ -489,6 +532,7 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
           zoneKey: to.key,
           triggeringSeat: parseZoneKey(to.key).seat,
           promptAnswers: ctx.promptAnswers,
+          sourceCardId: null,
         });
       }
       const label = `Draw ${requested} from ${zoneLabel(def, from.key)} → ${zoneLabel(def, to.key)}`;
@@ -572,6 +616,7 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
           zoneKey: null,
           triggeringSeat: w.seat,
           promptAnswers: ctx.promptAnswers,
+          sourceCardId: null,
         });
       }
       return { ok: true };
@@ -712,6 +757,7 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
           zoneKey: to.key,
           triggeringSeat: parseZoneKey(to.key).seat,
           promptAnswers: ctx.promptAnswers,
+          sourceCardId: null,
         });
       }
       emit(ec, effect, 'info', `Create ${count} ${template.name} → ${zoneLabel(def, to.key)} (${ids.join(', ')}).`);
@@ -736,6 +782,9 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
           const list = state.zones[key].cardIds;
           list.splice(list.indexOf(id), 1);
         }
+        // Before the delete, so the detach lines read against a board where the host still exists.
+        // §4.3: detaches, logs each detachment as its own change line, does NOT cascade.
+        detachDependents(ec, effect, id);
         delete state.cards[id];
         // Product ruling: a destroyed card DOES leave its zone. Because events go to the tail the
         // card is already gone when this drains, so its OWN rule is skipped (§5.9 row 16) while
@@ -746,6 +795,7 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
             zoneKey: key,
             triggeringSeat: parseZoneKey(key).seat,
             promptAnswers: ctx.promptAnswers,
+          sourceCardId: null,
           });
         }
       }
@@ -764,6 +814,7 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
         zoneKey: null,
         triggeringSeat: ctx.triggeringSeat,
         promptAnswers: ctx.promptAnswers,
+          sourceCardId: null,
       });
       emit(ec, effect, 'info', `Event "${effect.name}" fired.`, null, 'event');
       return { ok: true };
@@ -839,6 +890,49 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
           'change'
         );
       }
+      return { ok: true };
+    }
+
+    // -----------------------------------------------------------------------
+    case 'attach':
+    case 'detach': {
+      const targets = resolveTargets(effect.target, state, ctx, def);
+      if (!targets.ok) return failed(ec, effect, targets);
+      if (targets.kind === 'prompt') {
+        return reject(ec, effect, 'AWAITING_PROMPT', `${effect.kind}: prompt "${targets.promptText}" has no answer bound.`);
+      }
+
+      let hostId: Id | null = null;
+      if (effect.kind === 'attach') {
+        const host = resolveCardRef(effect.host, state, ctx);
+        if (!host.ok) return failed(ec, effect, host);
+        hostId = host.card.id;
+      }
+
+      // Plan then mutate (§5.3): one dead or illegal target rejects the batch rather than
+      // attaching half of it.
+      for (const id of targets.cardIds) {
+        if (!state.cards[id]) {
+          return reject(ec, effect, 'TARGET_GONE', `${effect.kind} ${id}: card no longer exists.`);
+        }
+        // A card hosting itself is not a loop — `hostOf` is one hop, never transitive — but it is
+        // nonsense, and the cheapest place to refuse it is before it is written.
+        if (id === hostId) {
+          return reject(ec, effect, 'TYPE_MISMATCH', `Attach ${id}: a card cannot be attached to itself.`);
+        }
+      }
+      for (const id of targets.cardIds) {
+        writeAttachment(
+          ec,
+          effect,
+          id,
+          hostId,
+          hostId === null ? 'detached.' : `attached to ${hostId}.`
+        );
+      }
+      // Nothing moves. §4.3: attachment is a reference, so the card stays exactly where it is and
+      // no onZoneEnter/onZoneExit fires. A game that wants the equipment to follow its host into
+      // play authors a `moveCards` next to this one.
       return { ok: true };
     }
 

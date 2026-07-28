@@ -20,7 +20,7 @@ import type {
   ZoneKey,
   ZoneRef,
 } from './types';
-import { type ResolutionFail, resolveSeat, resolveValueRef, zoneKey } from './valueRef';
+import { type ResolutionFail, resolveCardRef, resolveSeat, resolveValueRef, zoneKey } from './valueRef';
 // Cyclic with `modifiers.ts` (it calls `resolveTargets` for a modifier's scope) by design (§5.4).
 // Function-body calls only, so module evaluation order never matters.
 import { effectiveTags } from './modifiers';
@@ -210,6 +210,30 @@ export function resolveTargets(
         if (effectiveTags(state, def, id).includes(sel.tag)) ids.push(id);
       }
       return selection(ids, ids.length, sel.kind, state);
+    }
+
+    // §4.4 — the attachment relation, read in both directions. Neither arm consults a zone: an
+    // attachment is a REFERENCE, so a host sitting in a graveyard still has its attachments and an
+    // attached card in some other zone entirely still resolves its host.
+    case 'attachedTo': {
+      const hostRes = resolveCardRef(sel.host, state, ctx);
+      if (!hostRes.ok) return hostRes;
+      // Sorted, not in `Object.keys` order: a rewind re-adds a deleted card at the END of the key
+      // order, so insertion order is not stable across the one operation the whole log exists for.
+      // Lexicographic on the id is (`c10` before `c2`), which is what determinism needs here.
+      const ids = Object.keys(state.cards)
+        .filter((id) => state.cards[id].attachedTo === hostRes.card.id)
+        .sort();
+      return selection(ids, ids.length, sel.kind, state);
+    }
+
+    case 'hostOf': {
+      const cardRes = resolveCardRef(sel.card, state, ctx);
+      if (!cardRes.ok) return cardRes;
+      const hostId = cardRes.card.attachedTo;
+      // Not attached is NO_TARGETS via `selection` below — the same "matched 0 cards" a
+      // `taggedInZone` over an untagged zone produces, and a rule-legal refusal rather than an error.
+      return selection(hostId === null ? [] : [hostId], 1, sel.kind, state);
     }
 
     case 'prompt': {

@@ -9,6 +9,7 @@ const EMPTY_CTX: TriggerContext = {
   zoneKey: null,
   triggeringSeat: null,
   promptAnswers: {},
+  sourceCardId: null,
 };
 
 /** A `settle` frame is the smallest arm of the union — use it wherever the payload is irrelevant. */

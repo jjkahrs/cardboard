@@ -171,7 +171,7 @@ function makeState(cards: CardInstance[], zones: Record<string, Id[]>): PlayStat
   };
 }
 
-const ctx: TriggerContext = { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {} };
+const ctx: TriggerContext = { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {}, sourceCardId: null };
 
 function effectContext(state: PlayState, def: GameDefinition): EffectContext {
   const lines: LogLine[] = [];

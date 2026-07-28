@@ -58,6 +58,7 @@ const ctx: TriggerContext = {
   zoneKey: null,
   triggeringSeat: null,
   promptAnswers: {},
+  sourceCardId: null,
 };
 
 /** The single seat a ref resolved to, or the reject reason. Keeps the assertions one line each. */

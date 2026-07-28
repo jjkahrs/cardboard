@@ -17,6 +17,9 @@ export const prompts = (selector: TargetSelector): boolean => selector.kind === 
 export function danglingTarget(selector: TargetSelector, definition: GameDefinition): boolean {
   if (selector.kind === 'prompt') return danglingTarget(selector.from, definition);
   if (selector.kind === 'triggeringCard') return false;
+  // §4.4's attachment selectors name a card, not a zone. The CardRef inside can still carry a
+  // deleted zone via `zoneTop`; descending into it is step 19's pass, not this chip's.
+  if (selector.kind === 'attachedTo' || selector.kind === 'hostOf') return false;
   return isDanglingZone(selector.zone, definition);
 }
 
@@ -53,5 +56,11 @@ export function defaultSelector(
         current && current.kind !== 'prompt' ? current : ({ kind: 'triggeringCard' } as const);
       return { kind: 'prompt', from, count, promptText: 'Choose a card' };
     }
+    // Deliberately absent from TARGET_KINDS above: authoring UI for §4's new unions is phase 4
+    // (§6.10). These arms exist so the exhaustiveness check keeps the build honest.
+    case 'attachedTo':
+      return { kind, host: { kind: 'triggering' } };
+    case 'hostOf':
+      return { kind, card: { kind: 'triggering' } };
   }
 }

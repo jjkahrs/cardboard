@@ -67,7 +67,7 @@ function harness(override = false): Harness {
   const ec: EffectContext = {
     state,
     def: duel,
-    ctx: { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {} },
+    ctx: { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {}, sourceCardId: null },
     depth: 0,
     override,
     log: (line) => lines.push(line),
@@ -751,13 +751,14 @@ describe('fireEvent and forceTransition', () => {
   // §5.7 binds `triggeringCard` under exactly the four CARD_BINDING_EVENTS. A custom event fired
   // from a card's rule is the shape a designer actually hits, and it must NOT inherit the card.
   it('a custom event does not inherit triggeringCard or zoneKey, but keeps the seat', () => {
-    h.ec.ctx = { triggeringCardId: 'c7', zoneKey: HAND0, triggeringSeat: 1, promptAnswers: { p: ['c7'] } };
+    h.ec.ctx = { triggeringCardId: 'c7', zoneKey: HAND0, triggeringSeat: 1, promptAnswers: { p: ['c7'] }, sourceCardId: null };
     applyEffect({ kind: 'fireEvent', name: 'resonate' }, h.ec);
     expect(h.events[0].ctx).toEqual({
       triggeringCardId: null,
       zoneKey: null,
       triggeringSeat: 1,
       promptAnswers: { p: ['c7'] },
+      sourceCardId: null,
     });
   });
 
@@ -865,6 +866,215 @@ describe('prompt selectors', () => {
 // ---------------------------------------------------------------------------
 // Cross-cutting: nothing here dispatches, and every rejection leaves state alone
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// attach / detach — §4.3. Attachment is a REFERENCE, not a zone.
+// ---------------------------------------------------------------------------
+
+describe('attach / detach (§4.3)', () => {
+  /** A host on the shared Battlefield and an "equipment" sitting in seat 0's Hand. */
+  const pair = (): { host: Id; item: Id } => {
+    const [host, item] = h.state.zones[DECK0].cardIds.splice(0, 2);
+    h.state.zones[FIELD].cardIds.push(host);
+    h.state.zones[HAND0].cardIds.push(item);
+    return { host, item };
+  };
+
+  /** Attaches everything in seat 0's Hand — which `pair()` leaves holding exactly the one item. */
+  const attach = (host: Id): Effect => ({
+    kind: 'attach',
+    target: { kind: 'allInZone', zone: { zoneId: HAND, seat: seat(0) } },
+    host: { kind: 'instance', id: host },
+  });
+
+  const hostOf = (item: Id) =>
+    resolveTargets({ kind: 'hostOf', card: { kind: 'instance', id: item } }, h.state, h.ec.ctx, duel);
+
+  it('writes attachedTo without moving the card or firing a zone event', () => {
+    const { host, item } = pair();
+    expect(applyEffect(attach(host), h.ec)).toEqual({ ok: true });
+
+    expect(h.state.cards[item].attachedTo).toBe(host);
+    expect(h.state.zones[HAND0].cardIds).toContain(item); // still exactly where it was
+    expect(h.state.zones[FIELD].cardIds).toEqual([host]);
+    expect(h.events).toEqual([]); // attachment is not a zone change
+    expect(changeLines(h.lines)[0].change).toEqual({ path: `cards.${item}.attachedTo`, before: null, after: host });
+  });
+
+  // AC: SP3 — the host moves zones and the reference does not care. This is the whole reason §4.3
+  // makes attachment a reference: had the host "carried" its attachments, this move would need
+  // teardown code in `moveCards`, and every other route out of a zone would need it too.
+  it('SP3: the host reference still resolves to the same host after the host changes zones', () => {
+    const { host, item } = pair();
+    applyEffect(attach(host), h.ec);
+    expect(hostOf(item)).toMatchObject({ ok: true, cardIds: [host] });
+
+    const moved = applyEffect(
+      {
+        kind: 'moveCards',
+        target: { kind: 'topOfZone', zone: { zoneId: BATTLEFIELD, seat: null }, count: lit(1) },
+        to: { zoneId: DISCARD, seat: seat(0) },
+        position: 'top',
+      },
+      h.ec
+    );
+
+    expect(moved).toEqual({ ok: true });
+    expect(h.state.zones[DISCARD0].cardIds).toContain(host); // the host really did move
+    expect(h.state.cards[item].attachedTo).toBe(host);
+    expect(hostOf(item)).toMatchObject({ ok: true, cardIds: [host] });
+    // And the attachment did NOT follow it — a reference is not a leash.
+    expect(h.state.zones[HAND0].cardIds).toContain(item);
+  });
+
+  // AC: SP4 — destroying the host detaches and stops there. §4.3 inherits v1's refusal to cascade
+  // destruction implicitly: "destroy the creature, destroy its equipment" is a second authored
+  // effect, never an assumption the engine makes on the designer's behalf.
+  it('SP4: destroying the host detaches without cascading, logging the detachment separately', () => {
+    const { host, item } = pair();
+    applyEffect(attach(host), h.ec);
+    h.lines.length = 0;
+
+    expect(
+      applyEffect(
+        { kind: 'destroyCards', target: { kind: 'topOfZone', zone: { zoneId: BATTLEFIELD, seat: null }, count: lit(1) } },
+        h.ec
+      )
+    ).toEqual({ ok: true });
+
+    expect(h.state.cards[host]).toBeUndefined(); // the host is gone...
+    expect(h.state.cards[item]).toBeDefined(); // ...and the attachment is not
+    expect(h.state.cards[item].attachedTo).toBeNull();
+    expect(h.state.zones[HAND0].cardIds).toContain(item); // not moved either
+
+    // One change line for the detachment, distinct from the destroy line, naming what happened.
+    const detachLine = changeLines(h.lines).find((l) => l.change?.path === `cards.${item}.attachedTo`);
+    expect(detachLine).toBeDefined();
+    expect(detachLine?.kind).toBe('change');
+    expect(detachLine?.change).toEqual({ path: `cards.${item}.attachedTo`, before: host, after: null });
+    expect(detachLine?.message).toContain('detached from');
+    const destroyLine = h.lines.find((l) => l.message.startsWith('Destroy '));
+    expect(destroyLine).toBeDefined();
+    expect(destroyLine).not.toBe(detachLine);
+  });
+
+  it('destroying the ATTACHED card leaves the host untouched — the relation is one-way', () => {
+    const { host, item } = pair();
+    applyEffect(attach(host), h.ec);
+    applyEffect(
+      { kind: 'destroyCards', target: { kind: 'topOfZone', zone: { zoneId: HAND, seat: seat(0) }, count: lit(1) } },
+      h.ec
+    );
+    expect(h.state.cards[item]).toBeUndefined();
+    expect(h.state.cards[host]).toBeDefined();
+  });
+
+  it('destroying host and attachment in ONE batch leaves no dangling reference behind', () => {
+    // The batch order is the selector's, so the attachment is deleted before its host on some
+    // boards and after it on others. Neither may leave `attachedTo` pointing at a dead card.
+    const { host } = pair();
+    applyEffect(attach(host), h.ec);
+    applyEffect(
+      { kind: 'destroyCards', target: { kind: 'allInZone', zone: { zoneId: HAND, seat: seat(0) } } },
+      h.ec
+    );
+    applyEffect(
+      { kind: 'destroyCards', target: { kind: 'allInZone', zone: { zoneId: BATTLEFIELD, seat: null } } },
+      h.ec
+    );
+    expect(Object.keys(h.state.cards).filter((id) => h.state.cards[id].attachedTo === host)).toEqual([]);
+  });
+
+  it('detach clears the reference and logs the change', () => {
+    const { host, item } = pair();
+    applyEffect(attach(host), h.ec);
+    h.lines.length = 0;
+
+    expect(
+      applyEffect({ kind: 'detach', target: { kind: 'allInZone', zone: { zoneId: HAND, seat: seat(0) } } }, h.ec)
+    ).toEqual({ ok: true });
+
+    expect(h.state.cards[item].attachedTo).toBeNull();
+    expect(changeLines(h.lines)[0].change).toEqual({ path: `cards.${item}.attachedTo`, before: host, after: null });
+  });
+
+  it('detaching an unattached card and re-attaching to the same host are both silent no-ops (§5.1)', () => {
+    const { host } = pair();
+    expect(applyEffect({ kind: 'detach', target: { kind: 'allInZone', zone: { zoneId: HAND, seat: seat(0) } } }, h.ec)).toEqual({ ok: true });
+    expect(changeLines(h.lines)).toEqual([]);
+
+    applyEffect(attach(host), h.ec);
+    h.lines.length = 0;
+    expect(applyEffect(attach(host), h.ec)).toEqual({ ok: true });
+    expect(changeLines(h.lines)).toEqual([]);
+  });
+
+  it('refuses to attach a card to itself', () => {
+    const { host } = pair();
+    const result = applyEffect(
+      {
+        kind: 'attach',
+        target: { kind: 'topOfZone', zone: { zoneId: BATTLEFIELD, seat: null }, count: lit(1) },
+        host: { kind: 'instance', id: host },
+      },
+      h.ec
+    );
+    expect(result).toMatchObject({ ok: false, reason: 'TYPE_MISMATCH' });
+    expect(h.state.cards[host].attachedTo).toBeNull();
+  });
+
+  it('propagates a failing host ref and attaches nothing', () => {
+    const { item } = pair();
+    const result = applyEffect(
+      {
+        kind: 'attach',
+        target: { kind: 'allInZone', zone: { zoneId: HAND, seat: seat(0) } },
+        host: { kind: 'host' }, // no source card in this ctx
+      },
+      h.ec
+    );
+    expect(result).toMatchObject({ ok: false, reason: 'UNBOUND_REF' });
+    expect(h.state.cards[item].attachedTo).toBeNull();
+  });
+
+  it('resolves CardRef{kind:"host"} off the RULE\'s card, not the triggering card', () => {
+    const { host, item } = pair();
+    applyEffect(attach(host), h.ec);
+    // The equipment's own rule is running; some other card set the event off.
+    h.ec.ctx = { ...h.ec.ctx, sourceCardId: item, triggeringCardId: host };
+    expect(
+      applyEffect(
+        { kind: 'setTag', target: { kind: 'hostOf', card: { kind: 'instance', id: item } }, tag: 'equipped', on: true },
+        h.ec
+      )
+    ).toEqual({ ok: true });
+    expect(h.state.cards[host].tags).toContain('equipped');
+
+    // And `host` names that same card without the test having to know its id: everything attached
+    // to "my host" is the equipment itself, which is the round trip through both directions.
+    expect(
+      resolveTargets({ kind: 'attachedTo', host: { kind: 'host' } }, h.state, h.ec.ctx, duel)
+    ).toMatchObject({ ok: true, cardIds: [item] });
+
+    // The trigger says `host`, so reading it off `triggeringCardId` would resolve nothing at all —
+    // this is the assertion that fails if the two refs are ever conflated.
+    expect(h.ec.ctx.triggeringCardId).toBe(host);
+    expect(h.state.cards[host].attachedTo).toBeNull();
+  });
+
+  it('refuses an unanswered prompt rather than attaching the candidate set', () => {
+    const { host } = pair();
+    const result = applyEffect(
+      {
+        kind: 'attach',
+        target: { kind: 'prompt', from: { kind: 'allInZone', zone: { zoneId: HAND, seat: seat(0) } }, count: lit(1), promptText: 'Choose' },
+        host: { kind: 'instance', id: host },
+      },
+      h.ec
+    );
+    expect(result).toMatchObject({ ok: false, reason: 'AWAITING_PROMPT' });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // setTag, and ValueRef{kind:'cardTag'} — §4.3, §4.5. Tags are PER-INSTANCE.

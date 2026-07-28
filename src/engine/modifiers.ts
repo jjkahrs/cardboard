@@ -182,6 +182,9 @@ function collectUncached(state: PlayState, def: GameDefinition): ActiveModifier[
         // §4.3's controllerOf: the explicit controller, else the seat of the holding zone.
         triggeringSeat: card.controller ?? parseZoneKey(zk).seat,
         promptAnswers: {},
+        // A modifier's rule genuinely IS running on this card, so `host` inside its `scope` /
+        // `condition` / `amount` means this card's host — "+1/+1 to whatever I am equipping".
+        sourceCardId: cardId,
       };
 
       if (rule.condition !== null && !evalCriteriaBool(rule.condition, state, ctx, def)) continue;

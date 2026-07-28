@@ -501,7 +501,7 @@ describe('§9.4 item 13 — immer patch coverage over every top-level PlayState 
     const base = createPlayState(testDef, SEED);
     const someCardId = Object.keys(base.cards)[0];
     const someZoneKey = Object.keys(base.zones)[0];
-    const emptyCtx = () => ({ triggeringCardId: null, zoneKey: null, triggeringSeat: null, promptAnswers: {} });
+    const emptyCtx = () => ({ triggeringCardId: null, zoneKey: null, triggeringSeat: null, promptAnswers: {}, sourceCardId: null });
 
     const mutators: Array<[string, (d: PlayState) => void]> = [
       ['definitionId', (d) => { d.definitionId = 'other'; }],

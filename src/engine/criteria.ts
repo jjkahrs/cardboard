@@ -76,6 +76,8 @@ function cardLabel(card: CardRef): string {
       return `answer ${card.promptId}[${card.ordinal}]`;
     case 'instance':
       return card.id;
+    case 'host':
+      return 'host';
   }
 }
 

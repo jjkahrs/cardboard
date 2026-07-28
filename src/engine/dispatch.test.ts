@@ -84,7 +84,7 @@ function driveEvent(state: PlayState, def: GameDefinition, name: string, trigger
   appendPending(state, {
     kind: 'event',
     name,
-    ctx: { triggeringCardId, zoneKey: null, triggeringSeat: seat, promptAnswers: {} },
+    ctx: { triggeringCardId, zoneKey: null, triggeringSeat: seat, promptAnswers: {}, sourceCardId: null },
     bindings: [],
     cursor: -1,
     parentId: null,
@@ -876,7 +876,7 @@ describe('stack and pending mechanics', () => {
     // `parentId`; renumbering on promotion breaks the loop-guard parent chain and creation order.
     const def = mini();
     const state = createPlayState(def, 'seed');
-    const ctx = { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {} };
+    const ctx = { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {}, sourceCardId: null };
     appendPending(state, { kind: 'event', name: 'a', ctx, bindings: [], cursor: -1, parentId: null, depth: 1 });
     appendPending(state, { kind: 'event', name: 'b', ctx, bindings: [], cursor: -1, parentId: null, depth: 1 });
 
@@ -895,7 +895,7 @@ describe('stack and pending mechanics', () => {
   it('pending drains FIFO, one frame per step, and only once the stack is empty', () => {
     const def = mini();
     const state = createPlayState(def, 'seed');
-    const ctx = { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {} };
+    const ctx = { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {}, sourceCardId: null };
     for (const name of ['a', 'b', 'c']) {
       appendPending(state, { kind: 'event', name, ctx, bindings: [], cursor: -1, parentId: null, depth: 1 });
     }
@@ -1276,5 +1276,90 @@ describe('card-attached bindings are self-scoped under the four card events', ()
     driveEvent(state, def, 'onStateEnter', null);
 
     expect(state.pools[N]).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CardRef{kind:'host'} end to end — §4.2. The plumbing, not the resolver.
+//
+// `host` reads `TriggerContext.sourceCardId`, which is a genuinely different card from
+// `triggeringCardId`: the event is about one card, the rule belongs to another. These tests drive
+// the real dispatcher because the binding is the only place `sourceCardId` is ever stamped, and a
+// unit test of `resolveCardRef` would pass with the plumbing missing entirely.
+// ---------------------------------------------------------------------------
+
+describe("CardRef{kind:'host'} through a real dispatch", () => {
+  const POWER_IDX = 'idx_power';
+
+  const withPower = (id: Id, ruleSetIds: Id[]): CardTemplate => ({
+    ...tpl(id, ruleSetIds),
+    indexes: [
+      {
+        id: POWER_IDX,
+        value: { type: 'integer', name: 'Power', defaultValue: 0, min: null, max: null },
+        icon: 'gi-x',
+        position: 'topLeft',
+      },
+    ],
+  });
+
+  /** "Add my host's Power to the pool" — the shape V8's discipline check has. */
+  const readHostPower = bump('rs_host', 'e', {
+    effects: [
+      {
+        kind: 'changePool',
+        poolId: N,
+        seat: null,
+        op: 'add',
+        amount: { kind: 'cardIndex', card: { kind: 'host' }, indexId: POWER_IDX },
+      },
+    ],
+  });
+
+  const def = mini({
+    zones: [sharedZone('zR')],
+    templates: [withPower('t_host', []), withPower('t_equip', [readHostPower.id])],
+    ruleSets: [readHostPower],
+  });
+
+  const ZR = zoneKey('zR', null);
+
+  /** `c${n}` hosts with Power, `c${n+1}` equipment attached to it. */
+  const equip = (state: PlayState, hostId: Id, itemId: Id, power: number) => {
+    place(state, def, ZR, 't_host', hostId);
+    place(state, def, ZR, 't_equip', itemId);
+    state.cards[hostId].indexValues[POWER_IDX] = power;
+    state.cards[itemId].attachedTo = hostId;
+  };
+
+  it("reads the host of the card carrying the rule, not the card the event is about", () => {
+    const state = emptyBoard(def);
+    equip(state, 'c1', 'c2', 3);
+
+    drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+
+    expect(state.pools[N]).toBe(3);
+  });
+
+  it('two copies of the same rule each read their OWN host', () => {
+    const state = emptyBoard(def);
+    equip(state, 'c1', 'c2', 3);
+    equip(state, 'c3', 'c4', 5);
+
+    drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+
+    // 8, not 6 (both read the first host) and not 10 (both read the last). One ctx per binding.
+    expect(state.pools[N]).toBe(8);
+  });
+
+  it('an unattached rule card fails MISSING_REFERENT rather than falling back to any other card', () => {
+    const state = emptyBoard(def);
+    equip(state, 'c1', 'c2', 3);
+    state.cards['c2'].attachedTo = null;
+
+    const { lines } = drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+
+    expect(state.pools[N]).toBe(0);
+    expect(lines.some((l) => l.message.includes('is not attached to anything'))).toBe(true);
   });
 });

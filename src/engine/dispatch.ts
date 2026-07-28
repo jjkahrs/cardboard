@@ -111,7 +111,8 @@ function stripChosen(ctx: TriggerContext): TriggerContext {
 }
 
 function baseCtx(state: PlayState): TriggerContext {
-  return { triggeringCardId: null, zoneKey: null, triggeringSeat: activeSeat(state), promptAnswers: {} };
+  // `sourceCardId` null: a tester's action is not a rule, so it has no "self" for `host` to read.
+  return { triggeringCardId: null, zoneKey: null, triggeringSeat: activeSeat(state), promptAnswers: {}, sourceCardId: null };
 }
 
 function makeEc(
@@ -468,7 +469,11 @@ function advanceEvent(
         // promptAnswers is copied, not aliased: promptIds are `logSeq:ruleId:effectIndex`, so two
         // bindings of the SAME rule under one event compute the same id. Sharing the map would let
         // the first binding's answer satisfy the second's prompt, which then never raises.
-        ctx: { ...frame.ctx, promptAnswers: { ...frame.ctx.promptAnswers } },
+        //
+        // `sourceCardId` is stamped HERE, and this is the only place it is ever set to a card: the
+        // event frame's ctx says which card the event is ABOUT, the binding says which card's rule
+        // is running. Two copies of one equipment bind twice and each reads its own host (§4.2).
+        ctx: { ...frame.ctx, promptAnswers: { ...frame.ctx.promptAnswers }, sourceCardId: b.sourceCardId },
       })
     );
     // Row 6: a custom event with no bound RuleSet is NOT an error.
@@ -789,6 +794,7 @@ function applyAction(
         zoneKey: key,
         triggeringSeat: key === null ? ctx.triggeringSeat : (state.zones[key]?.seat ?? ctx.triggeringSeat),
         promptAnswers: {},
+        sourceCardId: null, // a tester's move is not a rule; each binding stamps its own below
       });
       if (from) fireRoot(state, 'onZoneExit', cardCtx(from));
       fireRoot(state, 'onZoneEnter', cardCtx(to));

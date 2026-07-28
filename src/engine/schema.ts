@@ -106,6 +106,8 @@ export const CardRefSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('zoneTop'), zone: ZoneRefSchema }),
   z.object({ kind: z.literal('promptAnswer'), promptId: z.string(), ordinal: z.number().int() }),
   z.object({ kind: z.literal('instance'), id: IdSchema }),
+  /** §4.2 — resolved off `TriggerContext.sourceCardId` at runtime; carries no authored id. */
+  z.object({ kind: z.literal('host') }),
 ]);
 
 export const ValueRefSchema = z.discriminatedUnion('kind', [
@@ -217,6 +219,9 @@ export const TargetSelectorSchema: z.ZodType<TargetSelector, z.ZodTypeDef, Targe
       count: ValueRefSchema,
       promptText: z.string(),
     }),
+    /** §4.4 — the attachment relation, both directions. Neither names a zone. */
+    z.object({ kind: z.literal('attachedTo'), host: CardRefSchema }),
+    z.object({ kind: z.literal('hostOf'), card: CardRefSchema }),
   ]);
 
 export const EffectSchema = z.discriminatedUnion('kind', [
@@ -268,6 +273,8 @@ export const EffectSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('fireEvent'), name: z.string() }),
   z.object({ kind: z.literal('forceTransition'), toStateId: IdSchema }),
   z.object({ kind: z.literal('eliminateSeat'), seat: SeatRefSchema }),
+  z.object({ kind: z.literal('attach'), target: TargetSelectorSchema, host: CardRefSchema }),
+  z.object({ kind: z.literal('detach'), target: TargetSelectorSchema }),
   z.object({
     kind: z.literal('setTag'),
     target: TargetSelectorSchema,
@@ -469,6 +476,13 @@ function checkSelector(s: TargetSelector, p: Path, r: Refs): void {
       checkSelector(s.from, [...p, 'from'], r);
       checkValueRef(s.count, [...p, 'count'], r);
       break;
+    // No zone of their own, but the CardRef inside can still carry one that was deleted.
+    case 'attachedTo':
+      checkCardRef(s.host, [...p, 'host'], r);
+      break;
+    case 'hostOf':
+      checkCardRef(s.card, [...p, 'card'], r);
+      break;
     case 'triggeringCard':
       break;
   }
@@ -506,7 +520,12 @@ function checkEffect(e: Effect, p: Path, r: Refs): void {
     case 'rotateCard':
     case 'destroyCards':
     case 'setTag':
+    case 'detach':
       checkSelector(e.target, [...p, 'target'], r);
+      break;
+    case 'attach':
+      checkSelector(e.target, [...p, 'target'], r);
+      checkCardRef(e.host, [...p, 'host'], r);
       break;
     case 'createCard':
       known(r, r.templates, e.templateId, [...p, 'templateId'], 'template');
