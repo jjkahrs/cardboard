@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { produceWithPatches } from 'immer';
 import { useSessionStore } from './sessionStore';
+import { useUiStore } from './uiStore';
 import { createPlayState } from '../engine/setup';
 import { zoneKey } from '../engine/valueRef';
 import { duel, script, SCRIPT_SEED } from '../test/fixtures';
@@ -309,6 +310,30 @@ describe('dispatch — transaction loop basics', () => {
     expect(s.history[0].inverse.length).toBeGreaterThan(0);
     expect(s.log[0].seq).toBe(0);
     expect(s.state.zones[zoneKey(HAND, 0)].cardIds).toContain(cardId);
+  });
+
+  // v2 §5.9 — "uiStore gains logVerbosity, and sessionStore passes it through on every action."
+  it('reads uiStore.logVerbosity on dispatch and gates line emission with it', () => {
+    const before = useUiStore.getState().logVerbosity;
+    try {
+      const [cardId] = cardsIn(DECK, 0, 1);
+      const to = { zoneId: HAND, seat: { kind: 'seat' as const, index: 0 } };
+
+      useUiStore.getState().setLogVerbosity(1);
+      useSessionStore.getState().dispatch({ kind: 'moveCard', cardId, to, position: 'top' });
+      const atLevel1 = session().log.at(-1)!.lines;
+
+      const [cardId2] = cardsIn(DECK, 0, 1);
+      useUiStore.getState().setLogVerbosity(2);
+      useSessionStore.getState().dispatch({ kind: 'moveCard', cardId: cardId2, to, position: 'top' });
+      const atLevel2 = session().log.at(-1)!.lines;
+
+      // Same shape of action (a real move each time); level 2 shows the event/rule/change cascade
+      // level 1 doesn't.
+      expect(atLevel1.length).toBeLessThan(atLevel2.length);
+    } finally {
+      useUiStore.getState().setLogVerbosity(before);
+    }
   });
 });
 

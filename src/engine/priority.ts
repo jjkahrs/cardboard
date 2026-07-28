@@ -58,7 +58,7 @@ import type {
   StepResult,
   TriggerContext,
 } from './types';
-import { ACTIVE_PLAYER_POOL_ID } from './types';
+import { ACTIVE_PLAYER_POOL_ID, pushLine } from './types';
 import type { ResolutionFail } from './seats';
 import type { EffectContext } from './effects';
 import { evalCriteria } from './criteria';
@@ -81,7 +81,7 @@ function emit(
   message: string,
   kind: LogLine['kind'] = 'effect'
 ): void {
-  ec.log({ level, kind, message, change: null, ruleId: null, effectKind: effect.kind, depth: ec.depth });
+  ec.log({ level, kind, message, change: null, ruleId: null, effectKind: effect.kind, depth: ec.depth, visibility: null });
 }
 
 function reject(ec: EffectContext, effect: Effect, reason: RejectReason, message: string): EffectResult {
@@ -286,7 +286,7 @@ export function advancePriority(
     // Defensive — `definitionStore.ts`'s delete-protection (§8 step 21) means a window in use cannot
     // be deleted, so reaching here means something upstream pushed a dangling reference.
     pop(state);
-    lines.push({
+    pushLine(lines, {
       level: 'error',
       kind: 'effect',
       message: `Priority window "${frame.windowId}" no longer exists in this definition.`,
@@ -294,6 +294,7 @@ export function advancePriority(
       ruleId: null,
       effectKind: null,
       depth: frame.depth,
+      visibility: null,
     });
     return MORE;
   }
@@ -312,7 +313,7 @@ export function advancePriority(
   state.budget.priorityRounds += 1;
   if (state.budget.priorityRounds > def.limits.maxPriorityRounds) {
     pop(state);
-    lines.push({
+    pushLine(lines, {
       level: 'reject',
       kind: 'skip',
       message: `Priority window "${window.name}" closed: PRIORITY_EXHAUSTED (priorityRounds ${state.budget.priorityRounds} > limit ${def.limits.maxPriorityRounds}).`,
@@ -320,6 +321,7 @@ export function advancePriority(
       ruleId: null,
       effectKind: null,
       depth: frame.depth,
+      visibility: null,
     });
     resolveOnClose(frame, state);
     return MORE;
@@ -349,7 +351,7 @@ export function advancePriority(
     seat,
     legal,
   });
-  lines.push({
+  pushLine(lines, {
     level: 'info',
     kind: 'prompt',
     message: `Priority (window "${window.name}"): seat ${seat} offered ${legal.length} legal response(s).`,
@@ -357,6 +359,7 @@ export function advancePriority(
     ruleId: null,
     effectKind: null,
     depth: frame.depth,
+    visibility: null,
   });
   return SUSPENDED;
 }
@@ -371,7 +374,7 @@ const DONE: StepResult = { done: true, suspended: false, haltedByLoopGuard: fals
 export function passPriority(state: PlayState, def: GameDefinition, lines: LogLine[]): StepResult {
   const interaction = state.interaction;
   if (!interaction || interaction.kind !== 'priority') {
-    lines.push({
+    pushLine(lines, {
       level: 'reject',
       kind: 'skip',
       message: 'Pass priority ignored: no priority interaction is open.',
@@ -379,13 +382,14 @@ export function passPriority(state: PlayState, def: GameDefinition, lines: LogLi
       ruleId: null,
       effectKind: null,
       depth: 0,
+      visibility: null,
     });
     return DONE;
   }
   const head = top(state);
   if (!head || head.kind !== 'priority') {
     // Defensive — nothing pops a priority frame while it is the one holding `state.interaction`.
-    lines.push({
+    pushLine(lines, {
       level: 'error',
       kind: 'skip',
       message: 'Pass priority ignored: the priority window is gone.',
@@ -393,6 +397,7 @@ export function passPriority(state: PlayState, def: GameDefinition, lines: LogLi
       ruleId: null,
       effectKind: null,
       depth: 0,
+      visibility: null,
     });
     return SUSPENDED;
   }
@@ -403,7 +408,7 @@ export function passPriority(state: PlayState, def: GameDefinition, lines: LogLi
   // gets its own LogEntry via the ordinary top-level-action path (MTG5) instead of no entry at all.
   head.consecutivePasses += 1;
   head.cursor = (head.cursor + 1) % head.order.length;
-  lines.push({
+  pushLine(lines, {
     level: 'info',
     kind: 'prompt',
     message: `Seat ${interaction.seat} passes priority ("${window?.name ?? head.windowId}").`,
@@ -411,6 +416,7 @@ export function passPriority(state: PlayState, def: GameDefinition, lines: LogLi
     ruleId: null,
     effectKind: null,
     depth: head.depth,
+    visibility: null,
   });
   return MORE;
 }

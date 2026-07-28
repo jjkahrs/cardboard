@@ -139,7 +139,7 @@ export function manualTransitions(state: PlayState, def: GameDefinition): Machin
 // ---------------------------------------------------------------------------
 
 function line(ec: EffectContext, level: LogLine['level'], message: string): LogLine {
-  return { level, kind: 'transition', message, change: null, ruleId: null, effectKind: null, depth: ec.depth };
+  return { level, kind: 'transition', message, change: null, ruleId: null, effectKind: null, depth: ec.depth, visibility: null };
 }
 
 /**

@@ -8,12 +8,13 @@ beforeEach(() => {
 });
 
 describe('uiStore', () => {
-  it('defaults to seat 0, everything else off', () => {
+  it('defaults to seat 0, everything else off, verbosity at 2 ("rules")', () => {
     const s = useUiStore.getState();
     expect(s.viewingSeat).toBe(0);
     expect(s.revealAll).toBe(false);
     expect(s.overrideEnabled).toBe(false);
     expect(s.plainMode).toBe(false);
+    expect(s.logVerbosity).toBe(2);
   });
 
   it('setViewingSeat only changes viewingSeat', () => {
@@ -31,5 +32,11 @@ describe('uiStore', () => {
     expect(s.overrideEnabled).toBe(true);
     expect(s.plainMode).toBe(true);
     expect(s.viewingSeat).toBe(0); // untouched
+  });
+
+  it('setLogVerbosity only changes logVerbosity', () => {
+    useUiStore.getState().setLogVerbosity(1);
+    expect(useUiStore.getState().logVerbosity).toBe(1);
+    expect(useUiStore.getState().viewingSeat).toBe(0);
   });
 });

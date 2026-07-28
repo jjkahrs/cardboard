@@ -852,13 +852,23 @@ export interface LogLine {
   ruleId: Id | null;
   effectKind: Effect['kind'] | null;
   depth: number;
+  /** v2 §4.10, §6.2 — seats this line may be shown to. `null` => public. Stamped by the engine at
+   * emission, the only place that still knows which zone a line is about (`visibility.ts`). */
+  visibility: SeatId[] | null;
 }
 
 /** One entry = one user action plus its ENTIRE cascade. The rewind target. */
 export interface LogEntry {
   /** === index in log[] === index in history[] */
   seq: number;
-  cause: { kind: 'userAction' | 'engine'; description: string; seat: number | null };
+  cause: {
+    kind: 'userAction' | 'engine';
+    description: string;
+    seat: number | null;
+    /** v2 §4.10, §6.2 — same meaning as `LogLine.visibility`. Redaction hides `description`, never
+     * the entry itself (`entry.seq === index in log[] === index in history[]`). */
+    visibility: SeatId[] | null;
+  };
   lines: LogLine[];
   flags: { override?: true; haltedByLoopGuard?: true; suspended?: true };
 }
@@ -893,12 +903,71 @@ export type PlayAction =
   /** v2 §4.12, §5.11 — one seat's submission to an open `sealedChoice`. Step 29. */
   | { kind: 'submitSealed'; seat: number; optionId: string };
 
-/** The store re-enters `step` with CONTINUE until it reports done (§3.3). */
-export const CONTINUE = { kind: 'continue' } as const;
+/** v2 §5.9 — three verbosity tiers; 2 ("rules") is `uiStore`'s default. See the levels table in
+ * TECHNICAL_DESIGN_V2.md §5.9. */
+export type LogVerbosity = 1 | 2 | 3;
 
+/**
+ * §5.9's own wording — "the level has to reach the engine on both arms" — since most lines are
+ * emitted during CONTINUE re-entry, not on the initiating action. Optional so every existing
+ * headless caller (this file's `CONTINUE` constant, and the many tests that build an `action` input
+ * literal without a level) keeps compiling and keeps seeing everything: `step()` defaults an absent
+ * level to 3. Only `sessionStore.ts` — the one production caller — sets it on every call, from
+ * `uiStore.logVerbosity`.
+ */
 export type EngineInput =
-  | { kind: 'action'; action: PlayAction; override: boolean }
-  | typeof CONTINUE;
+  | { kind: 'action'; action: PlayAction; override: boolean; level?: LogVerbosity }
+  | { kind: 'continue'; level?: LogVerbosity };
+
+/** The store re-enters `step` with CONTINUE until it reports done (§3.3). */
+export const CONTINUE: EngineInput = { kind: 'continue' };
+
+// ---------------------------------------------------------------------------
+// §5.9 — the emission gate. Criteria evaluation itself never short-circuits at any level (§5.7's
+// guarantee stays); this only decides whether an already-built LogLine gets appended to `lines`,
+// which is why `PlayState` is never touched by any of it.
+//
+// `lines` is tagged with the level for the life of one transaction (`step()` does this once, every
+// call) rather than threading a `level` parameter through the dozen-plus functions between `step()`
+// and wherever a line is actually pushed — `dispatch.ts`'s own `log()` helper AND `EffectContext.log`
+// AND the handful of call sites in `activation.ts`/`priority.ts`/`pending.ts` that push directly all
+// funnel into the SAME array from otherwise-separate call graphs. A `WeakMap` keyed by the array
+// itself — the same pattern `dispatch.ts`'s `defIndex` and `modifiers.ts`'s effective-value memo
+// already use for "metadata about an object, kept OUTSIDE the object" — rather than a property on
+// the array: a property (even a Symbol-keyed one) is still visible to `toEqual`'s structural
+// comparison, which every test asserting `lines` against a plain `[]`/array literal relies on.
+// ---------------------------------------------------------------------------
+
+const verbosityByLines = new WeakMap<LogLine[], LogVerbosity>();
+
+/** Called once per `step()`, from `EngineInput.level`. */
+export function tagVerbosity(lines: LogLine[], level: LogVerbosity): void {
+  verbosityByLines.set(lines, level);
+}
+
+function verbosityOf(lines: LogLine[]): LogVerbosity {
+  return verbosityByLines.get(lines) ?? 3; // untagged callers (most tests) see everything.
+}
+
+/** §5.9's table, mechanically: rejections/overrides/errors and transitions always survive; the
+ * per-candidate/per-leaf criteria detail needs level 3; everything else (events fired, rules
+ * matched/skipped, effects applied, change lines, prompts) needs level 2. */
+function meetsVerbosity(level: LogVerbosity, entry: Pick<LogLine, 'level' | 'kind'>): boolean {
+  if (entry.level === 'reject' || entry.level === 'error' || entry.level === 'override') return true;
+  if (entry.kind === 'transition') return true;
+  if (entry.kind === 'criteria') return level >= 3;
+  return level >= 2;
+}
+
+/**
+ * The one place a LogLine is actually appended, engine-wide. `dispatch.ts`'s own `log()` helper and
+ * `EffectContext.log` (built in `dispatch.ts`'s `makeEc`) both route through this, and so do the
+ * handful of call sites in `activation.ts`/`priority.ts`/`pending.ts` that push directly rather than
+ * through an `EffectContext`.
+ */
+export function pushLine(lines: LogLine[], entry: LogLine): void {
+  if (meetsVerbosity(verbosityOf(lines), entry)) lines.push(entry);
+}
 
 /**
  * Rejection reasons. A closed union so §9.4 item 8 can table every reason × override

@@ -18,12 +18,13 @@ const line = (over: Partial<LogLine> = {}): LogLine => ({
   ruleId: 'rs_strike',
   effectKind: 'changePool',
   depth: 1,
+  visibility: null,
   ...over,
 });
 
 const entry = (seq: number, over: Partial<LogEntry> = {}): LogEntry => ({
   seq,
-  cause: { kind: 'userAction', description: `Action ${seq}`, seat: null },
+  cause: { kind: 'userAction', description: `Action ${seq}`, seat: null, visibility: null },
   lines: [line()],
   flags: {},
   ...over,

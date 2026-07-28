@@ -143,7 +143,7 @@ function emit(
   change: LogLine['change'] = null,
   kind: LogLine['kind'] = 'effect'
 ): void {
-  ec.log({ level, kind, message, change, ruleId: null, effectKind: e.kind, depth: ec.depth });
+  ec.log({ level, kind, message, change, ruleId: null, effectKind: e.kind, depth: ec.depth, visibility: null });
 }
 
 function reject(ec: EffectContext, e: Effect, reason: RejectReason, message: string): EffectResult {
@@ -159,8 +159,10 @@ const failed = (ec: EffectContext, e: Effect, f: ResolutionFail): EffectResult =
  * of a `matching` selector. Every targeted effect passes it, because a predicate selector is legal
  * in any of their `target` slots and a line nobody wired up is a line that does not exist.
  *
- * Unconditional for now: §5.9's verbosity gate is step 30's, and it goes here rather than inside
- * the resolver so that what gets EVALUATED never depends on who is listening.
+ * §5.9's verbosity gate (step 30) is wired downstream of here, not in `resolveTargets` itself, so
+ * what gets EVALUATED never depends on who is listening: this sink still fires once per candidate,
+ * unconditionally, and it is `emit` → `ec.log` → `pushLine` (`types.ts`) that decides whether the
+ * resulting `kind: 'criteria'` line survives at the current level (level 3 only, per §5.9's table).
  */
 const candidateLog =
   (ec: EffectContext, e: Effect): CandidateLog =>

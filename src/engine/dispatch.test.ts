@@ -17,6 +17,7 @@ import {
   type Id,
   type Interaction,
   type LogLine,
+  type LogVerbosity,
   type MachineState,
   type PlayAction,
   type PlayState,
@@ -77,14 +78,17 @@ interface Run {
  */
 const RUNAWAY_STEPS = 2_000_000;
 
-function drive(state: PlayState, def: GameDefinition, action: PlayAction, override = false): Run {
+function drive(state: PlayState, def: GameDefinition, action: PlayAction, override = false, level?: LogVerbosity): Run {
   const lines: LogLine[] = [];
-  let input: EngineInput = { kind: 'action', action, override };
+  let input: EngineInput = { kind: 'action', action, override, level };
   let result = step(state, input, lines, def);
   let steps = 1;
   while (!result.done) {
     if (++steps > RUNAWAY_STEPS) throw new Error('driver runaway — the loop guard did not stop the chain');
-    input = CONTINUE;
+    // §5.9 — the level reaches CONTINUE re-entry too, not just the initiating action (most lines are
+    // emitted there). A fresh object rather than reusing the shared `CONTINUE` sentinel, which has no
+    // level of its own.
+    input = { kind: 'continue', level };
     result = step(state, input, lines, def);
   }
   return { lines, result, steps };
@@ -1111,6 +1115,20 @@ describe('settle frame', () => {
     expect(state.budget.settleIterations).toBe(4);
   });
 
+  // §9.5 edge case 9 — override does NOT bypass SETTLE_DIVERGED: it is RULE_LOOP's sibling (both
+  // §5.3/§5.5 safety valves), not a move/target-destination check. `haltChain` doesn't even receive
+  // an `override` parameter — there is no code path for one to bypass — so the discriminating
+  // assertion is that the SAME action, with override:true, still trips at the SAME iteration count.
+  it('override does NOT bypass SETTLE_DIVERGED — the fixpoint still halts identically', () => {
+    const state = at(pingPong, A);
+    const { lines, result } = drive(state, pingPong, { kind: 'fireEvent', name: 'e', seat: 0 }, true);
+
+    expect(result).toEqual({ done: true, suspended: false, haltedByLoopGuard: true });
+    expect(state.budget.settleIterations).toBe(DEFAULT_MAX_SETTLE_ITERATIONS + 1);
+    expect(lines.some((l) => l.level === 'error' && l.message.includes('SETTLE_DIVERGED'))).toBe(true);
+    expect(lines.some((l) => l.level === 'override')).toBe(false); // never logged as one — it wasn't
+  });
+
   it('settleIterations resets on a new action, alongside the other two counters', () => {
     const state = at(oneShot, A);
     drive(state, oneShot, { kind: 'fireEvent', name: 'e', seat: 0 });
@@ -1743,5 +1761,118 @@ describe('sealedChoice — §5.11', () => {
       expect(lines[0].message).toContain('seat 0 → Hit');
       expect(lines[0].message).toContain('seat 1 → Dodge');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2 §5.9, step 30 — log verbosity is an EMISSION gate, never an evaluation gate
+// ---------------------------------------------------------------------------
+
+describe('§5.9 — log verbosity (step 30)', () => {
+  /** Recursive key sort — the same canonicalisation `sessionStore.test.ts`/§9.4(b) above use. */
+  function canonicalJson(value: unknown): string {
+    const sort = (v: unknown): unknown => {
+      if (Array.isArray(v)) return v.map(sort);
+      if (v !== null && typeof v === 'object') {
+        return Object.fromEntries(
+          Object.entries(v as object)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([k, x]) => [k, sort(x)])
+        );
+      }
+      return v;
+    };
+    return JSON.stringify(sort(value));
+  }
+
+  /** One of each §5.9 bucket: an event → rule → change cascade (Strike, Grunt), a rejection
+   * (TARGET_GONE, level 1's bucket), and a transition (also level 1's). */
+  function runSequenceAt(level: 1 | 2 | 3): { state: PlayState; lines: LogLine[] } {
+    const state = emptyBoard(duel, MAIN);
+    place(state, duel, HAND_0, STRIKE, 'c1');
+    place(state, duel, HAND_0, GRUNT, 'g1');
+    const lines: LogLine[] = [];
+    const move = (cardId: Id) =>
+      lines.push(
+        ...drive(state, duel, { kind: 'moveCard', cardId, to: { zoneId: BATTLEFIELD, seat: null }, position: 'top' }, false, level).lines
+      );
+    move('c1'); // Strike → HP -1: event, rule, change
+    move('g1'); // Grunt → ATTACKERS +1: event, rule, change
+    lines.push(...drive(state, duel, { kind: 'moveCard', cardId: 'zzz', to: { zoneId: BATTLEFIELD, seat: null }, position: 'top' }, false, level).lines); // TARGET_GONE
+    lines.push(...drive(state, duel, { kind: 'transition', toStateId: MAIN }, false, level).lines); // ILLEGAL_TRANSITION (MAIN has no self-edge) — still a rejection either way
+    return { state, lines };
+  }
+
+  it('Required test: the same action sequence at levels 1, 2 and 3 produces an identical PlayState', () => {
+    const atLevel1 = runSequenceAt(1);
+    const atLevel2 = runSequenceAt(2);
+    const atLevel3 = runSequenceAt(3);
+
+    expect(canonicalJson(atLevel1.state)).toBe(canonicalJson(atLevel2.state));
+    expect(canonicalJson(atLevel2.state)).toBe(canonicalJson(atLevel3.state));
+    // The lines themselves are exactly what's allowed to differ.
+    expect(atLevel1.lines.length).toBeLessThan(atLevel2.lines.length);
+  });
+
+  it('level 1 shows the rejection and no rule-cascade detail', () => {
+    const { lines } = runSequenceAt(1);
+    expect(lines.some((l) => l.kind === 'event')).toBe(false);
+    expect(lines.some((l) => l.kind === 'change')).toBe(false);
+    expect(lines.some((l) => l.level === 'reject' || l.level === 'error')).toBe(true);
+  });
+
+  it('level 2 (the default) adds the event/rule/change cascade', () => {
+    const { lines } = runSequenceAt(2);
+    expect(lines.some((l) => l.kind === 'event')).toBe(true);
+    expect(lines.some((l) => l.kind === 'change')).toBe(true);
+    expect(lines.some((l) => l.kind === 'criteria')).toBe(false);
+  });
+
+  it('level 3 adds the per-candidate criteria detail without changing which candidates are offered', () => {
+    // Reuses AC: R2's own "matching wraps the prompt" fixture, played via moveCard rather than
+    // driveEvent — dispatch.test.ts's own comment on `driveEvent` names moveCard as the equally
+    // realistic driver for a self-scoped card-binding rule.
+    const predicate: RuleSet = {
+      ...bombRule,
+      effects: [
+        {
+          kind: 'destroyCards',
+          target: {
+            kind: 'matching',
+            from: (bombRule.effects[0] as { target: TargetSelector }).target,
+            where: {
+              kind: 'criteria',
+              left: { kind: 'cardIndex', card: { kind: 'candidate' }, indexId: POWER },
+              op: '>',
+              right: { kind: 'literal', value: 2 },
+            },
+          },
+        },
+        bombRule.effects[1],
+      ],
+    };
+    const def: GameDefinition = { ...duel, ruleSets: duel.ruleSets.map((r) => (r.id === RS_BOMB ? predicate : r)) };
+
+    function playBombAt(level: 1 | 2 | 3) {
+      const state = emptyBoard(def, MAIN);
+      place(state, def, BF, GRUNT, 'g1'); // power 1 — excluded
+      place(state, def, BF, GRUNT, 'g2'); // power 3 — included
+      place(state, def, HAND_0, BOMB, 'b1');
+      state.cards['g2'].indexValues[POWER] = 3;
+      const { lines } = drive(state, def, { kind: 'moveCard', cardId: 'b1', to: { zoneId: BATTLEFIELD, seat: null }, position: 'top' }, false, level);
+      return { state, lines };
+    }
+
+    const atLevel1 = playBombAt(1);
+    const atLevel3 = playBombAt(3);
+
+    // Criteria evaluation itself never short-circuits (§5.7's guarantee) — the SAME candidate is
+    // offered regardless of who is listening.
+    expect(chooseCards(atLevel1.state.interaction).candidates).toEqual(['g2']);
+    expect(chooseCards(atLevel3.state.interaction).candidates).toEqual(['g2']);
+
+    // Only EMISSION differs.
+    expect(atLevel1.lines.some((l) => l.kind === 'criteria')).toBe(false);
+    expect(atLevel3.lines.filter((l) => l.kind === 'criteria')).toHaveLength(2); // one per candidate
   });
 });

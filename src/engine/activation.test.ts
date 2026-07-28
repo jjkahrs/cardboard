@@ -151,10 +151,12 @@ function dispatchActivate(
   state: PlayState,
   gameDef: GameDefinition,
   seat = 0,
-  cardId: string | null = null
+  cardId: string | null = null,
+  override = false,
+  ruleId = RS_ABILITY
 ): { lines: LogLine[]; result: StepResult } {
   const lines: LogLine[] = [];
-  const input: EngineInput = { kind: 'action', action: { kind: 'activate', ruleId: RS_ABILITY, cardId, seat }, override: false };
+  const input: EngineInput = { kind: 'action', action: { kind: 'activate', ruleId, cardId, seat }, override };
   let result = step(state, input, lines, gameDef);
   let n = 0;
   while (!result.done) {
@@ -355,5 +357,95 @@ describe('§9.5 edge case 12 — the runtime re-check rejects a suspending cost 
     }
     expect(state.cards[TARGET_CARD]).toBeUndefined(); // sacrificed
     expect(state.playerPools[ATTACKERS][0]).toBe(1); // the gated effect ran, because the sacrifice landed
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §9.5 edge case 9 — override × the six new v2 RejectReasons, continued from effects.test.ts's
+// `override` describe block (v1 edge case 8's table). Those five reasons don't originate in
+// `applyEffect`, so they can't join that table literally; NOT_ACTIVATABLE/SEAT_ELIMINATED/
+// COST_UNPAYABLE all live here, in `activation.ts`, the module that actually produces them.
+// SETTLE_DIVERGED and PRIORITY_EXHAUSTED get their own tests in dispatch.test.ts/priority.test.ts,
+// next to the fixtures that trip them. ACTION_COUNTERED has no producing code path anywhere in the
+// engine today (grep confirms it: declared in the `RejectReason` union and in `effects.ts`'s
+// `LEVEL_OF` map, but never actually returned by anything) — there is nothing to bypass or fail to
+// bypass, so it is not in this table. See the implementation report for the same finding.
+// ---------------------------------------------------------------------------
+
+describe('§9.5 edge case 9 — override × NOT_ACTIVATABLE / SEAT_ELIMINATED / COST_UNPAYABLE', () => {
+  const RS_WINDOWED = 'rs_windowed';
+
+  /** Gated to a priority window that is never open in these tests (no `priority` frame is ever
+   * pushed), so a free-standing `activate` always finds `windowId === null` — a mismatch with this
+   * rule's `activation.window`, which is exactly §9.5 #9's "wrong window" case. */
+  function rsWindowed(): RuleSet {
+    return {
+      ...baseRule,
+      id: RS_WINDOWED,
+      name: 'Windowed',
+      trigger: 'never',
+      effects: [{ kind: 'changePool', poolId: ATTACKERS, seat: triggeringSeat, op: 'add', amount: lit(1) }],
+      activation: { costCheck: null, cost: [], window: 'w_never_open', perInstance: false, label: 'Windowed' },
+    };
+  }
+
+  it('NOT_ACTIVATABLE (wrong window): override bypasses it, matching capacity/enterableFrom’s existing bypass', () => {
+    const gameDef = def([rsWindowed()], 0);
+
+    const rejected = dispatchActivate(board(gameDef, 0), gameDef, 0, null, false, RS_WINDOWED);
+    expect(rejected.lines.some((l) => l.message.startsWith('NOT_ACTIVATABLE'))).toBe(true);
+    expect(rejected.result.suspended).toBe(false);
+
+    const state = board(gameDef, 0);
+    const forced = dispatchActivate(state, gameDef, 0, null, true, RS_WINDOWED);
+    expect(forced.lines.some((l) => l.level === 'override')).toBe(true);
+    expect(forced.lines.some((l) => l.message.startsWith('NOT_ACTIVATABLE'))).toBe(false);
+    expect(state.playerPools[ATTACKERS][0]).toBe(1); // the ability's own effect actually ran
+  });
+
+  it('SEAT_ELIMINATED: override bypasses it — a move/target-destination check, not a precondition', () => {
+    // Targets seat 1 (fixed, never eliminated here) rather than `triggeringSeat` — §5.12 makes ANY
+    // seat ref that resolves to an eliminated seat fail its OWN SEAT_ELIMINATED independently
+    // (`seats.ts`), and rule-driven effects never inherit the action's override (§5.9 rows 1b/5c).
+    // Using `triggeringSeat` here would conflate that unrelated, correct rejection with the one
+    // this test is actually isolating: whether `activateRule`'s OWN eliminated-seat gate is
+    // bypassed by override.
+    const rsOtherSeat: RuleSet = {
+      ...baseRule,
+      id: RS_ABILITY,
+      name: 'Ability',
+      trigger: 'never',
+      effects: [{ kind: 'changePool', poolId: ATTACKERS, seat: { kind: 'seat', index: 1 }, op: 'add', amount: lit(1) }],
+      activation: { costCheck: null, cost: [], window: null, perInstance: false, label: 'Ability' },
+    };
+    const gameDef = def([rsOtherSeat], 0);
+
+    const eliminated = board(gameDef, 0);
+    eliminated.seatOrder = eliminated.seatOrder.filter((s) => s !== 0);
+    eliminated.eliminated.push(0);
+
+    const rejected = dispatchActivate(eliminated, gameDef, 0, null, false);
+    expect(rejected.lines.some((l) => l.message.startsWith('SEAT_ELIMINATED'))).toBe(true);
+    expect(rejected.result.suspended).toBe(false);
+
+    const state = board(gameDef, 0);
+    state.seatOrder = state.seatOrder.filter((s) => s !== 0);
+    state.eliminated.push(0);
+    const forced = dispatchActivate(state, gameDef, 0, null, true);
+    expect(forced.lines.some((l) => l.level === 'override')).toBe(true);
+    expect(state.playerPools[ATTACKERS][1]).toBe(1); // ran despite the ACTING seat being gone
+  });
+
+  it('COST_UNPAYABLE: override does NOT bypass it — a cost is a precondition, not a rejected move', () => {
+    const gameDef = def([rsAbility()], 0);
+    const state = board(gameDef, 0);
+    state.playerPools[POOL][0] = 1; // costCheck wants >= 2
+    const before = JSON.stringify(state);
+
+    const { lines, result } = dispatchActivate(state, gameDef, 0, null, true); // override: true
+    expect(result.suspended).toBe(false);
+    expect(lines.some((l) => l.message.startsWith('COST_UNPAYABLE'))).toBe(true);
+    expect(lines.some((l) => l.level === 'override')).toBe(false); // never bypassed, never logged as one
+    expect(JSON.stringify(state)).toBe(before); // nothing ran, override or not
   });
 });

@@ -482,4 +482,19 @@ describe('§9.5 edge case 16 — PRIORITY_EXHAUSTED trips fast at the new defaul
     expect(state.actionStack).toEqual([]);
     expect(state.playerPools[HP][0]).toBe(17);
   });
+
+  // §9.5 edge case 9 — override does NOT bypass PRIORITY_EXHAUSTED: it is RULE_LOOP's sibling (a
+  // §5.5 safety valve), not a move/target-destination check. `advancePriority` never reads an
+  // `override` flag at all — the round cap trips identically regardless.
+  it('override does NOT bypass PRIORITY_EXHAUSTED — the window still closes at the same round count', () => {
+    const d = defNoResponder(2, winMtg({ passesToClose: 1_000_000 }));
+    const state = createPlayState(d, 'seed-edge16-override');
+
+    const run = drive(state, d, { kind: 'fireEvent', name: 'doAnnounce', seat: 0 }, true); // override: true
+
+    expect(state.budget.priorityRounds).toBe(DEFAULT_MAX_PRIORITY_ROUNDS + 1);
+    const trip = run.lines.filter((l) => l.level === 'reject' && l.message.includes('PRIORITY_EXHAUSTED'));
+    expect(trip).toHaveLength(1);
+    expect(run.lines.some((l) => l.level === 'override')).toBe(false); // never logged as one — it wasn't
+  });
 });

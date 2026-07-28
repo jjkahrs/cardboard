@@ -1,9 +1,15 @@
 /**
  * TECHNICAL_DESIGN.md §6.3. Resolved above `<Card>` (in `ZoneView`) so the Catalog can render the
  * identical component with zero play-state coupling — no React, no store import here.
+ *
+ * v2 §3.6, §4.10, §6.2 add the log's own visibility surface: `zoneAudience` is what `dispatch.ts`
+ * stamps `LogLine.visibility` with at emission, and `projectLogLine`/`projectCause` are the
+ * seat-scoped projection the Phase-3 log panel (step 35) will call — computed once, engine-side, so
+ * the panel never needs a second copy of this rule (§4.10).
  */
 
-import type { CardInstance, Interaction, PlayZone, SeatId } from './types';
+import type { CardInstance, GameDefinition, Interaction, LogEntry, LogLine, PlayZone, SeatId, ZoneKey } from './types';
+import { parseZoneKey } from './valueRef';
 
 /** Returns true iff the card should render face-down for this viewer. */
 export function resolveVisibility(
@@ -37,4 +43,61 @@ export function resolveSealedSubmission(
 ): string | null {
   if (!revealAll && submitterSeat !== viewingSeat) return null;
   return interaction.submitted[submitterSeat] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// v2 §3.6, §4.10, §6.2 — the log's audience
+// ---------------------------------------------------------------------------
+
+/**
+ * Which seats may see a LINE about a card that just landed in `key` — `dispatch.ts` stamps the
+ * result on `LogLine.visibility` at emission. The RESULTING zone alone governs: once a card is
+ * sitting in a public zone its identity is knowable from the board itself regardless of where it
+ * came from, so only entering a hidden zone restricts anything. `null` => public.
+ *
+ * ponytail: only the zone the card ends up in is consulted, not the one it left — see the
+ * `visibility` comment at its one call site (`dispatch.ts`'s `moveCard` case) for why that direction
+ * is the one that actually hides information. Per-instance `faceDown` (one card individually
+ * flipped) is deliberately NOT read here, unlike `resolveVisibility` above — a log line about a
+ * whole zone's policy is not the same claim as one card's own flip state, and folding the two would
+ * make an ordinary face-down card played into a face-up zone unnamed to its own controller.
+ */
+export function zoneAudience(def: GameDefinition, key: ZoneKey): SeatId[] | null {
+  const { zoneId, seat } = parseZoneKey(key);
+  const zone = def.zones.find((z) => z.id === zoneId);
+  if (!zone) return null; // dangling — nothing here to hide from
+  if (zone.visibility === 'faceDown') return [];
+  if (zone.visibility === 'ownerOnly' && seat !== null) return [seat];
+  return null;
+}
+
+/**
+ * The seat-scoped log projection, §9.4(f) point 1 and §6.2. Redacts `message`/`change` only — NEVER
+ * the line itself, because `entry.seq === index in log[] === index in history[]` (§4.10): a log that
+ * dropped slots per seat would give different seats different rewind indices for the same moment.
+ * The Phase-3 panel (step 35) calls this for every line; nothing else needs a second copy of the
+ * `line.visibility === null || revealAll || line.visibility.includes(viewingSeat)` check.
+ */
+export function projectLogLine(
+  line: LogLine,
+  viewingSeat: SeatId,
+  revealAll: boolean
+): Pick<LogLine, 'message' | 'change'> {
+  if (revealAll || line.visibility === null || line.visibility.includes(viewingSeat)) {
+    return { message: line.message, change: line.change };
+  }
+  return { message: 'a card', change: null };
+}
+
+/** Same rule, for `LogEntry.cause` — §6.2's own example: "a redacted cause renders its header as
+ * `▸ P3 acted` — the seat is not secret, the description is." */
+export function projectCause(
+  cause: LogEntry['cause'],
+  viewingSeat: SeatId,
+  revealAll: boolean
+): Pick<LogEntry['cause'], 'description'> {
+  if (revealAll || cause.visibility === null || cause.visibility.includes(viewingSeat)) {
+    return { description: cause.description };
+  }
+  return { description: 'acted' };
 }

@@ -85,6 +85,7 @@ import type {
   TargetSelector,
   TriggerContext,
 } from './types';
+import { pushLine } from './types';
 import type { ResolutionFail } from './seats';
 import type { EffectContext } from './effects';
 import { resolveTargets } from './targets';
@@ -129,7 +130,7 @@ function emit(
   change: LogLine['change'] = null,
   kind: LogLine['kind'] = 'effect'
 ): void {
-  ec.log({ level, kind, message, change, ruleId: null, effectKind: effect.kind, depth: ec.depth });
+  ec.log({ level, kind, message, change, ruleId: null, effectKind: effect.kind, depth: ec.depth, visibility: null });
 }
 
 function reject(ec: EffectContext, effect: Effect, reason: RejectReason, message: string): EffectResult {
@@ -497,7 +498,7 @@ export function advanceResolve(
   if (!action) {
     // Nothing in this wave can reach this — a `resolve` frame is only ever pushed for an id that
     // was just read off `actionStack` — kept as a named, non-throwing failure rather than silent.
-    lines.push({
+    pushLine(lines, {
       level: 'error',
       kind: 'effect',
       message: `Resolve: pending action "${frame.actionId}" is missing from state.`,
@@ -505,6 +506,7 @@ export function advanceResolve(
       ruleId: null,
       effectKind: null,
       depth: frame.depth,
+      visibility: null,
     });
     return RESOLVE_MORE;
   }
@@ -513,7 +515,7 @@ export function advanceResolve(
   const label = `"${rule?.name ?? action.ruleId}" (${action.id})`;
 
   if (action.countered) {
-    lines.push({
+    pushLine(lines, {
       level: 'reject',
       kind: 'effect',
       message: `Resolve ${label}: countered. Removed from the stack without applying.`,
@@ -521,11 +523,12 @@ export function advanceResolve(
       ruleId: action.ruleId,
       effectKind: null,
       depth: frame.depth,
+      visibility: null,
     });
     return RESOLVE_MORE;
   }
   if (!rule) {
-    lines.push({
+    pushLine(lines, {
       level: 'error',
       kind: 'effect',
       message: `Resolve ${label}: RuleSet no longer exists in this definition.`,
@@ -533,11 +536,12 @@ export function advanceResolve(
       ruleId: action.ruleId,
       effectKind: null,
       depth: frame.depth,
+      visibility: null,
     });
     return RESOLVE_MORE;
   }
 
-  lines.push({
+  pushLine(lines, {
     level: 'info',
     kind: 'effect',
     message: `Resolve ${label}.`,
@@ -545,6 +549,7 @@ export function advanceResolve(
     ruleId: action.ruleId,
     effectKind: null,
     depth: frame.depth,
+    visibility: null,
   });
   push(state, {
     kind: 'rule',

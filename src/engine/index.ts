@@ -60,6 +60,7 @@ export type {
   LogLevel,
   LogLine,
   LogEntry,
+  LogVerbosity,
   PlayAction,
   EngineInput,
   RejectReason,
@@ -176,6 +177,11 @@ export {
 
 /** Resolved ABOVE `<Card>`, in ZoneView, so the Catalog renders the identical component. */
 export { resolveVisibility } from './visibility';
+
+/** v2 §4.10, §6.2, §9.4(f) point 1 — the log's own visibility surface: `zoneAudience` is what
+ * `dispatch.ts` stamps `LogLine.visibility` with; `projectLogLine`/`projectCause` are the
+ * seat-scoped redaction the Phase-3 log panel (step 35) consumes. */
+export { zoneAudience, projectLogLine, projectCause } from './visibility';
 
 /**
  * §5.4 — derived card values. Also resolved above `<Card>` in ZoneView (§6.8): `<Card>` has no

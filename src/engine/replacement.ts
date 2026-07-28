@@ -54,6 +54,7 @@ function emit(ec: EffectContext, effect: Effect, level: LogLevel, message: strin
     ruleId: null, // dispatch.ts's `log` wrapper fills in the CURRENTLY EXECUTING rule (H2), same as effects.ts's own `emit`
     effectKind: effect.kind,
     depth: ec.depth,
+    visibility: null,
   };
   ec.log(line);
 }

@@ -38,10 +38,13 @@ import {
   type TargetSelector,
   type TriggerContext,
   type ZoneRef,
+  pushLine,
+  tagVerbosity,
 } from './types';
 import { evalCriteria } from './criteria';
 import { scanContinuous } from './continuous';
 import { applyEffect, canMove, type EffectContext } from './effects';
+import { zoneAudience } from './visibility';
 import { appendPending, pop, promotePending, push, top } from './frames';
 import {
   clear,
@@ -88,7 +91,7 @@ const levelFor = (reason: RejectReason) => (ERROR_REASONS.includes(reason) ? 'er
 type LogInput = Pick<LogLine, 'level' | 'kind' | 'message'> & Partial<LogLine>;
 
 function log(lines: LogLine[], entry: LogInput): void {
-  lines.push({ change: null, ruleId: null, effectKind: null, depth: 0, ...entry });
+  pushLine(lines, { change: null, ruleId: null, effectKind: null, depth: 0, visibility: null, ...entry });
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +167,7 @@ export function makeEc(
     // Filling in a null ruleId/effectKind is this module's job — effects.ts does not know which
     // RuleSet is driving it, and H2 requires every change line to name one.
     log: (l) =>
-      lines.push({ ...l, ruleId: l.ruleId ?? ruleId, effectKind: l.effectKind ?? effectKind }),
+      pushLine(lines, { ...l, ruleId: l.ruleId ?? ruleId, effectKind: l.effectKind ?? effectKind }),
     // depth + 1 and PENDING placement are enforced HERE, not in effects.ts (§5.5, §3.2). A fired
     // event is the one thing that increments depth.
     fireEvent: (name, childCtx, stateId) =>
@@ -1075,6 +1078,11 @@ function applyAction(
         kind: 'change',
         message: `Move ${action.cardId}: ${from ?? '(nowhere)'} → ${to}.`,
         change: { path: `zones/${to}/cardIds`, before: from, after: to },
+        // v2 §3.6, §4.10, §6.2 — the RESULTING zone governs: a card entering a hidden zone is
+        // unnamed to everyone but that zone's audience; a card leaving one into a public zone is
+        // fully knowable from the public zone alone, so it stays public. `from`'s own visibility
+        // doesn't additionally restrict it — see visibility.ts's `zoneAudience` doc comment.
+        visibility: zoneAudience(def, to),
       });
 
       // §5.1 compound order: the card is physically settled before the semantic event runs.
@@ -1320,6 +1328,10 @@ export function step(
   lines: LogLine[],
   def: GameDefinition
 ): StepResult {
+  // §5.9 — the level reaches the engine on BOTH `EngineInput` arms, since most lines are emitted
+  // during CONTINUE re-entry rather than on the initiating action. Re-tagging every call is a no-op
+  // in the common case (the level is constant for the whole transaction).
+  tagVerbosity(lines, input.level ?? 3);
   return input.kind === 'action'
     ? applyAction(state, input.action, input.override, def, lines)
     : advance(state, def, lines);

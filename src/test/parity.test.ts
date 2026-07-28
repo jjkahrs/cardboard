@@ -68,9 +68,24 @@ function v1Cards(cards: unknown): unknown {
  * The log's shape, in full — every line's level, kind, message, change tuple, rule id, effect kind
  * and causal depth. Compared verbatim rather than summarised: §5.9's log IS the user-visible
  * account of what the engine did, so "same board, different story" is a parity failure.
+ *
+ * v2 §4.10, §6.2 add `LogLine.visibility` / `LogEntry.cause.visibility` — hidden-information
+ * redaction has no v1 counterpart, so (same reasoning as `v1Cards` above) they are stripped here
+ * rather than compared: a field added to the log later is opted OUT of this v1 comparison by a
+ * human, not silently.
  */
+function withoutVisibility(o: Record<string, unknown>): Record<string, unknown> {
+  const copy = { ...o };
+  delete copy.visibility;
+  return copy;
+}
+
 function logShape(log: readonly unknown[]): unknown {
-  return log;
+  return (log as { cause: Record<string, unknown>; lines: Record<string, unknown>[] }[]).map((entry) => ({
+    ...entry,
+    cause: withoutVisibility(entry.cause),
+    lines: entry.lines.map(withoutVisibility),
+  }));
 }
 
 /** Recursive key sort — the same canonicalisation `sessionStore.test.ts` uses (§7.1's spirit). */

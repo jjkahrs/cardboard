@@ -55,6 +55,7 @@ import type {
   StepResult,
   TargetSelector,
 } from './types';
+import { pushLine } from './types';
 import { applyEffect } from './effects';
 import { makeEc } from './dispatch';
 import { activationCtx } from './priority';
@@ -110,12 +111,12 @@ const UNRESOLVED = -1;
 /** NOT_ACTIVATABLE and COST_UNPAYABLE are both §4.12/§5.8 rule-legal refusals, not authoring faults —
  * `effects.ts`'s own (private) `LEVEL_OF` maps both to `'reject'`; this mirrors that, not guesses it. */
 function rejectResult(reason: RejectReason, message: string, lines: LogLine[]): StepResult {
-  lines.push({ level: 'reject', kind: 'skip', message: `${reason}: ${message}`, change: null, ruleId: null, effectKind: null, depth: 0 });
+  pushLine(lines, { level: 'reject', kind: 'skip', message: `${reason}: ${message}`, change: null, ruleId: null, effectKind: null, depth: 0, visibility: null });
   return DONE;
 }
 
 function overrideLine(lines: LogLine[], message: string, depth: number): void {
-  lines.push({ level: 'override', kind: 'skip', message, change: null, ruleId: null, effectKind: null, depth });
+  pushLine(lines, { level: 'override', kind: 'skip', message, change: null, ruleId: null, effectKind: null, depth, visibility: null });
 }
 
 // ---------------------------------------------------------------------------
@@ -237,7 +238,7 @@ export function activateRule(
   // SAME `lines` array inside the SAME top-level dispatch, and `rule.effects` runs via the identical
   // `rule` frame + cursor machinery every other rule frame uses (`advanceRule`/`runEffect`), not a
   // second copy of it.
-  lines.push({
+  pushLine(lines, {
     level: 'info',
     kind: 'rule',
     ruleId: rule.id,
@@ -245,6 +246,7 @@ export function activateRule(
     depth,
     change: null,
     message: `Activate "${rule.name}"${action.cardId ? ` (${action.cardId})` : ''} — cost paid, seat ${action.seat}.`,
+    visibility: null,
   });
 
   push(state, {
