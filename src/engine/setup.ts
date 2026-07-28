@@ -80,6 +80,10 @@ export function createPlayState(def: GameDefinition, seed: string): PlayState {
     nextWorkId: 0,
     logSeq: 0,
     playerCount,
+    // The ring starts full and in seat order; SeatIds are the indices themselves (§3.5). Storage
+    // below is dense and full-length forever — elimination edits this array, never the storage.
+    seatOrder: Array.from({ length: playerCount }, (_, i) => i),
+    eliminated: [],
     pools,
     playerPools,
     cards,

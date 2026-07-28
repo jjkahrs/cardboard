@@ -368,6 +368,39 @@ describe('gate 4: referential integrity', () => {
 // ---------------------------------------------------------------------------
 
 // AC: P2
+// ---------------------------------------------------------------------------
+// SeatRef is recursive now — §4.1. Mutated onto a clone rather than into `valid`, so the key-order
+// and byte-identity assertions above keep testing the fixture they were written against.
+// ---------------------------------------------------------------------------
+
+describe('the recursive relative SeatRef', () => {
+  /** Puts `seat` on the End state's entryCriteria, the fixture's one SeatRef-bearing ValueRef. */
+  const withSeat = (seat: unknown): string => {
+    const d = clone();
+    d.machine.states[2].entryCriteria.left.seat = seat;
+    return JSON.stringify(d);
+  };
+
+  const nested = { kind: 'relative', from: { kind: 'relative', from: { kind: 'active' }, offset: 1 }, offset: -2 };
+
+  it('parses at arbitrary nesting depth and survives the round trip', () => {
+    const text = withSeat(nested);
+    const def = imported(text);
+    expect(def.machine.states[2].entryCriteria).toMatchObject({ left: { seat: nested } });
+    expect(exportJson(imported(exportJson(def)))).toBe(exportJson(def));
+  });
+
+  it('rejects a fractional offset', () => {
+    expect(failed(withSeat({ kind: 'relative', from: { kind: 'active' }, offset: 0.5 }))).toEqual([
+      'machine.states.2.entryCriteria.left.seat.offset: Expected integer, received float',
+    ]);
+  });
+
+  it('rejects an unknown kind inside `from`, so the recursion is really validated', () => {
+    expect(failed(withSeat({ kind: 'relative', from: { kind: 'nobody' }, offset: 1 }))).not.toEqual([]);
+  });
+});
+
 describe('P2: canonical export', () => {
   /** Reverse every object's key order, recursively. Arrays keep their order. */
   const scramble = (v: unknown): unknown => {

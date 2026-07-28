@@ -100,15 +100,19 @@ export { hashSeed, random, shuffle } from './rng';
 export {
   zoneKey,
   parseZoneKey,
-  resolveSeat,
   resolvePoolDef,
   resolveValueRef,
-  type SeatResolution,
-  type SeatResolutionOk,
   type ValueResolution,
   type ValueResolutionOk,
-  type ResolutionFail,
 } from './valueRef';
+
+// The seat ring — §3.5. `valueRef.ts` re-exports these too, for call sites older than the split.
+export {
+  resolveSeat,
+  type SeatResolution,
+  type SeatResolutionOk,
+  type ResolutionFail,
+} from './seats';
 
 export {
   evalCriteria,

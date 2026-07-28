@@ -67,6 +67,8 @@ function makeState(cards: CardInstance[], zones: Record<string, Id[]>, over: Par
     nextWorkId: 0,
     logSeq: 0,
     playerCount: 2,
+    seatOrder: [0, 1],
+    eliminated: [],
     pools: { [ACTIVE_PLAYER_POOL_ID]: 0, [FIRST_BLOOD]: false },
     playerPools: { [HP]: [20, 20], [ATTACKERS]: [2, 0] },
     cards: Object.fromEntries(cards.map((c) => [c.id, c])),

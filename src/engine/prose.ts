@@ -71,6 +71,11 @@ function seatNoun(seat: SeatRef): string {
       return 'the player who played this';
     case 'seat':
       return `player ${seat.index + 1}`;
+    // Counted round the live ring, so "2 seats after" is the phrasing that survives an elimination.
+    case 'relative':
+      return seat.offset >= 0
+        ? `the player ${seat.offset} seats after ${seatNoun(seat.from)}`
+        : `the player ${-seat.offset} seats before ${seatNoun(seat.from)}`;
     case 'all':
       return seat.quantifier === 'some' ? 'any player' : 'each player';
   }

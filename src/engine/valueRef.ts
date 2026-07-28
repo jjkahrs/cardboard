@@ -14,34 +14,22 @@ import {
   type Id,
   type PlayState,
   type PointPool,
-  type RejectReason,
-  type SeatRef,
   type TriggerContext,
   type ValueRef,
   type ZoneKey,
   type ZoneRef,
 } from './types';
+import { fail, resolveSeat } from './seats';
+import type { ResolutionFail } from './seats';
+
+// `resolveSeat` and its result types moved to seats.ts with the ring (§3.5) — re-exported here so
+// the call sites that have always imported them from this module keep working.
+export { resolveSeat } from './seats';
+export type { ResolutionFail, SeatResolution, SeatResolutionOk } from './seats';
 
 // ---------------------------------------------------------------------------
 // Result types
 // ---------------------------------------------------------------------------
-
-export interface ResolutionFail {
-  ok: false;
-  reason: RejectReason;
-  /** Human-readable, suitable for a log line. Does not itself carry a LogLevel. */
-  message: string;
-}
-
-export interface SeatResolutionOk {
-  ok: true;
-  /** Ascending seat order. Length 1 for every SeatRef except `all`. */
-  seats: number[];
-  /** Only meaningful when `seats.length > 1` (the `all` case). Defaults to 'every' — §5.7. */
-  quantifier: 'every' | 'some';
-}
-
-export type SeatResolution = SeatResolutionOk | ResolutionFail;
 
 export interface ValueResolutionOk {
   ok: true;
@@ -51,10 +39,6 @@ export interface ValueResolutionOk {
 }
 
 export type ValueResolution = ValueResolutionOk | ResolutionFail;
-
-function fail(reason: RejectReason, message: string): ResolutionFail {
-  return { ok: false, reason, message };
-}
 
 // ---------------------------------------------------------------------------
 // zoneKey / parseZoneKey — §4.5
@@ -76,56 +60,6 @@ export function parseZoneKey(key: ZoneKey): { zoneId: Id; seat: number | null } 
     return { zoneId: match[1], seat: Number(match[2]) };
   }
   return { zoneId: key, seat: null };
-}
-
-// ---------------------------------------------------------------------------
-// resolveSeat — §5.7
-// ---------------------------------------------------------------------------
-
-function ok(seats: number[], quantifier: 'every' | 'some' = 'every'): SeatResolutionOk {
-  return { ok: true, seats, quantifier };
-}
-
-export function resolveSeat(ref: SeatRef, state: PlayState, ctx: TriggerContext): SeatResolution {
-  const N = state.playerCount;
-  const A = state.pools[ACTIVE_PLAYER_POOL_ID] as number;
-
-  // active/next/previous all derive from activePlayer — one guard covers all three. A hand-edited
-  // JSON (or an authored `changePool activePlayer add 0.5` — the literal has no `.int()`, and
-  // clampValue doesn't truncate) can make this a fraction, NaN, or a boolean. None of those is a
-  // valid seat either, and `Number.isInteger` rejects all three (it's false for non-numbers too).
-  const requireActiveInRange = (kind: string): ResolutionFail | null =>
-    !Number.isInteger(A) || A < 0 || A >= N
-      ? fail('INVALID_SEAT', `Player ref "${kind}": activePlayer = ${A} is not a valid seat (${N} seats).`)
-      : null;
-
-  switch (ref.kind) {
-    case 'active': {
-      const err = requireActiveInRange('active');
-      return err ?? ok([A]);
-    }
-    case 'next': {
-      const err = requireActiveInRange('next');
-      return err ?? ok([(A + 1) % N]);
-    }
-    case 'previous': {
-      const err = requireActiveInRange('previous');
-      return err ?? ok([((A - 1) % N + N) % N]);
-    }
-    case 'triggeringSeat':
-      return ctx.triggeringSeat === null
-        ? fail('UNBOUND_REF', 'Ref "triggeringSeat" is unbound.')
-        : ok([ctx.triggeringSeat]);
-    case 'seat':
-      return ref.index < 0 || ref.index >= N
-        ? fail('INVALID_SEAT', `Player ref "seat: ${ref.index}": ${ref.index} is not a valid seat (${N} seats).`)
-        : ok([ref.index]);
-    case 'all':
-      return ok(
-        Array.from({ length: N }, (_, i) => i),
-        ref.quantifier ?? 'every'
-      );
-  }
 }
 
 // ---------------------------------------------------------------------------

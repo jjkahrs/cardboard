@@ -16,6 +16,7 @@ import type {
   CriteriaNode,
   Effect,
   GameDefinition,
+  SeatRef,
   TargetSelector,
 } from './types';
 
@@ -66,12 +67,22 @@ export const PointPoolSchema = z.object({
 // §4.2 Seat and value references
 // ---------------------------------------------------------------------------
 
-export const SeatRefSchema = z.discriminatedUnion('kind', [
+/**
+ * `relative.from` is a SeatRef, so this is recursive — same `z.lazy` + explicit annotation
+ * rationale as CriteriaNode and TargetSelector. `offset` is `.int()`: a fractional offset can only
+ * come from a hand-edited file, and `resolveSeat` re-checks it at runtime for exactly that path.
+ */
+export const SeatRefSchema: z.ZodType<SeatRef, z.ZodTypeDef, SeatRef> = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('active') }),
   z.object({ kind: z.literal('next') }),
   z.object({ kind: z.literal('previous') }),
   z.object({ kind: z.literal('triggeringSeat') }),
   z.object({ kind: z.literal('seat'), index: z.number().int() }),
+  z.object({
+    kind: z.literal('relative'),
+    from: z.lazy(() => SeatRefSchema),
+    offset: z.number().int(),
+  }),
   z.object({ kind: z.literal('all'), quantifier: z.enum(['every', 'some']).optional() }),
 ]);
 

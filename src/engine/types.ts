@@ -56,17 +56,28 @@ export const ACTIVE_PLAYER_POOL: PointPool = {
 // ---------------------------------------------------------------------------
 
 /**
+ * Stable seat identity — §3.5. Assigned 0..playerCount-1 at setup and NEVER reused or renumbered.
+ * Seat identity and seat *position* are different things: position lives in `PlayState.seatOrder`.
+ */
+export type SeatId = number;
+
+/**
  * `all` in an *effect* applies to every seat. In a *criteria* it quantifies.
  * `triggeringSeat` is the seat that owns the card or zone that fired the event — required because
  * `next`/`previous` are only correct when the acting player is `activePlayer`, which any
  * out-of-turn play violates silently.
+ *
+ * `relative` (§4.1) is the general form `next`/`previous` are sugar over: it takes ANY base seat,
+ * which is what makes "my predator" correct for a card owned by a seat whose turn it is not. It
+ * walks `seatOrder`, so an eliminated seat is skipped rather than counted.
  */
 export type SeatRef =
   | { kind: 'active' }
-  | { kind: 'next' }
-  | { kind: 'previous' }
+  | { kind: 'next' } // === relative(active, +1)
+  | { kind: 'previous' } // === relative(active, -1)
   | { kind: 'triggeringSeat' }
-  | { kind: 'seat'; index: number }
+  | { kind: 'seat'; index: SeatId }
+  | { kind: 'relative'; from: SeatRef; offset: number }
   | { kind: 'all'; quantifier?: 'every' | 'some' }; // default 'every' — §5.7
 
 /** seat is null iff the referenced zone/pool is Game/Shared scoped. */
@@ -435,7 +446,12 @@ export interface PlayState {
   nextWorkId: number;
   /** the log seq this transaction will occupy; feeds Interaction.promptId */
   logSeq: number;
+  /** §3.5: survives only as the INITIAL seat count and the bound on a valid `SeatId`. */
   playerCount: number;
+  /** The live ring, in seating order. Elimination removes from here — §3.5, §5.12. */
+  seatOrder: SeatId[];
+  /** Ousted seats, in the order they were eliminated. Their storage is never deleted. */
+  eliminated: SeatId[];
   /** game-scoped (incl. activePlayer) */
   pools: Record<Id, number | boolean>;
   /** per-seat, index === seat */

@@ -65,6 +65,8 @@ function makeState(overrides: Partial<PlayState> = {}): PlayState {
     nextWorkId: 0,
     logSeq: 0,
     playerCount: 2,
+    seatOrder: [0, 1],
+    eliminated: [],
     pools: { [ACTIVE_PLAYER_POOL_ID]: 0, turn: 3 },
     playerPools: { hp: [12, 5], maxHp: [20, 20], ready: [true, false] },
     cards: {},

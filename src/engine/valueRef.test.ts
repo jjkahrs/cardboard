@@ -53,6 +53,8 @@ function makeState(playerCount: number, activePlayer: number, overrides: Partial
     nextWorkId: 0,
     logSeq: 0,
     playerCount,
+    seatOrder: Array.from({ length: playerCount }, (_, i) => i),
+    eliminated: [],
     pools: { [ACTIVE_PLAYER_POOL_ID]: activePlayer },
     playerPools: {},
     cards: {},
