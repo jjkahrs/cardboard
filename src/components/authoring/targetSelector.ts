@@ -1,4 +1,5 @@
 import type { GameDefinition, TargetSelector } from '../../engine/types';
+import { danglingCard, danglingCriteria } from '../criteria/isDangling';
 import { defaultZoneRef, isDanglingZone } from './zoneRef';
 
 export const TARGET_KINDS: { kind: TargetSelector['kind']; label: string }[] = [
@@ -7,6 +8,9 @@ export const TARGET_KINDS: { kind: TargetSelector['kind']; label: string }[] = [
   { kind: 'bottomOfZone', label: 'From the bottom of a zone' },
   { kind: 'allInZone', label: 'Every card in a zone' },
   { kind: 'taggedInZone', label: 'Cards with a tag, in a zone' },
+  { kind: 'attachedTo', label: 'Everything attached to a card' },
+  { kind: 'hostOf', label: 'The card another card is attached to' },
+  { kind: 'matching', label: 'Cards matching a filter' },
   { kind: 'prompt', label: 'Cards the player chooses' },
 ];
 
@@ -15,15 +19,27 @@ export const prompts = (selector: TargetSelector): boolean => selector.kind === 
 
 /** Points at something deleted — what turns the chip red instead of silently breaking at play. */
 export function danglingTarget(selector: TargetSelector, definition: GameDefinition): boolean {
-  if (selector.kind === 'prompt') return danglingTarget(selector.from, definition);
-  if (selector.kind === 'triggeringCard') return false;
-  // §4.4's attachment selectors name a card, not a zone. The CardRef inside can still carry a
-  // deleted zone via `zoneTop`; descending into it is step 19's pass, not this chip's.
-  if (selector.kind === 'attachedTo' || selector.kind === 'hostOf') return false;
-  // §4.4's predicate selector wraps another one; the `where` can dangle too, and descending into
-  // it is step 19's pass along with the CardRefs above.
-  if (selector.kind === 'matching') return danglingTarget(selector.from, definition);
-  return isDanglingZone(selector.zone, definition);
+  switch (selector.kind) {
+    case 'triggeringCard':
+      return false;
+    case 'prompt':
+      return danglingTarget(selector.from, definition);
+    // §4.4's attachment selectors name a card, not a zone — but the CardRef they name can still
+    // carry a deleted zone through `zoneTop`, so the descent is `danglingCard`'s, not a zone check.
+    case 'attachedTo':
+      return danglingCard(selector.host, definition);
+    case 'hostOf':
+      return danglingCard(selector.card, definition);
+    // §4.4's predicate selector wraps another one AND holds a criteria tree; either half can dangle,
+    // and the tree is collapsed to a summary on the chip, so nothing else would show it.
+    case 'matching':
+      return (
+        danglingTarget(selector.from, definition) ||
+        danglingCriteria(selector.where, definition)
+      );
+    default:
+      return isDanglingZone(selector.zone, definition);
+  }
 }
 
 /**
@@ -59,8 +75,6 @@ export function defaultSelector(
         current && current.kind !== 'prompt' ? current : ({ kind: 'triggeringCard' } as const);
       return { kind: 'prompt', from, count, promptText: 'Choose a card' };
     }
-    // Deliberately absent from TARGET_KINDS above: authoring UI for §4's new unions is phase 4
-    // (§6.10). These arms exist so the exhaustiveness check keeps the build honest.
     case 'attachedTo':
       return { kind, host: { kind: 'triggering' } };
     case 'hostOf':

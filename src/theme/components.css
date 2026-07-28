@@ -477,6 +477,20 @@
   gap: var(--cb-s1);
 }
 
+/* §6.11 — a criteria tree nested in a chip popover is unreadable, so it takes its own line beneath
+   the sentence at full column width. Same `flex: 1 0 100%` trick as the ⏸ note above; existing
+   tokens only. */
+.cb-subrow {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: baseline;
+  gap: var(--cb-s2);
+}
+
+.cb-subrow > :last-child {
+  flex: 1;
+}
+
 .cb-prose__text {
   font-size: 1.05em;
   line-height: 1.5;

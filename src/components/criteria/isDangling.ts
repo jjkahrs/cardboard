@@ -1,4 +1,11 @@
-import type { CardRef, GameDefinition, SeatRef, ValueRef, ZoneRef } from '../../engine/types';
+import type {
+  CardRef,
+  CriteriaNode,
+  GameDefinition,
+  SeatRef,
+  ValueRef,
+  ZoneRef,
+} from '../../engine/types';
 
 /** Every card index in the definition, with the template that declares it (ids are template-scoped). */
 export function allIndexes(def: GameDefinition) {
@@ -66,3 +73,14 @@ export function isDangling(ref: ValueRef, def: GameDefinition): boolean {
       return false;
   }
 }
+
+/**
+ * §6.11 — a whole criteria tree, for the two places one is nested inside a chip
+ * (`TargetSelector{matching}.where`, `ActionSelector{allOnStack}.where`). The chip is red when
+ * ANY ref anywhere in the tree dangles, because the tree is collapsed into a one-line summary and
+ * a broken ref three groups deep is otherwise invisible until play.
+ */
+export const danglingCriteria = (node: CriteriaNode, def: GameDefinition): boolean =>
+  node.kind === 'group'
+    ? node.children.some((child) => danglingCriteria(child, def))
+    : isDangling(node.left, def) || isDangling(node.right, def);
