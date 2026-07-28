@@ -6,7 +6,8 @@
 
 import { describe, expect, it } from 'vitest';
 import { ACTIVE_PLAYER_POOL_ID, END_STATE_ID, START_STATE_ID } from '../../engine/types';
-import type { GameDefinition, MachineState } from '../../engine/types';
+import type { EngineInput, GameDefinition, MachineState, PlayAction } from '../../engine/types';
+import { step } from '../../engine/dispatch';
 import * as duelFx from './duel';
 import { duel, duelOneSidedEdge } from './duel';
 import { empty } from './empty';
@@ -380,6 +381,58 @@ describe('script', () => {
     }
     const all = Object.values(scriptCards).flat(2);
     expect(new Set(all).size).toBe(80);
+  });
+
+  // -------------------------------------------------------------------------
+  // §9.2 — "PlayAction only grows in v2; it does not narrow." Proven, not assumed.
+  // -------------------------------------------------------------------------
+
+  /**
+   * The v1 `PlayAction` union, written out verbatim because it is the SPEC under test, not a
+   * restatement of the current implementation — deriving it from v2's own types would make the
+   * check circular and it would pass no matter what v2 dropped.
+   */
+  const V1_PLAY_ACTION_KINDS = [
+    'answerPrompt',
+    'cancelPrompt',
+    'fireEvent',
+    'flipCard',
+    'moveCard',
+    'rotateCard',
+    'start',
+    'transition',
+  ];
+
+  /**
+   * The one v1 kind a 200-row `duel` session cannot contain — the script raises exactly two
+   * prompts and answers both. Constructing it here IS the test for that kind: it has to still
+   * typecheck as a v2 `PlayAction` and still be routed by `step`.
+   */
+  const EXTRA: PlayAction[] = [{ kind: 'cancelPrompt' }];
+
+  it('every v1 PlayAction in the real corpus is still a valid v2 EngineInput the engine routes', () => {
+    const base = createPlayState(duel, SCRIPT_SEED);
+
+    for (const action of [...script.map((r) => r.action), ...EXTRA]) {
+      // The assignment is half the assertion: it is a v2 type check over a v1 value.
+      const input: EngineInput = { kind: 'action', action, override: false };
+      const result = step(structuredClone(base), input, [], duel);
+
+      // `dispatch.ts`'s action switch has no `default:` arm, so a kind v2 no longer handles falls
+      // straight out of it and yields `undefined`. Getting a StepResult back is therefore proof the
+      // action was recognised and routed. A *rejection* still counts — that is the engine refusing
+      // the move on game grounds, which is the union working, not the union having narrowed.
+      expect(result, `v2 did not route the v1 action kind "${action.kind}"`).toEqual({
+        done: expect.any(Boolean),
+        suspended: expect.any(Boolean),
+        haltedByLoopGuard: expect.any(Boolean),
+      });
+    }
+  });
+
+  it('and that property exercised all eight v1 PlayAction kinds, not just the easy ones', () => {
+    const covered = new Set([...script.map((r) => r.action.kind), ...EXTRA.map((a) => a.kind)]);
+    expect([...covered].sort()).toEqual(V1_PLAY_ACTION_KINDS);
   });
 
   // The script can only exercise effect kinds that duel's rules actually contain. If someone adds

@@ -10,6 +10,8 @@ import {
   CONTINUE,
   DEFAULT_MAX_DEPTH,
   DEFAULT_MAX_EFFECTS,
+  DEFAULT_MAX_PRIORITY_ROUNDS,
+  DEFAULT_MAX_SETTLE_ITERATIONS,
   END_STATE_ID,
   SCHEMA_VERSION,
   START_STATE_ID,
@@ -17,6 +19,7 @@ import {
   type EngineInput,
   type GameDefinition,
   type Id,
+  type Interaction,
   type LogLine,
   type MachineState,
   type PlayAction,
@@ -79,7 +82,12 @@ function mk(over: Partial<GameDefinition> = {}): GameDefinition {
     ruleSets: [],
     globalRuleSetIds: [],
     machine: { states: [START_NODE, END_NODE], startStateId: START_STATE_ID, endStateId: END_STATE_ID },
-    limits: { maxDepth: DEFAULT_MAX_DEPTH, maxEffects: DEFAULT_MAX_EFFECTS },
+    limits: {
+      maxDepth: DEFAULT_MAX_DEPTH,
+      maxEffects: DEFAULT_MAX_EFFECTS,
+      maxSettleIterations: DEFAULT_MAX_SETTLE_ITERATIONS,
+      maxPriorityRounds: DEFAULT_MAX_PRIORITY_ROUNDS,
+    },
     updatedAt: FIXTURE_UPDATED_AT,
     ...over,
   };
@@ -124,6 +132,14 @@ const fire = (state: PlayState, def: GameDefinition) =>
 const answer = (state: PlayState, def: GameDefinition, chosen: Id[]) =>
   drive(state, def, { kind: 'answerPrompt', chosen });
 
+/**
+ * v1's prompt cursor is v2's `state.interaction` narrowed to its `chooseCards` arm — the
+ * same data under a new discriminant (§3.3). Returns null for any other kind, so a test asserting
+ * "a prompt is up" still fails if the engine raises something that is not a card choice.
+ */
+const chooseCards = (state: PlayState): Extract<Interaction, { kind: 'chooseCards' }> | null =>
+  state.interaction?.kind === 'chooseCards' ? state.interaction : null;
+
 // ---------------------------------------------------------------------------
 
 describe('a prompt answer does not leak into the events the effect fires', () => {
@@ -163,12 +179,12 @@ describe('a prompt answer does not leak into the events the effect fires', () =>
   it('the downstream rule raises its own prompt instead of inheriting @chosen', () => {
     const state = createPlayState(def, 'seed');
     fire(state, def);
-    expect(state.pendingPrompt?.promptText).toBe('Which card moves');
+    expect(chooseCards(state)?.promptText).toBe('Which card moves');
 
-    const moved = state.pendingPrompt!.candidates[0];
+    const moved = chooseCards(state)!.candidates[0];
     const lines = answer(state, def, [moved]);
 
-    expect(state.pendingPrompt?.promptText).toBe('Which card flips');
+    expect(chooseCards(state)?.promptText).toBe('Which card flips');
     // The pre-fix symptom, in its own words.
     expect(lines.map((l) => l.message).join('\n')).not.toContain('0 legal targets');
   });
@@ -197,12 +213,12 @@ describe('two bindings of one prompting rule each get their own prompt', () => {
   it('the first answer does not satisfy the second binding, which shares its promptId', () => {
     const state = createPlayState(def, 'seed');
     fire(state, def);
-    expect(state.pendingPrompt).not.toBeNull();
+    expect(chooseCards(state)).not.toBeNull();
 
-    answer(state, def, [state.pendingPrompt!.candidates[0]]);
+    answer(state, def, [chooseCards(state)!.candidates[0]]);
 
     // The second binding is still owed its own choice.
-    expect(state.pendingPrompt).not.toBeNull();
+    expect(chooseCards(state)).not.toBeNull();
   });
 });
 
