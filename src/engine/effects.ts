@@ -27,6 +27,10 @@ import { type CandidateLog, resolveTargets } from './targets';
 import { effectiveIndex, invalidateEffective } from './modifiers';
 import { applyTransition } from './stateMachine';
 import { hashSeed, shuffle } from './rng';
+// §5.7 — replacement.ts imports `EffectContext` back from here, but only as a type (`import type`),
+// which is erased at compile time. No runtime cycle: this file is the only one of the pair that
+// actually depends on the other at runtime.
+import { applyWithReplacement } from './replacement';
 import type {
   Effect,
   EffectResult,
@@ -483,11 +487,16 @@ function writeNote(v: GameValue, op: NumericOp, before: number | boolean, after:
  * scans transition `entryCriteria` at settle, and both reach `effectiveIndex` via `resolveValueRef`.
  * Invalidating on entry alone leaves those reads answering with the value from before the last
  * write — a `setCardIndex` that raised a creature's power to 7 would gate the following rule on 5.
+ *
+ * §5.7 — `replacement.ts` is spliced in here, ahead of `applyEffectInner`: it is what makes "before
+ * `applyEffect` mutates anything" literally true, since `applyEffectInner` is where every mutation
+ * in this file happens. A definition with no `replaces` rule matching `effect.kind` costs one no-op
+ * scan and falls straight through to `applyEffectInner`, unchanged from before this step.
  */
 export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
   invalidateEffective(ec.state);
   try {
-    return applyEffectInner(effect, ec);
+    return applyWithReplacement(effect, ec, applyEffectInner);
   } finally {
     invalidateEffective(ec.state);
   }
