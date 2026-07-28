@@ -132,8 +132,16 @@ export {
 
 export { createPlayState } from './setup';
 
-/** `step()` performs exactly ONE unit of work; all remaining work lives in `state.queue`. */
-export { step, enqueue } from './dispatch';
+/**
+ * `step()` performs exactly ONE unit of work; all remaining work lives in `state.stack` (the LIFO
+ * continuation stack) and `state.pending` (the FIFO of fired events) — §3.2.
+ *
+ * `appendPending` replaces v1's `enqueue` as the way to hand the engine an event from outside a
+ * running chain. The rest of `frames.ts` stays internal: pushing or popping the stack from above
+ * the engine boundary would mean the UI could interleave frames with a transaction in flight.
+ */
+export { step } from './dispatch';
+export { appendPending } from './frames';
 
 /**
  * `applyEffect` mutates a draft in place. `canMove` is exported because §6.4 requires the drag UI

@@ -748,8 +748,10 @@ describe('fireEvent and forceTransition', () => {
     h.state.currentStateId = MAIN;
     expect(applyEffect({ kind: 'forceTransition', toStateId: COMBAT }, h.ec)).toEqual({ ok: true });
     expect(h.state.currentStateId).toBe(COMBAT);
-    // Only the two state events are queued; the transition itself already happened.
-    expect(h.state.queue).toEqual([]);
+    // Only the two state events are owed; the transition itself already happened. The harness's
+    // `fireEvent` collects into `h.events` rather than appending to `state.pending` (dispatch owns
+    // that placement — §3.2), so BOTH work arrays staying empty is the real assertion here.
+    expect({ stack: h.state.stack, pending: h.state.pending }).toEqual({ stack: [], pending: [] });
     expect(eventNames(h)).toEqual(['onStateExit', 'onStateEnter']);
   });
 

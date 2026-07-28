@@ -1,39 +1,47 @@
 /**
- * The work queue and `step()`. TECHNICAL_DESIGN.md §3.3, §5.1–§5.5, §5.9 rows 6/7/8/8b/8c/9/16/17.
+ * The continuation stack and `step()`. TECHNICAL_DESIGN_V2.md §3.2, §3.3, §5.1–§5.3.
+ *
+ * v1's semantics (`TECHNICAL_DESIGN.md` §5.1–§5.6, §5.9 rows 6/7/8/8b/8c/9/16/17) remain in force
+ * unchanged — phase 0 replaces the *machine*, not the observable behaviour.
  *
  * `step()` performs exactly ONE unit of work and returns. Everything still owed lives in
- * `state.queue`, which is inside `PlayState` and therefore serializable, patchable and rewindable.
- * The store re-enters with CONTINUE until `done`. There is no recursion anywhere in this file: with
- * recursion the in-flight rule state would live on the JS call stack, which cannot be serialized,
- * snapshotted or unwound — and prompt suspension plus rewind both need exactly that.
+ * `state.stack` and `state.pending`, both inside `PlayState` and therefore serializable, patchable
+ * and rewindable. The store re-enters with CONTINUE until `done`. There is no recursion anywhere in
+ * this file: with recursion the in-flight rule state would live on the JS call stack, which cannot
+ * be serialized, snapshotted or unwound — and prompt suspension plus rewind both need exactly that.
  *
- * Fired events go to the queue TAIL (breadth-first, §5.1). The RULES of an event go to the HEAD, so
- * one event resolves fully before the next queued event starts — that is what makes
- * `onZoneExit → onZoneEnter → onCardPlayed` read in the order the tester sees.
+ * **Breadth-first event dispatch is preserved by construction** (§3.2). An `event` frame never
+ * pushes a child `event` frame: fired events go to `state.pending`, a FIFO drained only once the
+ * stack empties. And because the event frame STAYS on the stack while its rules run, "the rules of
+ * THIS event run before any queued sibling event" (v1 §5.1) holds without v1's `enqueueFront` — the
+ * property that makes `onZoneExit → onZoneEnter → onCardPlayed` read in the order the tester sees.
  */
 
 import {
   ACTIVE_PLAYER_POOL_ID,
   CARD_BINDING_EVENTS,
+  type CardTemplate,
   type Effect,
   type EngineInput,
   type EventName,
+  type Frame,
   type GameDefinition,
-  type CardTemplate,
   type Id,
   type LogLine,
   type PlayAction,
   type PlayState,
   type RejectReason,
+  type RuleBinding,
   type RuleSet,
   type StepResult,
   type TargetSelector,
   type TriggerContext,
-  type WorkItem,
   type ZoneRef,
 } from './types';
 import { evalCriteria } from './criteria';
 import { applyEffect, canMove, type EffectContext } from './effects';
+import { appendPending, pop, promotePending, push, top } from './frames';
+import { clear, isResuming, isSuspended, promptIdOf, raise, validateAnswer } from './interaction';
 import { applyTransition, findAutoTransition } from './stateMachine';
 import { CHOSEN_PROMPT_KEY, resolveTargets } from './targets';
 import { resolveSeat, zoneKey } from './valueRef';
@@ -64,21 +72,24 @@ function log(lines: LogLine[], entry: LogInput): void {
 }
 
 // ---------------------------------------------------------------------------
-// Queue
+// Frames
 // ---------------------------------------------------------------------------
 
-/** Distributes over the union — a plain `Omit` on `WorkItem` would collapse it to the common keys. */
-type NewWorkItem = WorkItem extends infer T ? (T extends WorkItem ? Omit<T, 'id'> : never) : never;
+type EventFrame = Extract<Frame, { kind: 'event' }>;
+type RuleFrame = Extract<Frame, { kind: 'rule' }>;
+type SettleFrame = Extract<Frame, { kind: 'settle' }>;
 
-/** Tail. Every fired event lands here (§5.1). */
-export function enqueue(state: PlayState, item: NewWorkItem): void {
-  state.queue.push({ ...item, id: state.nextWorkId++ } as WorkItem);
-}
-
-/** Head, order preserved. Only the rules of the event being resolved, and a suspended effect. */
-function enqueueFront(state: PlayState, items: NewWorkItem[]): void {
-  state.queue.unshift(...items.map((i) => ({ ...i, id: state.nextWorkId++ }) as WorkItem));
-}
+/**
+ * `cursor === -1` means "the once-per-frame header work has not run yet" on BOTH the `event` and
+ * the `rule` frame — bindings are not resolved, the RuleSet's condition is not evaluated, and no
+ * line has been logged for it.
+ *
+ * A sentinel rather than a separate boolean because `bindings: []` is otherwise indistinguishable
+ * from an event that genuinely matched zero rules, and `cursor: 0` on a rule frame is
+ * indistinguishable from one whose condition has already passed. Both confusions re-run the header
+ * — duplicate log lines, or a condition re-evaluated against a world its own effects have changed.
+ */
+const UNRESOLVED = -1;
 
 // ---------------------------------------------------------------------------
 // Contexts
@@ -124,13 +135,16 @@ function makeEc(
     // RuleSet is driving it, and H2 requires every change line to name one.
     log: (l) =>
       lines.push({ ...l, ruleId: l.ruleId ?? ruleId, effectKind: l.effectKind ?? effectKind }),
-    // depth + 1 and tail placement are enforced HERE, not in effects.ts (§5.5, §5.1).
+    // depth + 1 and PENDING placement are enforced HERE, not in effects.ts (§5.5, §3.2). A fired
+    // event is the one thing that increments depth.
     fireEvent: (name, childCtx, stateId) =>
-      enqueue(state, {
+      appendPending(state, {
         kind: 'event',
         name,
         ctx: stripChosen(childCtx),
         ...(stateId !== undefined && { stateId }),
+        bindings: [],
+        cursor: UNRESOLVED,
         parentId,
         depth: depth + 1,
       }),
@@ -138,7 +152,7 @@ function makeEc(
 }
 
 // ---------------------------------------------------------------------------
-// Bindings — §5.2. Snapshot at frame start; sort is TOTAL.
+// Bindings — §5.2. Resolved when the event frame begins advancing; sort is TOTAL.
 // ---------------------------------------------------------------------------
 
 interface Binding {
@@ -192,7 +206,7 @@ function resolveBindings(
   ctx: TriggerContext,
   state: PlayState,
   def: GameDefinition,
-  /** The state a queued `onStateExit` left, when the item carries one. */
+  /** The state a pending `onStateExit` left, when the frame carries one. */
   eventStateId: Id | null
 ): Binding[] {
   const { rules: byId, templates } = indexOf(def);
@@ -208,8 +222,8 @@ function resolveBindings(
   const selfScoped = (CARD_BINDING_EVENTS as readonly string[]).includes(name);
 
   // stateFilter matches currentStateId for onStateEnter. For onStateExit the transition has already
-  // landed by the time the queued event drains, so currentStateId is the DESTINATION — the item
-  // carries the state that was left and that is what the filter is matched against instead.
+  // landed by the time the pending event is promoted, so currentStateId is the DESTINATION — the
+  // frame carries the state that was left and that is what the filter is matched against instead.
   const filterState = name === 'onStateExit' ? (eventStateId ?? state.currentStateId) : state.currentStateId;
   const matches = (rule: RuleSet | undefined): rule is RuleSet =>
     rule !== undefined &&
@@ -260,18 +274,33 @@ function resolveBindings(
 }
 
 // ---------------------------------------------------------------------------
-// Loop guard — §5.5. BOTH counters; override never bypasses it.
+// Halting — §5.5 (loop guard) and §5.3 (settle divergence). BOTH counters; override never
+// bypasses any of them.
 // ---------------------------------------------------------------------------
 
-function tripLoopGuard(state: PlayState, def: GameDefinition, lines: LogLine[], tripped: string): StepResult {
-  const discarded = state.queue.length;
-  state.queue = [];
-  // A suspension inside a runaway chain is not resumable.
-  state.pendingPrompt = null;
+/**
+ * Discards the whole chain — `stack` AND `pending` — and clears any suspension, because a
+ * suspension inside a runaway chain is not resumable.
+ *
+ * `headline` is the only difference between the two callers: `RULE_LOOP` (a cascade that will not
+ * terminate) and `SETTLE_DIVERGED` (§5.3's fixpoint that will not converge) halt identically, so
+ * they share one body rather than two that can drift.
+ */
+function haltChain(
+  state: PlayState,
+  def: GameDefinition,
+  lines: LogLine[],
+  headline: string,
+  tripped: string
+): StepResult {
+  const discarded = state.stack.length + state.pending.length;
+  state.stack = [];
+  state.pending = [];
+  clear(state);
   // ponytail: the chain is rendered from the event lines already in this transaction's log rather
-  // than by walking WorkItem.parentId — the ancestors have been dequeued, so an exact walk would
-  // need a frame table living in PlayState (patched and rewound every step) to render one message.
-  // parentId/id are threaded correctly on every item, so that table can be added without changes here.
+  // than by walking Frame.parentId — the ancestors have been popped, so an exact walk would need a
+  // frame table living in PlayState (patched and rewound every step) to render one message.
+  // parentId/id are threaded correctly on every frame, so that table can be added without changes here.
   const chain = lines
     .filter((l) => l.kind === 'event')
     .slice(-8)
@@ -282,7 +311,7 @@ function tripLoopGuard(state: PlayState, def: GameDefinition, lines: LogLine[], 
     kind: 'rule',
     depth: state.budget.causalDepth,
     message:
-      `Possible rule loop — chain halted.\n` +
+      `${headline}\n` +
       `  Tripped: ${tripped}   (effects executed ${state.budget.effectsUsed} / ${def.limits.maxEffects})\n` +
       `  Chain (most recent 8 frames):\n${chain}\n` +
       `  Discarded ${discarded} queued events. State is at the last completed effect — use Rewind to back this out.`,
@@ -290,8 +319,11 @@ function tripLoopGuard(state: PlayState, def: GameDefinition, lines: LogLine[], 
   return HALTED;
 }
 
+const tripLoopGuard = (state: PlayState, def: GameDefinition, lines: LogLine[], tripped: string) =>
+  haltChain(state, def, lines, 'Possible rule loop — chain halted.', tripped);
+
 // ---------------------------------------------------------------------------
-// Effects — §5.3, §5.4
+// Effects — §5.2, §5.3
 // ---------------------------------------------------------------------------
 
 /** The five effects that carry a target; only a `prompt` target suspends. */
@@ -299,231 +331,278 @@ function promptTarget(effect: Effect): Extract<TargetSelector, { kind: 'prompt' 
   return 'target' in effect && effect.target.kind === 'prompt' ? effect.target : null;
 }
 
-const promptIdOf = (state: PlayState, ruleId: Id, effectIndex: number) =>
-  `${state.logSeq}:${ruleId}:${effectIndex}`;
+const promptSeat = (state: PlayState, ctx: TriggerContext) => ctx.triggeringSeat ?? activeSeat(state);
 
-function runEffects(
+/**
+ * ONE effect — the one at `frame.cursor` — then the cursor moves. v1 ran the whole remaining list
+ * per `step()`; v2 runs one (§3.2). Observable state is identical, only the number of `step()`
+ * calls changes, and the store loops until `done`.
+ *
+ * The cursor is advanced by exactly one of three exits: the effect completed, the effect was
+ * skipped, or the frame was aborted. A SUSPENDED return advances nothing — see below.
+ */
+function runEffect(
+  frame: RuleFrame,
+  rule: RuleSet,
   state: PlayState,
   def: GameDefinition,
-  lines: LogLine[],
-  rule: RuleSet,
-  ctx: TriggerContext,
-  fromIndex: number,
-  depth: number,
-  parentId: number | null
+  lines: LogLine[]
 ): StepResult {
-  for (let i = fromIndex; i < rule.effects.length; i++) {
-    const effect = rule.effects[i];
-    const selector = promptTarget(effect);
-    const promptId = promptIdOf(state, rule.id, i);
-    let chosen: Id[] | undefined;
+  const i = frame.cursor;
+  const effect = rule.effects[i];
+  const selector = promptTarget(effect);
+  const promptId = promptIdOf(state, rule.id, i);
+  let chosen: Id[] | undefined;
 
-    if (selector) {
-      chosen = ctx.promptAnswers[promptId];
-      if (chosen === undefined) {
-        // §5.4 hard rule: raise BEFORE any mutation. This effect executes twice — once to raise,
-        // once to complete — so it must be re-entrant by construction.
-        const candidates = resolveTargets(selector, state, ctx, def);
-        if (!candidates.ok || candidates.kind !== 'prompt') {
-          // Zero legal targets → the prompt is NOT raised (§5.9 row 8). A modal with nothing
-          // clickable is a dead end; this holds even when min is 0.
-          const reason = candidates.ok ? 'NO_TARGETS' : candidates.reason;
-          log(lines, {
-            level: levelFor(reason),
-            kind: 'prompt',
-            depth,
-            ruleId: rule.id,
-            effectKind: effect.kind,
-            message: `Prompt "${selector.promptText}" (seat ${promptSeat(state, ctx)}): ${
-              candidates.ok ? '0 legal targets' : candidates.message
-            } Prompt skipped.`,
-          });
-          if (rule.onRejection === 'abort') return MORE;
-          continue;
-        }
-        state.pendingPrompt = {
-          promptId,
-          promptText: candidates.promptText,
-          seat: promptSeat(state, ctx),
-          candidates: [...candidates.candidates],
-          min: candidates.min,
-          max: candidates.max,
-        };
-        enqueueFront(state, [{ kind: 'effect', ruleId: rule.id, effectIndex: i, ctx, parentId, depth }]);
+  if (selector) {
+    chosen = frame.ctx.promptAnswers[promptId];
+    if (chosen === undefined) {
+      // §3.3 hard rule: raise BEFORE any mutation. This effect executes twice — once to raise, once
+      // to complete — so it must be re-entrant by construction.
+      const candidates = resolveTargets(selector, state, frame.ctx, def);
+      if (!candidates.ok || candidates.kind !== 'prompt') {
+        // Zero legal targets → the prompt is NOT raised (§5.9 row 8). A modal with nothing
+        // clickable is a dead end; this holds even when min is 0.
+        const reason = candidates.ok ? 'NO_TARGETS' : candidates.reason;
         log(lines, {
-          level: 'info',
+          level: levelFor(reason),
           kind: 'prompt',
-          depth,
+          depth: frame.depth,
           ruleId: rule.id,
           effectKind: effect.kind,
-          message: `Prompt "${candidates.promptText}" (seat ${state.pendingPrompt.seat}): ${candidates.candidates.length} legal targets.`,
+          message: `Prompt "${selector.promptText}" (seat ${promptSeat(state, frame.ctx)}): ${
+            candidates.ok ? '0 legal targets' : candidates.message
+          } Prompt skipped.`,
         });
-        return SUSPENDED;
-      }
-    }
-
-    // Counted only when an effect actually applies — the prompt-raising pass mutates nothing.
-    state.budget.effectsUsed += 1;
-    if (state.budget.effectsUsed > def.limits.maxEffects) {
-      return tripLoopGuard(
-        state,
-        def,
-        lines,
-        `effectsUsed ${state.budget.effectsUsed} > limit ${def.limits.maxEffects}   (causalDepth ${state.budget.causalDepth})`
-      );
-    }
-
-    const effectCtx = chosen
-      ? { ...ctx, promptAnswers: { ...ctx.promptAnswers, [CHOSEN_PROMPT_KEY]: chosen } }
-      : ctx;
-    const result = applyEffect(
-      effect,
-      // Override is ACTION-scoped (§5.9 rows 1b/5c): it is a property of the tester's own move,
-      // never of rule execution, so a rule-driven effect is always evaluated without it.
-      makeEc(state, def, lines, effectCtx, depth, parentId, false, rule.id, effect.kind)
-    );
-    if (!result.ok) {
-      log(lines, {
-        level: levelFor(result.reason),
-        kind: 'effect',
-        depth,
-        ruleId: rule.id,
-        effectKind: effect.kind,
-        message: `${effect.kind}: ${result.detail ?? result.reason}`,
-      });
-      // abort stops the REMAINING effects. Already-applied effects stay — abort is not rollback (§5.3).
-      if (rule.onRejection === 'abort') {
-        log(lines, {
-          level: 'info',
-          kind: 'skip',
-          depth,
-          ruleId: rule.id,
-          message: `RuleSet "${rule.name}" aborted after effect ${i + 1} of ${rule.effects.length}.`,
-        });
+        if (rule.onRejection === 'abort') frame.aborted = true;
+        else frame.cursor += 1;
         return MORE;
       }
+      raise(state, {
+        kind: 'chooseCards',
+        promptId,
+        promptText: candidates.promptText,
+        seat: promptSeat(state, frame.ctx),
+        candidates: [...candidates.candidates],
+        min: candidates.min,
+        max: candidates.max,
+      });
+      log(lines, {
+        level: 'info',
+        kind: 'prompt',
+        depth: frame.depth,
+        ruleId: rule.id,
+        effectKind: effect.kind,
+        message: `Prompt "${candidates.promptText}" (seat ${promptSeat(state, frame.ctx)}): ${candidates.candidates.length} legal targets.`,
+      });
+      // The cursor does NOT advance (§3.3). v1 re-enqueued an `effect` work item at the same index;
+      // v2's equivalent is simply leaving the cursor where it is — this very frame is the top of the
+      // stack, so resuming re-enters the same effect with the answer now in `ctx.promptAnswers`.
+      return SUSPENDED;
     }
   }
+
+  // Counted only when an effect actually applies — the prompt-raising pass mutates nothing.
+  state.budget.effectsUsed += 1;
+  if (state.budget.effectsUsed > def.limits.maxEffects) {
+    return tripLoopGuard(
+      state,
+      def,
+      lines,
+      `effectsUsed ${state.budget.effectsUsed} > limit ${def.limits.maxEffects}   (causalDepth ${state.budget.causalDepth})`
+    );
+  }
+
+  const effectCtx = chosen
+    ? { ...frame.ctx, promptAnswers: { ...frame.ctx.promptAnswers, [CHOSEN_PROMPT_KEY]: chosen } }
+    : frame.ctx;
+  const result = applyEffect(
+    effect,
+    // Override is ACTION-scoped (§5.9 rows 1b/5c): it is a property of the tester's own move,
+    // never of rule execution, so a rule-driven effect is always evaluated without it.
+    makeEc(state, def, lines, effectCtx, frame.depth, frame.id, false, rule.id, effect.kind)
+  );
+  if (!result.ok) {
+    log(lines, {
+      level: levelFor(result.reason),
+      kind: 'effect',
+      depth: frame.depth,
+      ruleId: rule.id,
+      effectKind: effect.kind,
+      message: `${effect.kind}: ${result.detail ?? result.reason}`,
+    });
+    // abort stops the REMAINING effects. Already-applied effects stay — abort is not rollback (§5.3).
+    if (rule.onRejection === 'abort') {
+      log(lines, {
+        level: 'info',
+        kind: 'skip',
+        depth: frame.depth,
+        ruleId: rule.id,
+        message: `RuleSet "${rule.name}" aborted after effect ${i + 1} of ${rule.effects.length}.`,
+      });
+      frame.aborted = true;
+      return MORE;
+    }
+  }
+  frame.cursor += 1;
   return MORE;
 }
 
-const promptSeat = (state: PlayState, ctx: TriggerContext) => ctx.triggeringSeat ?? activeSeat(state);
-
 // ---------------------------------------------------------------------------
-// One work item
+// One frame
 // ---------------------------------------------------------------------------
 
-function runItem(item: WorkItem, state: PlayState, def: GameDefinition, lines: LogLine[]): StepResult {
-  switch (item.kind) {
-    case 'event': {
-      const bindings = resolveBindings(item.name, item.ctx, state, def, item.stateId ?? null);
-      // Row 6: a custom event with no bound RuleSet is NOT an error.
+function advanceEvent(
+  frame: EventFrame,
+  state: PlayState,
+  def: GameDefinition,
+  lines: LogLine[]
+): StepResult {
+  if (frame.cursor === UNRESOLVED) {
+    // Bindings resolve HERE — when the frame begins advancing — and not when the event was fired.
+    // A card that entered a zone between the two must still bind (v1 resolved at dequeue time).
+    frame.bindings = resolveBindings(frame.name, frame.ctx, state, def, frame.stateId ?? null).map(
+      (b): RuleBinding => ({
+        ruleId: b.rule.id,
+        sourceCardId: b.sourceCardId,
+        // promptAnswers is copied, not aliased: promptIds are `logSeq:ruleId:effectIndex`, so two
+        // bindings of the SAME rule under one event compute the same id. Sharing the map would let
+        // the first binding's answer satisfy the second's prompt, which then never raises.
+        ctx: { ...frame.ctx, promptAnswers: { ...frame.ctx.promptAnswers } },
+      })
+    );
+    // Row 6: a custom event with no bound RuleSet is NOT an error.
+    log(lines, {
+      level: 'info',
+      kind: 'event',
+      depth: frame.depth,
+      message: `Event "${frame.name}" fired — ${frame.bindings.length} rules bound.`,
+    });
+    frame.cursor = 0;
+    return MORE;
+  }
+
+  if (frame.cursor >= frame.bindings.length) {
+    pop(state);
+    return MORE;
+  }
+
+  const binding = frame.bindings[frame.cursor];
+  frame.cursor += 1;
+  push(state, {
+    kind: 'rule',
+    ruleId: binding.ruleId,
+    sourceCardId: binding.sourceCardId,
+    ctx: binding.ctx,
+    cursor: UNRESOLVED,
+    aborted: false,
+    parentId: frame.id,
+    // The SAME depth, not depth + 1: only a fired event is a new causal level (v1 threaded
+    // `depth: item.depth` onto every rule item it enqueued).
+    depth: frame.depth,
+  });
+  return MORE;
+}
+
+function advanceRule(
+  frame: RuleFrame,
+  state: PlayState,
+  def: GameDefinition,
+  lines: LogLine[]
+): StepResult {
+  const rule = indexOf(def).rules.get(frame.ruleId);
+  if (!rule) {
+    pop(state);
+    return MORE;
+  }
+
+  if (frame.cursor === UNRESOLVED) {
+    // Bindings were resolved when the event frame began — re-validate existence now (§5.9 row 16).
+    if (frame.sourceCardId !== null && !state.cards[frame.sourceCardId]) {
       log(lines, {
         level: 'info',
-        kind: 'event',
-        depth: item.depth,
-        message: `Event "${item.name}" fired — ${bindings.length} rules bound.`,
+        kind: 'skip',
+        depth: frame.depth,
+        ruleId: rule.id,
+        message: `Skipped RuleSet "${rule.name}" on ${frame.sourceCardId}: card destroyed earlier this event.`,
       });
-      // Rules of THIS event run before any queued sibling event (§5.1).
-      enqueueFront(
-        state,
-        bindings.map((b) => ({
-          kind: 'rule' as const,
-          ruleId: b.rule.id,
-          sourceCardId: b.sourceCardId,
-          // promptAnswers is copied, not aliased: promptIds are `logSeq:ruleId:effectIndex`, so two
-          // bindings of the SAME rule under one event compute the same id. Sharing the map would let
-          // the first binding's answer satisfy the second's prompt, which then never raises.
-          ctx: { ...item.ctx, promptAnswers: { ...item.ctx.promptAnswers } },
-          parentId: item.id,
-          depth: item.depth,
-        }))
-      );
+      pop(state);
       return MORE;
     }
-
-    case 'rule': {
-      const rule = indexOf(def).rules.get(item.ruleId);
-      if (!rule) return MORE;
-      // Bindings were snapshotted when the event frame began — re-validate existence now (§5.9 row 16).
-      if (item.sourceCardId !== null && !state.cards[item.sourceCardId]) {
+    // Conditions are evaluated NOW, not snapshotted — earlier rules on the same event gate later
+    // ones (§5.2).
+    if (rule.condition) {
+      const verdict = evalCriteria(rule.condition, state, frame.ctx, def);
+      if (!verdict.value) {
+        const failing = verdict.leaves.find((l) => !l.value) ?? verdict.leaves[0];
         log(lines, {
           level: 'info',
           kind: 'skip',
-          depth: item.depth,
+          depth: frame.depth,
           ruleId: rule.id,
-          message: `Skipped RuleSet "${rule.name}" on ${item.sourceCardId}: card destroyed earlier this event.`,
+          message: `Skipped RuleSet "${rule.name}" — condition false: ${failing?.description ?? 'no leaves'}.`,
         });
+        pop(state);
         return MORE;
       }
-      // Conditions are evaluated NOW, not snapshotted — earlier rules on the same event gate later
-      // ones (§5.2).
-      if (rule.condition) {
-        const verdict = evalCriteria(rule.condition, state, item.ctx, def);
-        if (!verdict.value) {
-          const failing = verdict.leaves.find((l) => !l.value) ?? verdict.leaves[0];
-          log(lines, {
-            level: 'info',
-            kind: 'skip',
-            depth: item.depth,
-            ruleId: rule.id,
-            message: `Skipped RuleSet "${rule.name}" — condition false: ${failing?.description ?? 'no leaves'}.`,
-          });
-          return MORE;
-        }
-      }
-      log(lines, {
-        level: 'info',
-        kind: 'rule',
-        depth: item.depth,
-        ruleId: rule.id,
-        message: `RuleSet "${rule.name}"${item.sourceCardId ? ` on ${item.sourceCardId}` : ''}.`,
-      });
-      return runEffects(state, def, lines, rule, item.ctx, 0, item.depth, item.id);
     }
-
-    case 'effect': {
-      const rule = indexOf(def).rules.get(item.ruleId);
-      if (!rule) return MORE;
-      // No source-card re-validation here: destroying the card whose RuleSet is executing must NOT
-      // abort its remaining effects — every "when this dies" combo depends on that (§9.4 item 14).
-      return runEffects(state, def, lines, rule, item.ctx, item.effectIndex, item.depth, item.id);
-    }
-
-    case 'transition': {
-      // Queued by a `forceTransition` effect. applyTransition owns legality and its own logging;
-      // `forced` is a log marker, not a bypass — only override bypasses (§5.9 row 5c).
-      applyTransition(
-        makeEc(state, def, lines, baseCtx(state), item.depth, item.id, false, null, null),
-        item.toStateId,
-        { forced: item.forced }
-      );
-      return MORE;
-    }
+    log(lines, {
+      level: 'info',
+      kind: 'rule',
+      depth: frame.depth,
+      ruleId: rule.id,
+      message: `RuleSet "${rule.name}"${frame.sourceCardId ? ` on ${frame.sourceCardId}` : ''}.`,
+    });
+    frame.cursor = 0;
+    return MORE;
   }
+
+  // The ONE exit from a running RuleSet, and deliberately the only source-card check: re-validating
+  // per effect would mean destroying the card whose RuleSet is executing aborts its remaining
+  // effects, and every "when this dies" combo depends on it NOT doing that (§9.4 item 14).
+  if (frame.aborted || frame.cursor >= rule.effects.length) {
+    pop(state);
+    return MORE;
+  }
+
+  return runEffect(frame, rule, state, def, lines);
 }
 
-// ---------------------------------------------------------------------------
-// Draining and quiescence — §5.1's transaction skeleton
-// ---------------------------------------------------------------------------
+/**
+ * §5.3's settle point, in its fixed order. Popped first: the slots either finish the transaction or
+ * append work whose completion pushes a fresh settle frame, so termination is natural and re-entry
+ * is bounded by `budget.settleIterations`.
+ */
+function advanceSettle(
+  _frame: SettleFrame,
+  state: PlayState,
+  def: GameDefinition,
+  lines: LogLine[]
+): StepResult {
+  pop(state);
 
-function drain(state: PlayState, def: GameDefinition, lines: LogLine[]): StepResult {
-  if (state.pendingPrompt) return SUSPENDED;
+  // ---- Slot 1: continuous-condition fixpoint scan (§5.6). ----
+  // DELIBERATE NO-OP until step 26, which drops `continuous.ts`'s scan in HERE, ahead of slot 2.
+  // The ordering exists now precisely so that step lands as an insertion and nothing around it has
+  // to be re-plumbed: "a creature with lethal damage dies" and "a player at zero pool is ousted"
+  // must both land before the state machine decides whether the phase is over.
 
-  const item = state.queue.shift();
-  if (item) {
-    if (item.depth > def.limits.maxDepth) {
-      state.budget.causalDepth = item.depth;
-      return tripLoopGuard(state, def, lines, `causalDepth ${item.depth} > limit ${def.limits.maxDepth}`);
-    }
-    state.budget.causalDepth = Math.max(state.budget.causalDepth, item.depth);
-    return runItem(item, state, def, lines);
-  }
-
-  // Quiescence. Auto-transitions are scanned ONLY here (§5.1, §5.6).
-  if (state.finished) return DONE;
+  // ---- Slot 2: auto-transition scan (v1 §5.6, unchanged). ----
   const auto = findAutoTransition(state, def, baseCtx(state));
+
+  // ---- Slot 3: nothing fired, so the world is settled and the transaction commits. ----
   if (!auto) return DONE;
+
+  state.budget.settleIterations += 1;
+  if (state.budget.settleIterations > def.limits.maxSettleIterations) {
+    return haltChain(
+      state,
+      def,
+      lines,
+      'Settle did not converge — chain halted.',
+      `SETTLE_DIVERGED: settleIterations ${state.budget.settleIterations} > limit ${def.limits.maxSettleIterations}`
+    );
+  }
 
   state.budget.causalDepth += 1;
   if (state.budget.causalDepth > def.limits.maxDepth) {
@@ -537,6 +616,8 @@ function drain(state: PlayState, def: GameDefinition, lines: LogLine[]): StepRes
       message: `${auto.eligible.length} transitions eligible from "${state.currentStateId}": ${auto.eligible.join(', ')}. Took "${auto.toStateId}" (exitableTo order).`,
     });
   }
+  // Appends onStateExit/onStateEnter to `pending`; the stack is empty, so the next advance promotes
+  // them, and once they drain a fresh settle frame re-enters this scan.
   applyTransition(
     makeEc(state, def, lines, baseCtx(state), state.budget.causalDepth, null, false, null, null),
     auto.toStateId,
@@ -546,7 +627,45 @@ function drain(state: PlayState, def: GameDefinition, lines: LogLine[]): StepRes
 }
 
 // ---------------------------------------------------------------------------
-// Actions — §5.1, §5.4, §5.9 rows 9/10/15
+// advance — §3.2's step skeleton
+// ---------------------------------------------------------------------------
+
+function advance(state: PlayState, def: GameDefinition, lines: LogLine[]): StepResult {
+  if (isSuspended(state)) return SUSPENDED;
+
+  const frame = top(state);
+  if (!frame) {
+    // The pending FIFO, one frame per step. Promotion keeps the frame's id (§3.2): it was assigned
+    // when the event was fired, and renumbering it would break the loop-guard parent chain and make
+    // ids non-deterministic in creation order.
+    if (promotePending(state)) return MORE;
+    // v1 short-circuited `finished` at quiescence, before scanning; the same check, one step
+    // earlier, so a finished session does not push and pop a settle frame it cannot act on.
+    if (state.finished) return DONE;
+    push(state, { kind: 'settle', iteration: state.budget.settleIterations, parentId: null, depth: 0 });
+    return MORE;
+  }
+
+  // Idempotent by construction — it reads `frame.depth`, which never changes — so advancing one
+  // `rule` frame a hundred times checks the same value a hundred times and cannot drift.
+  if (frame.depth > def.limits.maxDepth) {
+    state.budget.causalDepth = frame.depth;
+    return tripLoopGuard(state, def, lines, `causalDepth ${frame.depth} > limit ${def.limits.maxDepth}`);
+  }
+  state.budget.causalDepth = Math.max(state.budget.causalDepth, frame.depth);
+
+  switch (frame.kind) {
+    case 'event':
+      return advanceEvent(frame, state, def, lines);
+    case 'rule':
+      return advanceRule(frame, state, def, lines);
+    case 'settle':
+      return advanceSettle(frame, state, def, lines);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Actions — §5.1, §5.9 rows 9/10/15
 // ---------------------------------------------------------------------------
 
 function zoneKeyOf(ref: ZoneRef, state: PlayState, ctx: TriggerContext): string | null {
@@ -560,6 +679,20 @@ function zoneKeyHolding(state: PlayState, cardId: Id): string | null {
     if (inst.cardIds.includes(cardId)) return key;
   }
   return null;
+}
+
+/** A top-level event fired by a tester action: depth 1, no parent, bindings unresolved. */
+function fireRoot(state: PlayState, name: EventName, ctx: TriggerContext, stateId?: Id): void {
+  appendPending(state, {
+    kind: 'event',
+    name,
+    ctx,
+    ...(stateId !== undefined && { stateId }),
+    bindings: [],
+    cursor: UNRESOLVED,
+    parentId: null,
+    depth: 1,
+  });
 }
 
 function applyAction(
@@ -577,12 +710,13 @@ function applyAction(
   if (state.finished) {
     return reject('SESSION_FINISHED', 'Session finished at "End". Only Rewind is accepted.');
   }
-  const resuming = action.kind === 'answerPrompt' || action.kind === 'cancelPrompt';
-  if (state.pendingPrompt && !resuming) {
-    // Row 9. Rewind is the store's job and never reaches step().
+  const resuming = isResuming(action);
+  if (state.interaction && !resuming) {
+    // Row 9, widened from "a card prompt" to ANY interaction. Rewind is the store's job and never
+    // reaches step().
     return reject(
       'AWAITING_PROMPT',
-      `Input ignored: awaiting response to prompt "${state.pendingPrompt.promptText}".`,
+      `Input ignored: awaiting response to prompt "${state.interaction.promptText}".`,
       SUSPENDED
     );
   }
@@ -593,13 +727,14 @@ function applyAction(
   if (!resuming) {
     if (state.budget.causalDepth !== 0) state.budget.causalDepth = 0;
     if (state.budget.effectsUsed !== 0) state.budget.effectsUsed = 0;
+    if (state.budget.settleIterations !== 0) state.budget.settleIterations = 0;
   }
 
   const ctx = baseCtx(state);
 
   switch (action.kind) {
     case 'start': {
-      enqueue(state, { kind: 'event', name: 'onGameStart', ctx, parentId: null, depth: 1 });
+      fireRoot(state, 'onGameStart', ctx);
       return MORE;
     }
 
@@ -648,17 +783,17 @@ function applyAction(
         change: { path: `zones/${to}/cardIds`, before: from, after: to },
       });
 
-      // §5.1 compound enqueue order: the card is physically settled before the semantic event runs.
+      // §5.1 compound order: the card is physically settled before the semantic event runs.
       const cardCtx = (key: string | null): TriggerContext => ({
         triggeringCardId: action.cardId,
         zoneKey: key,
         triggeringSeat: key === null ? ctx.triggeringSeat : (state.zones[key]?.seat ?? ctx.triggeringSeat),
         promptAnswers: {},
       });
-      if (from) enqueue(state, { kind: 'event', name: 'onZoneExit', ctx: cardCtx(from), parentId: null, depth: 1 });
-      enqueue(state, { kind: 'event', name: 'onZoneEnter', ctx: cardCtx(to), parentId: null, depth: 1 });
+      if (from) fireRoot(state, 'onZoneExit', cardCtx(from));
+      fireRoot(state, 'onZoneEnter', cardCtx(to));
       // onCardDrawn belongs to the drawCards effect alone (§4.7) — a tester's move is a play.
-      enqueue(state, { kind: 'event', name: 'onCardPlayed', ctx: cardCtx(to), parentId: null, depth: 1 });
+      fireRoot(state, 'onCardPlayed', cardCtx(to));
       return MORE;
     }
 
@@ -691,45 +826,24 @@ function applyAction(
     }
 
     case 'fireEvent': {
-      enqueue(state, {
-        kind: 'event',
-        name: action.name,
-        ctx: { ...ctx, triggeringSeat: action.seat ?? ctx.triggeringSeat },
-        parentId: null,
-        depth: 1,
-      });
+      fireRoot(state, action.name, { ...ctx, triggeringSeat: action.seat ?? ctx.triggeringSeat });
       return MORE;
     }
 
     case 'answerPrompt': {
-      const pending = state.pendingPrompt;
+      const pending = state.interaction;
       if (!pending) return reject('INVALID_ANSWER', 'Prompt answer ignored: no prompt is pending.');
-      // Trust boundary: UI highlighting is not enforcement (§9.3). Nothing below mutates state
-      // until every check has passed, so a rejected answer leaves the suspension untouched.
-      const legal = new Set(pending.candidates);
-      const unique = new Set(action.chosen);
-      if (unique.size !== action.chosen.length || action.chosen.some((id) => !legal.has(id))) {
-        return reject(
-          'INVALID_ANSWER',
-          `Prompt answer invalid: selection is not a subset of the ${pending.candidates.length} legal targets.`,
-          SUSPENDED
-        );
-      }
-      if (action.chosen.length < pending.min || action.chosen.length > pending.max) {
-        const expected =
-          pending.min === pending.max ? `exactly ${pending.min}` : `${pending.min}–${pending.max}`;
-        return reject(
-          'INVALID_ANSWER',
-          `Prompt answer invalid: ${action.chosen.length} cards selected, expected ${expected}.`,
-          SUSPENDED
-        );
-      }
-      const head = state.queue[0];
-      if (!head || head.kind !== 'effect') {
+      // Trust boundary: UI highlighting is not enforcement (§9.3). `validateAnswer` is pure and
+      // owns the detail strings, so a rejected answer leaves the suspension untouched.
+      const verdict = validateAnswer(pending, action.chosen);
+      if (!verdict.ok) return reject(verdict.reason, verdict.detail ?? verdict.reason, SUSPENDED);
+
+      const head = top(state);
+      if (head?.kind !== 'rule') {
         return reject('INVALID_ANSWER', 'Prompt answer ignored: the suspended effect is gone.', SUSPENDED);
       }
       head.ctx.promptAnswers[pending.promptId] = [...action.chosen];
-      state.pendingPrompt = null;
+      clear(state);
       log(lines, {
         level: 'info',
         kind: 'prompt',
@@ -741,32 +855,21 @@ function applyAction(
     }
 
     case 'cancelPrompt': {
-      const pending = state.pendingPrompt;
+      const pending = state.interaction;
       if (!pending) return reject('PROMPT_CANCELED', 'Cancel ignored: no prompt is pending.');
-      const head = state.queue[0];
-      state.pendingPrompt = null;
+      const head = top(state);
+      clear(state);
       log(lines, {
         level: 'reject',
         kind: 'prompt',
         message: `Prompt "${pending.promptText}" (seat ${pending.seat}): canceled by tester.`,
       });
       // Not an override, and not flagged as one. The RuleSet then continues or aborts per
-      // onRejection (§5.9 row 8b) — resuming at the SAME index would just re-raise the prompt.
-      if (head?.kind === 'effect') {
-        state.queue.shift();
+      // onRejection (§5.9 row 8b) — resuming at the SAME cursor would just re-raise the prompt.
+      if (head?.kind === 'rule') {
         const rule = indexOf(def).rules.get(head.ruleId);
-        if (rule && rule.onRejection === 'continue' && head.effectIndex + 1 < rule.effects.length) {
-          enqueueFront(state, [
-            {
-              kind: 'effect',
-              ruleId: head.ruleId,
-              effectIndex: head.effectIndex + 1,
-              ctx: head.ctx,
-              parentId: head.parentId,
-              depth: head.depth,
-            },
-          ]);
-        }
+        if (rule && rule.onRejection === 'continue') head.cursor += 1;
+        else head.aborted = true;
       }
       return MORE;
     }
@@ -775,7 +878,7 @@ function applyAction(
 
 // ---------------------------------------------------------------------------
 
-/** Exactly ONE unit of work per call. §3.3. */
+/** Exactly ONE unit of work per call. §3.2. */
 export function step(
   state: PlayState,
   input: EngineInput,
@@ -784,5 +887,5 @@ export function step(
 ): StepResult {
   return input.kind === 'action'
     ? applyAction(state, input.action, input.override, def, lines)
-    : drain(state, def, lines);
+    : advance(state, def, lines);
 }

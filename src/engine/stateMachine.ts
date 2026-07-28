@@ -85,10 +85,11 @@ function candidates(state: PlayState, def: GameDefinition): { target: MachineSta
 // ---------------------------------------------------------------------------
 
 /**
- * **Call this ONLY at quiescence** — never after every effect, never on a tick (§5.1's loop is the
- * one caller). Mid-RuleSet the world is transiently inconsistent: the cost is paid and the benefit
- * is not yet granted, so a scan there fires transitions on half-applied rules and produces states
- * the game logically never occupied.
+ * **Call this ONLY at quiescence** — never after every effect, never on a tick. Its one caller is
+ * slot 2 of dispatch's `settle` frame (v2 §5.3), which runs only when both `state.stack` and
+ * `state.pending` are empty. Mid-RuleSet the world is transiently inconsistent: the cost is paid
+ * and the benefit is not yet granted, so a scan there fires transitions on half-applied rules and
+ * produces states the game logically never occupied.
  *
  * This is a pure scan with no way to interrupt anything: an auto-transition cannot preempt a
  * mid-flight RuleSet, it waits.
@@ -142,9 +143,9 @@ function line(ec: EffectContext, level: LogLine['level'], message: string): LogL
 }
 
 /**
- * Performs the transition on the draft: sets `currentStateId`, then enqueues `onStateExit` for the
- * state left and `onStateEnter` for the state entered, in that order. Entering `End` also sets
- * `finished` and enqueues `onGameEnd` — settling it is dispatch's job.
+ * Performs the transition on the draft: sets `currentStateId`, then appends `onStateExit` for the
+ * state left and `onStateEnter` for the state entered to `state.pending`, in that order. Entering
+ * `End` also sets `finished` and appends `onGameEnd` — settling it is dispatch's job.
  *
  * `opts.forced` marks a `forceTransition` effect for the log; it does NOT bypass legality. Only
  * `ec.override` does (§5.9 row 5c), and then both events still fire.
@@ -155,8 +156,8 @@ export function applyTransition(
   opts: { forced: boolean }
 ): EffectResult {
   // §5.6: reaching End "rejects all input except rewind". Guarded HERE, not at the callers, so
-  // every route closes at once — including a queued `forceTransition` work item, which dispatch's
-  // drain loop runs with no finished check and which could otherwise fire `onGameEnd` twice.
+  // every route closes at once — including a `forceTransition` effect reached from a rule frame,
+  // which dispatch advances with no finished check and which could otherwise fire `onGameEnd` twice.
   if (ec.state.finished) {
     const detail = 'Session finished at "End". Only Rewind is accepted.';
     ec.log(line(ec, 'reject', detail));

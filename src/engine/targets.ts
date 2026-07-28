@@ -39,8 +39,8 @@ export interface TargetsOk {
 
 /**
  * A `prompt` selector resolves to the **legal candidate set**, never to a final selection —
- * dispatch.ts raises `PendingPrompt` from this and the tester picks. A distinct variant rather than
- * a flag on TargetsOk so an effect can never mistake candidates for chosen cards.
+ * dispatch.ts raises `Interaction{kind:'chooseCards'}` from this and the tester picks. A distinct
+ * variant rather than a flag on TargetsOk so an effect can never mistake candidates for chosen cards.
  */
 export interface TargetsPrompt {
   ok: true;

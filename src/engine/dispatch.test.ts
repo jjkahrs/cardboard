@@ -4,21 +4,27 @@ import {
   CONTINUE,
   DEFAULT_MAX_DEPTH,
   DEFAULT_MAX_EFFECTS,
+  DEFAULT_MAX_PRIORITY_ROUNDS,
+  DEFAULT_MAX_SETTLE_ITERATIONS,
   END_STATE_ID,
   SCHEMA_VERSION,
   START_STATE_ID,
   type CardTemplate,
+  type CriteriaNode,
   type EngineInput,
+  type Frame,
   type GameDefinition,
   type Id,
   type LogLine,
+  type MachineState,
   type PlayAction,
   type PlayState,
   type PlayZone,
   type RuleSet,
   type StepResult,
 } from './types';
-import { enqueue, step } from './dispatch';
+import { step } from './dispatch';
+import { appendPending } from './frames';
 import { createPlayState } from './setup';
 import { zoneKey } from './valueRef';
 import {
@@ -31,6 +37,7 @@ import {
   HAND,
   HP,
   MAIN,
+  RS_BOMB,
   STRIKE,
 } from '../test/fixtures/duel';
 import { emptyBoard, place } from '../test/board';
@@ -47,13 +54,20 @@ interface Run {
   steps: number;
 }
 
+/**
+ * A hang detector, not a budget. It is an order of magnitude above v1's because v2's `step()`
+ * advances ONE effect per call where v1 ran a RuleSet's whole remaining effect list (§3.2) — the
+ * same cascade therefore takes several times more `step()` calls to reach the same `effectsUsed`.
+ */
+const RUNAWAY_STEPS = 2_000_000;
+
 function drive(state: PlayState, def: GameDefinition, action: PlayAction, override = false): Run {
   const lines: LogLine[] = [];
   let input: EngineInput = { kind: 'action', action, override };
   let result = step(state, input, lines, def);
   let steps = 1;
   while (!result.done) {
-    if (++steps > 200_000) throw new Error('driver runaway — the loop guard did not stop the chain');
+    if (++steps > RUNAWAY_STEPS) throw new Error('driver runaway — the loop guard did not stop the chain');
     input = CONTINUE;
     result = step(state, input, lines, def);
   }
@@ -64,13 +78,15 @@ function drive(state: PlayState, def: GameDefinition, action: PlayAction, overri
  * Fires a CARD-BINDING event on behalf of a specific card. `PlayAction.fireEvent` carries no card,
  * and under the self-scoping rule a card-attached rule only binds for `ctx.triggeringCardId` — so
  * the realistic driver for these is either a `moveCard` action or, when the surrounding move would
- * bury the log, this: the same event work item a move would enqueue.
+ * bury the log, this: the same pending event frame a move would append.
  */
 function driveEvent(state: PlayState, def: GameDefinition, name: string, triggeringCardId: Id | null, seat = 0): Run {
-  enqueue(state, {
+  appendPending(state, {
     kind: 'event',
     name,
     ctx: { triggeringCardId, zoneKey: null, triggeringSeat: seat, promptAnswers: {} },
+    bindings: [],
+    cursor: -1,
     parentId: null,
     depth: 1,
   });
@@ -78,7 +94,7 @@ function driveEvent(state: PlayState, def: GameDefinition, name: string, trigger
   let result = step(state, CONTINUE, lines, def);
   let steps = 1;
   while (!result.done) {
-    if (++steps > 200_000) throw new Error('driver runaway');
+    if (++steps > RUNAWAY_STEPS) throw new Error('driver runaway');
     result = step(state, CONTINUE, lines, def);
   }
   return { lines, result, steps };
@@ -94,11 +110,28 @@ const sequence = (lines: LogLine[]): string[] =>
     .map((l) => l.effectKind ?? 'prompt')
     .filter((v, i, a) => v !== a[i - 1]);
 
+/**
+ * "Nothing owed" — v1 asserted this against its one work array; v2 has two, and BOTH must be
+ * covered. A chain left half-alive in `pending` looks quiescent on the stack alone, then resumes on
+ * the next action with the guard already spent.
+ */
+const idle = (state: PlayState) => ({ stack: state.stack, pending: state.pending });
+const IDLE = { stack: [], pending: [] };
+
+const named = (frames: Frame[]) => frames.map((f) => (f as { name?: string }).name);
+
 // State builders — a board with nothing on it but what the test puts there — live in
 // `src/test/board.ts`; the play components build the same boards.
 
 const BF = zoneKey(BATTLEFIELD, null);
 const HAND_0 = zoneKey(HAND, 0);
+
+const LIMITS = {
+  maxDepth: DEFAULT_MAX_DEPTH,
+  maxEffects: DEFAULT_MAX_EFFECTS,
+  maxSettleIterations: DEFAULT_MAX_SETTLE_ITERATIONS,
+  maxPriorityRounds: DEFAULT_MAX_PRIORITY_ROUNDS,
+};
 
 /** A definition with no zones, no cards and no auto-transitions — rules bind globally. */
 function mini(over: Partial<GameDefinition> = {}): GameDefinition {
@@ -115,7 +148,7 @@ function mini(over: Partial<GameDefinition> = {}): GameDefinition {
     ruleSets: [],
     globalRuleSetIds: [],
     machine: { states: [START_NODE, END_NODE], startStateId: START_STATE_ID, endStateId: END_STATE_ID },
-    limits: { maxDepth: DEFAULT_MAX_DEPTH, maxEffects: DEFAULT_MAX_EFFECTS },
+    limits: LIMITS,
     updatedAt: FIXTURE_UPDATED_AT,
     ...over,
   };
@@ -197,7 +230,7 @@ describe('AC: R1 — event → rule → change', () => {
 });
 
 // ---------------------------------------------------------------------------
-// R2 — prompt suspension (§5.4, §9.3)
+// R2 — prompt suspension (§3.3, §9.3)
 // ---------------------------------------------------------------------------
 
 describe('AC: R2 — prompt suspension', () => {
@@ -221,10 +254,27 @@ describe('AC: R2 — prompt suspension', () => {
     const { result } = play(state);
 
     expect(result).toEqual({ done: true, suspended: true, haltedByLoopGuard: false });
-    expect(state.pendingPrompt).not.toBeNull();
-    expect([...state.pendingPrompt!.candidates].sort()).toEqual(['g1', 'g2', 'g3']);
-    expect(state.pendingPrompt!.promptText).toBe(BOMB_PROMPT_TEXT);
-    expect(state.pendingPrompt!).toMatchObject({ min: 1, max: 1, seat: 0 });
+    expect(state.interaction?.kind).toBe('chooseCards');
+    expect([...state.interaction!.candidates].sort()).toEqual(['g1', 'g2', 'g3']);
+    expect(state.interaction!.promptText).toBe(BOMB_PROMPT_TEXT);
+    expect(state.interaction!).toMatchObject({ min: 1, max: 1, seat: 0 });
+  });
+
+  /**
+   * §3.3's whole mechanism, and an assertion v1 had no way to make: the suspended `rule` frame is
+   * still on top of the stack with its cursor UNMOVED at the prompting effect. v1 expressed
+   * resumption by re-enqueueing a `{kind:'effect', effectIndex}` work item; there is no such item
+   * now, so the cursor IS the resumption point and a test that never reads it is testing nothing.
+   */
+  it('the suspended rule frame is on top with its cursor still on the prompting effect', () => {
+    const state = bombBoard();
+    play(state);
+
+    const head = state.stack[state.stack.length - 1];
+    expect(head.kind).toBe('rule');
+    expect(head).toMatchObject({ ruleId: RS_BOMB, cursor: 0, aborted: false });
+    // Bomb's effect 0 is the prompting destroyCards — the fixture pins that order deliberately.
+    expect(state.interaction!.promptId.endsWith(`:${RS_BOMB}:0`)).toBe(true);
   });
 
   it('the DEFERRED effect has demonstrably not run', () => {
@@ -241,7 +291,7 @@ describe('AC: R2 — prompt suspension', () => {
     const { lines, result } = drive(state, duel, { kind: 'answerPrompt', chosen: ['g2'] });
 
     expect(result.suspended).toBe(false);
-    expect(state.pendingPrompt).toBeNull();
+    expect(state.interaction).toBeNull();
     expect(state.cards['g2']).toBeUndefined();
     expect(state.cards['g1']).toBeDefined();
     expect(state.cards['g3']).toBeDefined();
@@ -264,7 +314,7 @@ describe('AC: R2 — prompt suspension', () => {
 
     expect(JSON.stringify(state)).toBe(before);
     expect(result.suspended).toBe(true);
-    expect(state.pendingPrompt).not.toBeNull();
+    expect(state.interaction).not.toBeNull();
     expect(lines[0].message).toContain('Prompt answer invalid');
   });
 
@@ -294,7 +344,7 @@ describe('AC: R2 — prompt suspension', () => {
     const { lines, result } = play(state);
 
     expect(result.suspended).toBe(false);
-    expect(state.pendingPrompt).toBeNull();
+    expect(state.interaction).toBeNull();
     expect(lines.some((l) => l.kind === 'prompt' && l.message.includes('Prompt skipped'))).toBe(true);
     expect(state.playerPools[HP][0]).toBe(19); // the changePool after it ran anyway
   });
@@ -305,7 +355,7 @@ describe('AC: R2 — prompt suspension', () => {
     place(state, duel, HAND_0, BOMB, 'b1');
 
     play(state);
-    expect(state.pendingPrompt?.candidates).toEqual(['g1']);
+    expect(state.interaction?.candidates).toEqual(['g1']);
     expect(state.cards['g1']).toBeDefined();
   });
 
@@ -314,7 +364,7 @@ describe('AC: R2 — prompt suspension', () => {
     play(state);
     const { lines, result } = drive(state, duel, { kind: 'cancelPrompt' });
 
-    expect(state.pendingPrompt).toBeNull();
+    expect(state.interaction).toBeNull();
     expect(state.cards['g1']).toBeDefined(); // nothing destroyed
     expect(state.playerPools[HP][0]).toBe(19); // onRejection 'continue' → effect 2 ran
     expect(lines[0]).toMatchObject({ level: 'reject', kind: 'prompt' });
@@ -322,6 +372,25 @@ describe('AC: R2 — prompt suspension', () => {
     // Not an override, and never flagged as one.
     expect(lines.some((l) => l.level === 'override')).toBe(false);
     expect(result.haltedByLoopGuard).toBe(false);
+  });
+
+  it("cancel under onRejection 'abort' ends the RuleSet instead of advancing the cursor", () => {
+    // The other half of §5.9 row 8b. Resuming at the SAME cursor would just re-raise the prompt, so
+    // `continue` steps past it and `abort` sets the frame's one exit flag.
+    const def: GameDefinition = {
+      ...duel,
+      ruleSets: duel.ruleSets.map((r) => (r.id === RS_BOMB ? { ...r, onRejection: 'abort' as const } : r)),
+    };
+    const state = emptyBoard(def, MAIN);
+    place(state, def, BF, GRUNT, 'g1');
+    place(state, def, HAND_0, BOMB, 'b1');
+
+    driveEvent(state, def, 'onCardPlayed', 'b1');
+    drive(state, def, { kind: 'cancelPrompt' });
+
+    expect(state.cards['g1']).toBeDefined();
+    expect(state.playerPools[HP][0]).toBe(20); // effect 2 did NOT run
+    expect(idle(state)).toEqual(IDLE);
   });
 });
 
@@ -349,6 +418,8 @@ describe('AC: R4 — loop guard', () => {
    * the counters and the halt; HANG_MS stays purely as a hang detector, which still fails instantly
    * on a genuine infinite loop (it never terminates) and never on a loaded machine.
    */
+  // Unchanged from v1 at 2s. v2's raised maxEffects (50 000, was 10 000) makes fanOut the slowest
+  // case at ~520ms, so this keeps ~4x headroom — a hang detector, not a performance budget.
   const HANG_MS = 2000;
 
   it('selfLoop halts with exactly maxDepth fire lines and one RULE_LOOP error', () => {
@@ -357,7 +428,7 @@ describe('AC: R4 — loop guard', () => {
     expect(fireLines(run.lines, ECHO)).toHaveLength(DEFAULT_MAX_DEPTH);
     expect(loopErrors(run.lines)).toHaveLength(1);
     expect(loopErrors(run.lines)[0].message).toContain(`> limit ${DEFAULT_MAX_DEPTH}`);
-    expect(run.state.queue).toEqual([]);
+    expect(idle(run.state)).toEqual(IDLE);
     expect(run.ms).toBeLessThan(HANG_MS);
   });
 
@@ -366,7 +437,7 @@ describe('AC: R4 — loop guard', () => {
     expect(run.result.haltedByLoopGuard).toBe(true);
     expect(loopErrors(run.lines)).toHaveLength(1);
     expect(run.state.budget.causalDepth).toBe(DEFAULT_MAX_DEPTH + 1);
-    expect(run.state.queue).toEqual([]);
+    expect(idle(run.state)).toEqual(IDLE);
     expect(run.ms).toBeLessThan(HANG_MS);
   });
 
@@ -379,7 +450,7 @@ describe('AC: R4 — loop guard', () => {
     // The whole point of the fixture: flat and wide, so depth never gets near its own ceiling.
     expect(run.state.budget.causalDepth).toBeLessThan(DEFAULT_MAX_DEPTH);
     expect(run.state.budget.effectsUsed).toBe(DEFAULT_MAX_EFFECTS + 1);
-    expect(run.state.queue).toEqual([]);
+    expect(idle(run.state)).toEqual(IDLE);
     expect(run.ms).toBeLessThan(HANG_MS);
   });
 
@@ -387,7 +458,7 @@ describe('AC: R4 — loop guard', () => {
   // more than 64; the designer needs a knob, not a bug report". Every fixture sets them to exactly
   // the defaults, so configured and hardcoded are otherwise indistinguishable.
   it('honours a maxDepth raised or lowered by the definition, not DEFAULT_MAX_DEPTH', () => {
-    const def: GameDefinition = { ...structuredClone(selfLoop), limits: { maxDepth: 4, maxEffects: DEFAULT_MAX_EFFECTS } };
+    const def: GameDefinition = { ...structuredClone(selfLoop), limits: { ...LIMITS, maxDepth: 4 } };
     const run = timed(def, ECHO);
 
     expect(run.result.haltedByLoopGuard).toBe(true);
@@ -397,7 +468,7 @@ describe('AC: R4 — loop guard', () => {
   });
 
   it('honours a maxEffects set by the definition, not DEFAULT_MAX_EFFECTS', () => {
-    const def: GameDefinition = { ...structuredClone(fanOut), limits: { maxDepth: DEFAULT_MAX_DEPTH, maxEffects: 20 } };
+    const def: GameDefinition = { ...structuredClone(fanOut), limits: { ...LIMITS, maxEffects: 20 } };
     const run = timed(def, 'Burst');
 
     expect(run.result.haltedByLoopGuard).toBe(true);
@@ -405,17 +476,25 @@ describe('AC: R4 — loop guard', () => {
     expect(loopErrors(run.lines)[0].message).toContain('> limit 20');
   });
 
-  it('discards the queue, clears any suspension, and leaves the state playable', () => {
+  it('discards BOTH work arrays, clears any suspension, and leaves the state playable', () => {
     const state = createPlayState(selfLoop, 'seed');
     drive(state, selfLoop, { kind: 'fireEvent', name: ECHO, seat: 0 });
 
-    expect(state.queue).toEqual([]);
-    expect(state.pendingPrompt).toBeNull();
+    expect(idle(state)).toEqual(IDLE);
+    expect(state.interaction).toBeNull();
     const before = state.pools[N];
     // Rolls back nothing — the world is exactly as of the last completed effect, and still drivable.
     const again = drive(state, selfLoop, { kind: 'fireEvent', name: 'unbound', seat: 0 });
     expect(again.result.haltedByLoopGuard).toBe(false);
     expect(state.pools[N]).toBe(before);
+  });
+
+  it('the reported discard count covers stack AND pending, not one array', () => {
+    const run = timed(fanOut, 'Burst');
+    const discarded = Number(/Discarded (\d+) queued events/.exec(loopErrors(run.lines)[0].message)?.[1]);
+    // fanOut is wide: thousands of fired events are owed in `pending` when the budget trips, and a
+    // count taken from `stack.length` alone would report a handful.
+    expect(discarded).toBeGreaterThan(100);
   });
 
   // Both counters, or override becomes "ignore all checks" one unguarded branch at a time
@@ -426,7 +505,7 @@ describe('AC: R4 — loop guard', () => {
   ])('override does NOT bypass the %s guard', (_label, def, event) => {
     const run = timed(def, event, true);
     expect(run.result.haltedByLoopGuard).toBe(true);
-    expect(run.state.queue).toEqual([]);
+    expect(idle(run.state)).toEqual(IDLE);
     expect(loopErrors(run.lines)).toHaveLength(1);
   });
 
@@ -568,7 +647,25 @@ describe('bindings and rejection policy', () => {
     expect(state.pools[N]).toBe(2);
   });
 
-  // Both halves of §5.2's "bindings snapshot at frame start, existence re-validated immediately
+  it('bindings resolve when the event frame BEGINS advancing, not when the event was fired', () => {
+    // A card that arrives between the fire and the frame's first advance must still bind. v1
+    // resolved at dequeue time; v2's `cursor === -1` pass is that same moment, and resolving early
+    // (at `appendPending`) is a silent parity break no type error catches.
+    const sweep = bump('rs_sweep', 'e');
+    const def = mini({ zones: [sharedZone('zR')], templates: [tpl('t_sweep', [sweep.id])], ruleSets: [sweep] });
+    const state = emptyBoard(def);
+    const lines: LogLine[] = [];
+
+    step(state, { kind: 'action', action: { kind: 'fireEvent', name: 'e', seat: 0 }, override: false }, lines, def);
+    expect(state.pending[0]).toMatchObject({ kind: 'event', bindings: [], cursor: -1 });
+    // The card lands AFTER the frame exists but BEFORE it advances.
+    place(state, def, zoneKey('zR', null), 't_sweep', 'c1');
+
+    while (!step(state, CONTINUE, lines, def).done) { /* drain */ }
+    expect(state.pools[N]).toBe(1);
+  });
+
+  // Both halves of §5.2's "bindings resolved at frame start, existence re-validated immediately
   // before each runs" share one definition: a zone, and cards that destroy each other by tag.
   const ZR = 'zR';
   const KEY_R = zoneKey(ZR, null);
@@ -586,7 +683,8 @@ describe('bindings and rejection policy', () => {
 
   it('§9.4 item 14 — destroying the card whose RuleSet is executing does not abort it', () => {
     // Effect 2 destroys the rule's OWN source card; effect 3 must still run. Every "when this
-    // dies" combo depends on this.
+    // dies" combo depends on it — and in v2 that depends on `advanceRule` re-validating the source
+    // card ONLY at `cursor === -1`, never per effect.
     const boom = bump('rs_boom', 'e', { effects: [add(1), destroyTagged('self'), add(1)] });
     const def = mini({
       zones: [sharedZone(ZR)],
@@ -613,7 +711,7 @@ describe('bindings and rejection policy', () => {
     });
     const state = emptyBoard(def);
     place(state, def, KEY_R, 't_killer', 'cK'); // position 0 — sorts first
-    place(state, def, KEY_R, 't_victim', 'cV'); // position 1 — bound at snapshot, gone by its turn
+    place(state, def, KEY_R, 't_victim', 'cV'); // position 1 — bound at frame start, gone by its turn
 
     const { lines, result } = drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
 
@@ -658,69 +756,292 @@ describe('bindings and rejection policy', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Queue mechanics — §3.3, §5.1
+// Frame mechanics — §3.2. v1's `queue mechanics` block, genuinely rewritten rather than renamed:
+// v1's `{kind:'effect', effectIndex}` work item has no v2 equivalent, and a `rule` frame advances
+// ONE effect per `step()` where v1 ran the whole remaining list.
 // ---------------------------------------------------------------------------
 
-describe('queue mechanics', () => {
-  it('step() performs exactly one unit of work and leaves the rest in state.queue', () => {
+describe('stack and pending mechanics', () => {
+  const fire = (state: PlayState, def: GameDefinition, lines: LogLine[], name = 'e') =>
+    step(state, { kind: 'action', action: { kind: 'fireEvent', name, seat: 0 }, override: false }, lines, def);
+
+  it('step() performs exactly one unit of work, leaving the rest in state.stack / state.pending', () => {
     const rule = bump('rs_one', 'e');
     const def = mini({ ruleSets: [rule], globalRuleSetIds: [rule.id] });
     const state = createPlayState(def, 'seed');
     const lines: LogLine[] = [];
 
-    // 1: the action enqueues the event.
-    expect(step(state, { kind: 'action', action: { kind: 'fireEvent', name: 'e', seat: 0 }, override: false }, lines, def).done).toBe(false);
-    expect(state.queue).toHaveLength(1);
-    expect(state.queue[0]).toMatchObject({ kind: 'event', name: 'e', depth: 1, parentId: null });
+    // 1: the action appends the event to PENDING — never straight onto the stack (§3.2).
+    expect(fire(state, def, lines).done).toBe(false);
+    expect(state.stack).toEqual([]);
+    expect(state.pending).toHaveLength(1);
+    expect(state.pending[0]).toMatchObject({ kind: 'event', name: 'e', depth: 1, parentId: null, cursor: -1 });
 
-    // 2: the event resolves into rule work — and nothing has been applied yet.
+    // 2: promotion — pending → stack, and nothing else.
     step(state, CONTINUE, lines, def);
-    expect(state.queue).toHaveLength(1);
-    expect(state.queue[0]).toMatchObject({ kind: 'rule', ruleId: 'rs_one', parentId: 0 });
+    expect(state.pending).toEqual([]);
+    expect(state.stack).toHaveLength(1);
+
+    // 3: the event frame resolves its bindings and logs; no rule frame yet.
+    step(state, CONTINUE, lines, def);
+    expect(state.stack).toHaveLength(1);
+    expect(state.stack[0]).toMatchObject({ kind: 'event', cursor: 0, bindings: [{ ruleId: 'rs_one' }] });
+
+    // 4: one binding becomes one `rule` frame ABOVE the event frame — the event frame STAYS, which
+    // is what keeps this event's rules ahead of any sibling event without v1's enqueueFront.
+    step(state, CONTINUE, lines, def);
+    expect(state.stack.map((f) => f.kind)).toEqual(['event', 'rule']);
+    expect(state.stack[1]).toMatchObject({ kind: 'rule', ruleId: 'rs_one', parentId: state.stack[0].id, cursor: -1 });
     expect(state.pools[N]).toBe(0);
 
-    // 3: the rule runs its effects.
+    // 5: the rule's once-per-frame header work — condition and log line — still applies nothing.
+    step(state, CONTINUE, lines, def);
+    expect(state.stack[1]).toMatchObject({ cursor: 0 });
+    expect(state.pools[N]).toBe(0);
+
+    // 6: ONE effect, and the cursor moves past it.
     step(state, CONTINUE, lines, def);
     expect(state.pools[N]).toBe(1);
+    expect(state.stack[1]).toMatchObject({ cursor: 1 });
   });
 
-  it('fired events go to the TAIL — breadth first, siblings before children', () => {
-    // a fires b; the rules on `e` are a then z. If b jumped the queue, z would run last.
+  it('a rule frame runs exactly ONE effect per step', () => {
+    const three = bump('rs_three', 'e', {
+      effects: [1, 2, 4].map((v) => ({
+        kind: 'changePool' as const,
+        poolId: N,
+        seat: null,
+        op: 'add' as const,
+        amount: { kind: 'literal' as const, value: v },
+      })),
+    });
+    const def = mini({ ruleSets: [three], globalRuleSetIds: [three.id] });
+    const state = createPlayState(def, 'seed');
+    const lines: LogLine[] = [];
+
+    fire(state, def, lines);
+    for (let i = 0; i < 4; i++) step(state, CONTINUE, lines, def); // promote, bind, push rule, header
+    const seen: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      step(state, CONTINUE, lines, def);
+      seen.push(Number(state.pools[N]));
+    }
+    expect(seen).toEqual([1, 3, 7]);
+  });
+
+  it('fired events go to PENDING — breadth first, siblings before children', () => {
+    // a fires b; the rules on `e` are a then z. If b jumped onto the stack, z would run last.
     const a = bump('rs_a', 'e', { effects: [{ kind: 'fireEvent', name: 'child' }] });
     const z = bump('rs_z', 'e');
     const child = bump('rs_child', 'child');
     const def = mini({ ruleSets: [a, z, child], globalRuleSetIds: [a.id, z.id, child.id] });
     const state = createPlayState(def, 'seed');
+    const lines: LogLine[] = [];
 
-    const { lines } = drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+    // Drive to the exact moment rs_a's fireEvent has run and pin WHERE the child landed: on
+    // `pending`, with the `e` event frame still on the stack owing rs_z. That structural fact is
+    // the guarantee; the log order below is its observable consequence.
+    fire(state, def, lines);
+    for (let i = 0; i < 5; i++) step(state, CONTINUE, lines, def); // promote, bind, push a, header, effect
+    expect(named(state.pending)).toEqual(['child']);
+    expect(state.stack.map((f) => f.kind)).toEqual(['event', 'rule']);
+
+    while (!step(state, CONTINUE, lines, def).done) { /* drain */ }
     expect(ruleLines(lines).map((l) => l.ruleId)).toEqual(['rs_a', 'rs_z', 'rs_child']);
   });
 
-  it('every work item carries a parent id and depth+1 on the child', () => {
+  it('every frame carries a parent id, and only a FIRED EVENT increments depth', () => {
     const a = bump('rs_a', 'e', { effects: [{ kind: 'fireEvent', name: 'child' }] });
     const def = mini({ ruleSets: [a], globalRuleSetIds: [a.id] });
     const state = createPlayState(def, 'seed');
     const lines: LogLine[] = [];
 
-    step(state, { kind: 'action', action: { kind: 'fireEvent', name: 'e', seat: 0 }, override: false }, lines, def);
-    step(state, CONTINUE, lines, def); // event → rule
-    const ruleItem = state.queue[0];
-    step(state, CONTINUE, lines, def); // rule → fires child at tail
+    fire(state, def, lines);
+    step(state, CONTINUE, lines, def); // promote
+    step(state, CONTINUE, lines, def); // resolve bindings
+    step(state, CONTINUE, lines, def); // push the rule frame
+    const [eventFrame, ruleFrame] = state.stack;
+    // The SAME depth, not depth + 1 — a rule binding is not a new causal level.
+    expect(ruleFrame).toMatchObject({ parentId: eventFrame.id, depth: eventFrame.depth });
 
-    expect(state.queue[0]).toMatchObject({ kind: 'event', name: 'child', depth: 2, parentId: ruleItem.id });
+    step(state, CONTINUE, lines, def); // rule header
+    step(state, CONTINUE, lines, def); // the fireEvent effect
+    expect(state.pending[0]).toMatchObject({ kind: 'event', name: 'child', depth: 2, parentId: ruleFrame.id });
   });
 
-  it('enqueue assigns deterministic ids from nextWorkId and appends', () => {
+  it('promotion preserves the frame id — it does not mint a new one', () => {
+    // The id was drawn from nextWorkId when the event was fired and is already every child's
+    // `parentId`; renumbering on promotion breaks the loop-guard parent chain and creation order.
     const def = mini();
     const state = createPlayState(def, 'seed');
-    enqueue(state, { kind: 'event', name: 'a', ctx: { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {} }, parentId: null, depth: 1 });
-    enqueue(state, { kind: 'event', name: 'b', ctx: { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {} }, parentId: null, depth: 1 });
+    const ctx = { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {} };
+    appendPending(state, { kind: 'event', name: 'a', ctx, bindings: [], cursor: -1, parentId: null, depth: 1 });
+    appendPending(state, { kind: 'event', name: 'b', ctx, bindings: [], cursor: -1, parentId: null, depth: 1 });
 
-    expect(state.queue.map((w) => [w.id, (w as { name: string }).name])).toEqual([
+    expect(state.pending.map((f) => [f.id, (f as { name: string }).name])).toEqual([
       [0, 'a'],
       [1, 'b'],
     ]);
     expect(state.nextWorkId).toBe(2);
+
+    step(state, CONTINUE, [], def); // promotes 'a'
+    expect(state.stack[0]).toMatchObject({ id: 0, name: 'a' });
+    expect(state.nextWorkId).toBe(2); // promotion mints nothing
+    expect(named(state.pending)).toEqual(['b']);
+  });
+
+  it('pending drains FIFO, one frame per step, and only once the stack is empty', () => {
+    const def = mini();
+    const state = createPlayState(def, 'seed');
+    const ctx = { triggeringCardId: null, zoneKey: null, triggeringSeat: 0, promptAnswers: {} };
+    for (const name of ['a', 'b', 'c']) {
+      appendPending(state, { kind: 'event', name, ctx, bindings: [], cursor: -1, parentId: null, depth: 1 });
+    }
+    const lines: LogLine[] = [];
+    while (!step(state, CONTINUE, lines, def).done) { /* drain */ }
+
+    expect(lines.filter((l) => l.kind === 'event').map((l) => l.message)).toEqual([
+      'Event "a" fired — 0 rules bound.',
+      'Event "b" fired — 0 rules bound.',
+      'Event "c" fired — 0 rules bound.',
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The settle frame — §5.3
+// ---------------------------------------------------------------------------
+
+describe('settle frame', () => {
+  const A = 'sA';
+  const B = 'sB';
+  const alwaysTrue: CriteriaNode = {
+    kind: 'criteria',
+    left: { kind: 'literal', value: 0 },
+    op: '>=',
+    right: { kind: 'literal', value: 0 },
+  };
+
+  const node = (id: Id, over: Partial<MachineState>): MachineState => ({
+    id,
+    name: id,
+    enterableFrom: [],
+    exitableTo: [],
+    entryCriteria: null,
+    transitionLabel: null,
+    priority: 0,
+    position: { x: 0, y: 0 },
+    ...over,
+  });
+
+  /** A → B, automatic, once. B is terminal, so the second settle finds nothing and commits. */
+  const oneShot = mini({
+    machine: {
+      states: [START_NODE, END_NODE, node(A, { exitableTo: [B] }), node(B, { enterableFrom: [A], entryCriteria: alwaysTrue })],
+      startStateId: START_STATE_ID,
+      endStateId: END_STATE_ID,
+    },
+  });
+
+  /** A ⇄ B, both automatic and both always eligible: a settle point that never converges. */
+  const pingPong = mini({
+    machine: {
+      states: [
+        START_NODE,
+        END_NODE,
+        node(A, { exitableTo: [B], enterableFrom: [B], entryCriteria: alwaysTrue }),
+        node(B, { exitableTo: [A], enterableFrom: [A], entryCriteria: alwaysTrue }),
+      ],
+      startStateId: START_STATE_ID,
+      endStateId: END_STATE_ID,
+    },
+  });
+
+  function at(def: GameDefinition, stateId: Id): PlayState {
+    const state = createPlayState(def, 'seed');
+    state.currentStateId = stateId;
+    return state;
+  }
+
+  it('is pushed only at quiescence, and settling is what ends the transaction', () => {
+    const state = at(oneShot, B); // nothing eligible from B
+    const lines: LogLine[] = [];
+
+    step(state, { kind: 'action', action: { kind: 'fireEvent', name: 'e', seat: 0 }, override: false }, lines, oneShot);
+    step(state, CONTINUE, lines, oneShot); // promote
+    step(state, CONTINUE, lines, oneShot); // resolve bindings (none)
+    step(state, CONTINUE, lines, oneShot); // pop the event frame
+    expect(idle(state)).toEqual(IDLE);
+
+    // Only now — with both arrays empty — does the settle sentinel appear.
+    step(state, CONTINUE, lines, oneShot);
+    expect(state.stack).toEqual([{ kind: 'settle', iteration: 0, id: 1, parentId: null, depth: 0 }]);
+
+    expect(step(state, CONTINUE, lines, oneShot)).toEqual({ done: true, suspended: false, haltedByLoopGuard: false });
+    expect(idle(state)).toEqual(IDLE);
+  });
+
+  it('slot 2 fires an auto-transition, whose state events go to pending and re-enter settle', () => {
+    const state = at(oneShot, A);
+    const { lines } = drive(state, oneShot, { kind: 'fireEvent', name: 'e', seat: 0 });
+
+    expect(state.currentStateId).toBe(B);
+    expect(state.budget.settleIterations).toBe(1); // one re-entry, then converged
+    // The transition, then the events it appended — proof the settle frame did not run them inline.
+    expect(lines.filter((l) => l.kind === 'transition' || l.kind === 'event').map((l) => l.message)).toEqual([
+      'Event "e" fired — 0 rules bound.',
+      'Transition sA → sB.',
+      'Event "onStateExit" fired — 0 rules bound.',
+      'Event "onStateEnter" fired — 0 rules bound.',
+    ]);
+    expect(idle(state)).toEqual(IDLE);
+  });
+
+  it('a finished session never reaches settle at all', () => {
+    const state = at(oneShot, A);
+    state.finished = true;
+    const lines: LogLine[] = [];
+    // v1's `finished` short-circuit, kept: it is checked on the empty-stack branch, BEFORE a settle
+    // frame is pushed, so the eligible A → B transition is never even scanned for.
+    expect(step(state, CONTINUE, lines, oneShot)).toEqual({ done: true, suspended: false, haltedByLoopGuard: false });
+    expect(state.currentStateId).toBe(A);
+    expect(state.stack).toEqual([]);
+    expect(lines).toEqual([]);
+  });
+
+  it('SETTLE_DIVERGED trips at maxSettleIterations and halts exactly like the loop guard', () => {
+    const state = at(pingPong, A);
+    const { lines, result } = drive(state, pingPong, { kind: 'fireEvent', name: 'e', seat: 0 });
+
+    expect(result).toEqual({ done: true, suspended: false, haltedByLoopGuard: true });
+    expect(state.budget.settleIterations).toBe(DEFAULT_MAX_SETTLE_ITERATIONS + 1);
+    // It trips before causalDepth does — the tighter, more specific ceiling names the fault.
+    expect(state.budget.causalDepth).toBeLessThan(DEFAULT_MAX_DEPTH);
+    const halt = lines.filter((l) => l.level === 'error' && l.message.includes('SETTLE_DIVERGED'));
+    expect(halt).toHaveLength(1);
+    expect(halt[0].message).toContain(`> limit ${DEFAULT_MAX_SETTLE_ITERATIONS}`);
+    expect(halt[0].message).toContain('use Rewind to back this out');
+    // Same discard, same clear — a divergent fixpoint is no more resumable than a rule loop.
+    expect(idle(state)).toEqual(IDLE);
+    expect(state.interaction).toBeNull();
+  });
+
+  it('honours a maxSettleIterations set by the definition', () => {
+    const def: GameDefinition = { ...pingPong, limits: { ...LIMITS, maxSettleIterations: 3 } };
+    const state = at(def, A);
+    const { result } = drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+
+    expect(result.haltedByLoopGuard).toBe(true);
+    expect(state.budget.settleIterations).toBe(4);
+  });
+
+  it('settleIterations resets on a new action, alongside the other two counters', () => {
+    const state = at(oneShot, A);
+    drive(state, oneShot, { kind: 'fireEvent', name: 'e', seat: 0 });
+    expect(state.budget.settleIterations).toBe(1);
+
+    drive(state, oneShot, { kind: 'fireEvent', name: 'e', seat: 0 });
+    expect(state.budget.settleIterations).toBe(0); // B is terminal — reset, then nothing fired
   });
 });
 
@@ -729,7 +1050,7 @@ describe('queue mechanics', () => {
 // ---------------------------------------------------------------------------
 
 describe('actions', () => {
-  it('a card move enqueues exit → enter → played, after the card has settled', () => {
+  it('a card move appends exit → enter → played to pending, after the card has settled', () => {
     const state = emptyBoard(duel, MAIN);
     place(state, duel, HAND_0, GRUNT, 'g1');
     const lines: LogLine[] = [];
@@ -738,7 +1059,8 @@ describe('actions', () => {
 
     expect(state.zones[BF].cardIds).toEqual(['g1']); // settled BEFORE any rule runs
     expect(state.zones[HAND_0].cardIds).toEqual([]);
-    expect(state.queue.map((w) => (w as { name: string }).name)).toEqual(['onZoneExit', 'onZoneEnter', 'onCardPlayed']);
+    expect(state.stack).toEqual([]);
+    expect(named(state.pending)).toEqual(['onZoneExit', 'onZoneEnter', 'onCardPlayed']);
   });
 
   it('row 15 — moving a card to the zone it occupies is a no-op with no events', () => {
@@ -746,7 +1068,7 @@ describe('actions', () => {
     place(state, duel, BF, GRUNT, 'g1');
     const { lines } = drive(state, duel, { kind: 'moveCard', cardId: 'g1', to: { zoneId: BATTLEFIELD, seat: null }, position: 'top' });
 
-    expect(state.queue).toEqual([]);
+    expect(idle(state)).toEqual(IDLE);
     expect(lines).toHaveLength(1);
     expect(lines[0].message).toContain('No-op, no events fired');
   });
@@ -758,7 +1080,7 @@ describe('actions', () => {
 
     expect(result).toEqual({ done: true, suspended: false, haltedByLoopGuard: false });
     expect(lines[0].message).toContain('Only Rewind is accepted');
-    expect(state.queue).toEqual([]);
+    expect(idle(state)).toEqual(IDLE);
   });
 
   it('flip and rotate log a change line with before and after', () => {
@@ -783,7 +1105,7 @@ describe('actions', () => {
     expect(state.budget.effectsUsed).toBeGreaterThan(spent);
 
     drive(state, duel, { kind: 'flipCard', cardId: 'b1', to: 'toggle' });
-    expect(state.budget).toEqual({ causalDepth: 0, effectsUsed: 0 });
+    expect(state.budget).toEqual({ causalDepth: 0, effectsUsed: 0, settleIterations: 0 });
   });
 });
 
@@ -852,7 +1174,7 @@ describe('AC: M5 — SESSION_FINISHED', () => {
     for (const action of actions) drive(state, duel, action);
 
     expect(state).toEqual(before);
-    expect(state.queue).toEqual([]);
+    expect(idle(state)).toEqual(IDLE);
     expect(state.finished).toBe(true);
   });
 });

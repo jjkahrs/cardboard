@@ -14,8 +14,9 @@
  *    called out as the single largest source of accidental infinite loops.
  *
  * `state` is a mutable immer draft, mutated in place. This module never imports immer (§3.2) and
- * never dispatches: `fireEvent` only enqueues, and `forceTransition` applies the transition at its
- * position in the effect list (§5.6) while its state events go to the queue tail.
+ * never dispatches: `fireEvent` only appends to `state.pending`, and `forceTransition` applies the
+ * transition at its position in the effect list (§5.6) while its state events go to that same
+ * pending FIFO.
  */
 
 import { parseZoneKey, resolvePoolDef, resolveSeat, resolveValueRef, zoneKey } from './valueRef';
@@ -50,9 +51,9 @@ export interface EffectContext {
   override: boolean;
   log(line: LogLine): void;
   /**
-   * ENQUEUES only. dispatch.ts owns depth+1 and tail ordering (§5.1).
+   * APPENDS to `state.pending` only. dispatch.ts owns depth+1 and the FIFO placement (§3.2).
    * `stateId` is for `onStateExit` alone — the state being LEFT, which stateFilter matching needs
-   * because `currentStateId` is already the destination when the queued event drains.
+   * because `currentStateId` is already the destination when the pending event is promoted.
    */
   fireEvent(name: EventName, ctx: TriggerContext, stateId?: Id): void;
 }

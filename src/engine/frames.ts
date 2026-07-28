@@ -55,3 +55,17 @@ export function appendPending(state: PlayState, frame: NewFrame): Frame {
 export function shiftPending(state: PlayState): Frame | undefined {
   return state.pending.shift();
 }
+
+/**
+ * Move the oldest pending frame onto the stack. Returns it, or `undefined` when `pending` is empty.
+ *
+ * **The id is preserved, not reassigned.** It was drawn from `nextWorkId` when the event was fired,
+ * and it is the value every child frame already carries as its `parentId`; renumbering here would
+ * break the loop-guard parent chain and make ids stop being in creation order. That is exactly why
+ * this is a function rather than `push(state, shiftPending(state))` — `push` mints a new id.
+ */
+export function promotePending(state: PlayState): Frame | undefined {
+  const frame = state.pending.shift();
+  if (frame) state.stack.push(frame);
+  return frame;
+}

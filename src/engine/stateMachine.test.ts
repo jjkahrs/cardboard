@@ -29,7 +29,7 @@ function stateAt(stateId: string, def: GameDefinition = duel): PlayState {
   return state;
 }
 
-/** Stand-in for effects.ts's EffectContext — recording, so tests can assert enqueue ORDER. */
+/** Stand-in for effects.ts's EffectContext — recording, so tests can assert fire ORDER. */
 function makeEc(state: PlayState, def: GameDefinition = duel, override = false) {
   const fired: EventName[] = [];
   const logged: LogLine[] = [];
@@ -113,7 +113,7 @@ describe('findAutoTransition', () => {
   });
 
   // AC: M1
-  it('transitions and enqueues onStateExit(Main) then onStateEnter(Combat), in that order', () => {
+  it('transitions and appends onStateExit(Main) then onStateEnter(Combat), in that order', () => {
     const state = stateAt(MAIN);
     state.playerPools[ATTACKERS][0] = 1;
     const found = findAutoTransition(state, duel, CTX)!;
@@ -323,7 +323,7 @@ describe('reaching End', () => {
 
   /**
    * The repro the audit found: `End.exitableTo` non-empty is now rejected at import (schema.ts),
-   * but the RUNTIME must not depend on that — a queued `forceTransition` work item reaches
+   * but the RUNTIME must not depend on that — a `forceTransition` effect on a rule frame reaches
    * applyTransition without passing dispatch's `finished` guard. Asserting "once per call" (the
    * test above) cannot catch this; this asserts once across the WHOLE cascade.
    */
