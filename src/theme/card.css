@@ -14,7 +14,8 @@
 .cb-card__rules   { font-size: 0.62em; line-height: 1.25; }
 @container (max-width: 118px) { .cb-card__rules   { display: none; } }
 @container (max-width: 88px)  { .cb-card__tagline { display: none; } }
-@container (max-width: 64px)  { .cb-pip b         { display: none; } }
+/* The delta joins the number it annotates: a lone "+1" with no value under it is worse than nothing. */
+@container (max-width: 64px)  { .cb-pip__delta, .cb-pip b { display: none; } }
 
 /* `cqw` on .cb-card itself resolves against the nearest ANCESTOR container (an element is not its
    own container), so restate it one level down where it actually means "9% of this card's width".
@@ -120,6 +121,32 @@
   gap: 0.15em;
   font-size: 0.7em;
 }
+
+/* ── §6.8 modified values ────────────────────────────────────────────────────────────────────────
+   The <sup> delta is the CARRIER; the tint is redundant reinforcement (§6.9 — colour is never the
+   sole carrier of meaning). Both boolean states are shape rather than colour for the same reason. */
+
+.cb-pip[data-modified="up"]   { color: var(--cb-ink-green); }
+.cb-pip[data-modified="down"] { color: var(--cb-ink-red); }
+.cb-pip__delta { font-size: 0.72em; font-weight: 700; line-height: 1; }
+
+/* A keyword a modifier GRANTED: dashed, so it reads as "not printed on this card". */
+.cb-pip[data-modified="granted"] { outline: 1px dashed currentColor; outline-offset: 2px; }
+
+/* A keyword a modifier REMOVED. It stays on the card, struck through — vanishing would make it
+   indistinguishable from a card that never had it. The rule is drawn, not `text-decoration`, which
+   has nothing to strike through on a pip whose only content is an <svg>. */
+.cb-pip[data-modified="removed"] { opacity: 0.55; }
+.cb-pip[data-modified="removed"]::after {
+  content: "";
+  position: absolute;
+  inset-inline: -0.15em;
+  inset-block-start: 50%;
+  border-block-start: 1px solid currentColor;
+}
+
+/* A tag a rule added at runtime, distinguished from a printed one — the tagline's half of §6.8. */
+.cb-card__tag[data-granted] { text-decoration: underline dashed; text-underline-offset: 2px; }
 
 .cb-pip[data-pos="topLeft"]     { inset-block-start: var(--cb-s1); inset-inline-start: var(--cb-s1); }
 .cb-pip[data-pos="topRight"]    { inset-block-start: var(--cb-s1); inset-inline-end: var(--cb-s1); }

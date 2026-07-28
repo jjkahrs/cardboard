@@ -57,7 +57,7 @@ export function PlayTable({
 
   const zoneProps = {
     definition,
-    cards: state.cards,
+    state,
     viewingSeat,
     revealAll,
     legalTargets,

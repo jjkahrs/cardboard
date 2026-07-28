@@ -21,6 +21,9 @@ import type {
   ZoneRef,
 } from './types';
 import { type ResolutionFail, resolveSeat, resolveValueRef, zoneKey } from './valueRef';
+// Cyclic with `modifiers.ts` (it calls `resolveTargets` for a modifier's scope) by design (§5.4).
+// Function-body calls only, so module evaluation order never matters.
+import { effectiveTags } from './modifiers';
 
 // ---------------------------------------------------------------------------
 // Result type
@@ -200,8 +203,11 @@ export function resolveTargets(
         if (!template) {
           return fail('MISSING_REFERENT', `Card template "${card.templateId}" does not exist in this definition.`);
         }
-        // Tags live on the TEMPLATE (§4.4); instances carry index values, not tags.
-        if (template.tags.includes(sel.tag)) ids.push(id);
+        // §5.4 read site. Tags are PER-INSTANCE since §4.3 — seeded from the template at creation
+        // and mutable thereafter — so reading `template.tags` here would miss every tag an effect
+        // has added or removed. The template lookup above stays: a dangling templateId is still a
+        // MISSING_REFERENT, which `effectiveTags` has no channel to report.
+        if (effectiveTags(state, def, id).includes(sel.tag)) ids.push(id);
       }
       return selection(ids, ids.length, sel.kind, state);
     }

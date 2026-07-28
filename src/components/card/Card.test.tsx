@@ -8,7 +8,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { generateRulesProse } from '../../engine/prose';
@@ -178,6 +178,137 @@ describe('pips', () => {
   it('names each pip, since the glyph alone carries no meaning', () => {
     render(<Card template={grunt} definition={duel} />);
     expect(screen.getByRole('img', { name: 'Power' })).toBeInTheDocument();
+  });
+});
+
+describe('modified values (§6.8)', () => {
+  const flagged = withFlag(grunt);
+
+  it('renders a plain pip when the effective value equals the base', () => {
+    const { container } = render(
+      <Card
+        template={grunt}
+        instance={instanceOf(grunt, { indexValues: { [POWER]: 3 } })}
+        effective={{ [POWER]: 3 }}
+        definition={duel}
+      />
+    );
+    const pip = container.querySelector('.cb-pip')!;
+    expect(pip.querySelector('b')).toHaveTextContent('3');
+    expect(pip).not.toHaveAttribute('data-modified');
+    expect(pip).not.toHaveAttribute('title');
+    expect(pip.querySelector('.cb-pip__delta')).toBeNull();
+  });
+
+  it('shows the effective value, the delta IN TEXT, and the base in the title when buffed', () => {
+    const { container } = render(
+      <Card
+        template={grunt}
+        instance={instanceOf(grunt, { indexValues: { [POWER]: 1 } })}
+        effective={{ [POWER]: 3 }}
+        definition={duel}
+      />
+    );
+    const pip = container.querySelector('.cb-pip')!;
+    expect(pip.querySelector('b')).toHaveTextContent('3');
+    // The text is the CARRIER; the green tint is redundant reinforcement (§6.9). A test that only
+    // asserted data-modified would keep passing after someone deleted the <sup>.
+    expect(pip.querySelector('.cb-pip__delta')).toHaveTextContent('+2');
+    expect(pip).toHaveAttribute('data-modified', 'up');
+    expect(pip).toHaveAttribute('title', 'base 1');
+  });
+
+  it('signs the delta when debuffed', () => {
+    const { container } = render(
+      <Card
+        template={grunt}
+        instance={instanceOf(grunt, { indexValues: { [POWER]: 4 } })}
+        effective={{ [POWER]: 1 }}
+        definition={duel}
+      />
+    );
+    const pip = container.querySelector('.cb-pip')!;
+    expect(pip.querySelector('b')).toHaveTextContent('1');
+    expect(pip.querySelector('.cb-pip__delta')).toHaveTextContent('-3');
+    expect(pip).toHaveAttribute('data-modified', 'down');
+    expect(pip).toHaveAttribute('title', 'base 4');
+  });
+
+  it('renders a keyword a modifier GRANTED, which a false flag alone would not render at all', () => {
+    const { container } = render(
+      <Card
+        template={flagged}
+        instance={instanceOf(flagged, { indexValues: { idx_tapped: false } })}
+        effective={{ idx_tapped: true }}
+        definition={duel}
+      />
+    );
+    const pip = container.querySelector('.cb-pip')!;
+    // Dashed outline in card.css — SHAPE, so the granted keyword survives a monochrome print.
+    expect(pip).toHaveAttribute('data-modified', 'granted');
+    expect(pip).toHaveAttribute('title', 'base false');
+    expect(screen.getByRole('img', { name: 'Tapped (granted)' })).toBeInTheDocument();
+  });
+
+  it('keeps a keyword a modifier REMOVED on the card, struck through rather than vanished', () => {
+    const { container } = render(
+      <Card
+        template={flagged}
+        instance={instanceOf(flagged, { indexValues: { idx_tapped: true } })}
+        effective={{ idx_tapped: false }}
+        definition={duel}
+      />
+    );
+    // Vanishing would be indistinguishable from a card that never had the keyword.
+    const pip = container.querySelector('.cb-pip')!;
+    expect(pip).toHaveAttribute('data-modified', 'removed');
+    expect(pip).toHaveAttribute('title', 'base true');
+    expect(screen.getByRole('img', { name: 'Tapped (removed)' })).toBeInTheDocument();
+  });
+
+  it('still renders nothing for a false flag no modifier touched', () => {
+    const { container } = render(
+      <Card template={flagged} effective={{ idx_tapped: false }} definition={duel} />
+    );
+    expect(container.querySelectorAll('.cb-pip')).toHaveLength(0);
+  });
+
+  it('marks a runtime tag as granted and leaves the printed ones alone', () => {
+    const { container } = render(
+      <Card template={grunt} tags={[...grunt.tags, 'enchanted']} definition={duel} />
+    );
+    const tagline = container.querySelector('.cb-card__tagline')!;
+    expect(tagline).toHaveTextContent(`${grunt.tags.join(' · ')} · enchanted`);
+    expect(tagline).toHaveAttribute('title', `${grunt.tags.join(' · ')} · enchanted`);
+
+    const granted = tagline.querySelectorAll('[data-granted]');
+    expect(granted).toHaveLength(1);
+    expect(granted[0]).toHaveTextContent('enchanted');
+    // Dashed underline in card.css, the same shape-not-colour distinction the boolean pip makes.
+    for (const tag of grunt.tags) {
+      expect(within(tagline as HTMLElement).getByText(tag)).not.toHaveAttribute('data-granted');
+    }
+  });
+
+  it('drops a tag a rule removed, since the tagline is the effective list', () => {
+    const { container } = render(<Card template={grunt} tags={[]} definition={duel} />);
+    expect(container.querySelector('.cb-card__tagline')).toBeEmptyDOMElement();
+  });
+
+  it('falls back to the template tags with no prop, which is the catalog', () => {
+    const { container } = render(<Card template={grunt} definition={duel} />);
+    const tagline = container.querySelector('.cb-card__tagline')!;
+    expect(tagline).toHaveTextContent(grunt.tags.join(' · '));
+    expect(tagline.querySelectorAll('[data-granted]')).toHaveLength(0);
+  });
+
+  it('hides the delta with the number it annotates below 64px', () => {
+    // jsdom implements no container queries, so the proof is the stylesheet itself. A lone "+1"
+    // with no value under it is worse than showing nothing.
+    const css = readFileSync(join(process.cwd(), 'src/theme/card.css'), 'utf8');
+    expect(css).toMatch(
+      /@container \(max-width: 64px\)[^}]*\.cb-pip__delta[^}]*\{\s*display:\s*none/
+    );
   });
 });
 

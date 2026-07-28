@@ -18,6 +18,9 @@ import {
 } from './types';
 import { fail, resolveCardRef, resolveSeat, resolveZoneKeys } from './seats';
 import type { ResolutionFail } from './seats';
+// Cyclic with `modifiers.ts` by design (§5.4): a computed value is defined in terms of the refs it
+// reads. Only ever called from inside a function body, so module evaluation order is irrelevant.
+import { effectiveIndex } from './modifiers';
 
 // `resolveSeat` moved to seats.ts with the ring (§3.5); `zoneKey`/`parseZoneKey`/`resolveCardRef`
 // followed it in step 17, because §4.1's `owner`/`controller` make SeatRef, CardRef and ZoneRef one
@@ -124,10 +127,15 @@ export function resolveValueRef(
     case 'cardIndex': {
       const cardRes = resolveCardRef(ref.card, state, ctx);
       if (!cardRes.ok) return cardRes;
-      const value = cardRes.card.indexValues[ref.indexId];
-      if (value === undefined) {
+      // The BASE is what proves the index exists on this instance — `effectiveIndex` has no failure
+      // channel and answers 0 for an index nothing declares, which would turn a dangling ref into a
+      // silently plausible number (§5.4).
+      if (cardRes.card.indexValues[ref.indexId] === undefined) {
         return fail('MISSING_REFERENT', `Card index "${ref.indexId}" does not exist on card "${cardRes.card.id}".`);
       }
+      // §5.4 read site: criteria compare what the card READS AS, modifiers included. `criteria.ts`
+      // inherits this through its two `resolveValueRef` calls and needs no change of its own.
+      const value = effectiveIndex(state, def, cardRes.card.id, ref.indexId);
       return { ok: true, values: [value], quantifier: 'every' };
     }
 

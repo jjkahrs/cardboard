@@ -54,6 +54,48 @@ export interface ActiveModifier {
 const modifierCache = new WeakMap<PlayState, ActiveModifier[]>();
 const indexCache = new WeakMap<PlayState, Map<string, number | boolean>>();
 
+/**
+ * ponytail: re-entrancy guards — and the one semantic §5.4 leaves open.
+ *
+ * Step 14 routes `valueRef`'s `cardIndex` through `effectiveIndex`, so a modifier whose `condition`,
+ * `scope` or `amount` reads a card index now re-enters this module. Left alone that is an infinite
+ * recursion on entirely authorable input ("creatures get +1/+1 while you control a 3-power
+ * creature"), i.e. a stack overflow inside a render. Two rules keep it total AND order-independent,
+ * which §5.4's "same-seed replays cannot diverge" requires:
+ *
+ *  - `collecting` — while `collectModifiers` is evaluating gates, every index read answers with its
+ *    BASE value. A modifier cannot see its own output, and the answer does not depend on which card
+ *    the UI happened to read first.
+ *  - `inFlight` — an `amount` that resolves, directly or around a chain, back to the index being
+ *    computed answers with its base as well rather than recursing.
+ *
+ * Neither degraded read is memoized, and only the outermost read writes the index memo, so a cached
+ * value is always a fully-resolved one.
+ *
+ * Upgrade path if layered modifiers are ever genuinely wanted: a dependency-ordering pass in
+ * `collectModifiers` — which is MTG's layer system, and what §5.4 deliberately stops short of.
+ */
+let collecting = false;
+const inFlight = new Set<string>();
+
+/**
+ * Drops both memos for `state`.
+ *
+ * The §5.4 memo is keyed on state IDENTITY, on the premise that immer hands back a fresh object per
+ * produce. That premise holds for the UI, which only ever reads committed states — but not inside a
+ * produce, where `applyEffect` mutates one draft in place across many effects. Step 14 put engine
+ * reads in exactly that window, so `applyEffect` calls this on entry: one call site the next effect
+ * kind cannot forget, rather than an invalidation per mutation, which is the same
+ * forgotten-teardown trap §5.4 rejects materialized modifiers for.
+ *
+ * Committed states are untouched by this — a draft is a different object identity — so the UI's
+ * per-render caching is unaffected.
+ */
+export function invalidateEffective(state: PlayState): void {
+  modifierCache.delete(state);
+  indexCache.delete(state);
+}
+
 // ---------------------------------------------------------------------------
 // collectModifiers — §5.4
 // ---------------------------------------------------------------------------
@@ -104,6 +146,16 @@ export function collectModifiers(state: PlayState, def: GameDefinition): ActiveM
   const cached = modifierCache.get(state);
   if (cached) return cached;
 
+  const wasCollecting = collecting;
+  collecting = true;
+  try {
+    return collectUncached(state, def);
+  } finally {
+    collecting = wasCollecting;
+  }
+}
+
+function collectUncached(state: PlayState, def: GameDefinition): ActiveModifier[] {
   const out: ActiveModifier[] = [];
   for (const cardId of Object.keys(state.cards)) {
     const card = state.cards[cardId];
@@ -197,28 +249,39 @@ export function effectiveIndex(
   // Mirrors `Card.tsx`'s existing `instance?.indexValues[id] ?? index.value.defaultValue`. The
   // final `0` covers an indexId that names no CardIndex at all — a dangling ref the walker
   // (§8 step 19) is meant to prevent, and which has no better answer here than "nothing".
-  let value: number | boolean = card?.indexValues[indexId] ?? indexDef?.value.defaultValue ?? 0;
+  const base: number | boolean = card?.indexValues[indexId] ?? indexDef?.value.defaultValue ?? 0;
+  const clamped = (v: number | boolean) => (indexDef ? clampValue(indexDef.value, v) : v);
 
-  if (card) {
-    const mods = collectModifiers(state, def).filter(
-      (m) => m.spec.indexId === indexId && m.scope.includes(cardId)
-    );
-    for (const m of mods) {
-      if (m.spec.op !== 'set') continue;
-      const amount = amountOf(m, state, def);
-      if (amount !== null) value = amount;
+  // The guarded answer — see the `collecting` / `inFlight` comment above. Deliberately not memoized.
+  if (collecting || inFlight.has(key)) return clamped(base);
+
+  const outermost = inFlight.size === 0;
+  inFlight.add(key);
+  let value: number | boolean = base;
+  try {
+    if (card) {
+      const mods = collectModifiers(state, def).filter(
+        (m) => m.spec.indexId === indexId && m.scope.includes(cardId)
+      );
+      for (const m of mods) {
+        if (m.spec.op !== 'set') continue;
+        const amount = amountOf(m, state, def);
+        if (amount !== null) value = amount;
+      }
+      for (const m of mods) {
+        if (m.spec.op !== 'adjust') continue;
+        const amount = amountOf(m, state, def);
+        // `adjust` is arithmetic; a boolean on either side has no defined sum, so it is skipped
+        // rather than coerced. Authoring an adjust on a boolean Index is the author's bug.
+        if (typeof amount === 'number' && typeof value === 'number') value += amount;
+      }
     }
-    for (const m of mods) {
-      if (m.spec.op !== 'adjust') continue;
-      const amount = amountOf(m, state, def);
-      // `adjust` is arithmetic; a boolean on either side has no defined sum, so it is skipped
-      // rather than coerced. Authoring an adjust on a boolean Index is the author's bug.
-      if (typeof amount === 'number' && typeof value === 'number') value += amount;
-    }
+  } finally {
+    inFlight.delete(key);
   }
 
-  if (indexDef) value = clampValue(indexDef.value, value);
-  perState.set(key, value);
+  value = clamped(value);
+  if (outermost) perState.set(key, value);
   return value;
 }
 

@@ -1,7 +1,7 @@
 import type { CSSProperties, KeyboardEvent, MouseEvent } from 'react';
-import { useMemo } from 'react';
+import { Fragment, useMemo } from 'react';
 import { generateRulesProse } from '../../engine/prose';
-import type { CardIndex, CardInstance, CardTemplate, GameDefinition } from '../../engine/types';
+import type { CardIndex, CardInstance, CardTemplate, GameDefinition, Id } from '../../engine/types';
 import { jitter } from '../../theme/jitter';
 import { Icon } from '../icons/Icon';
 
@@ -22,6 +22,16 @@ export interface CardProps {
    * from somewhere, and generateRulesProse needs the definition to name pools and zones.
    */
   definition: GameDefinition;
+  /**
+   * §5.4/§6.8. Effective values per index id, from `effectiveIndex()`, resolved in `ZoneView`
+   * exactly as `faceDown` already is. Absent in the catalog and the editor preview — a template has
+   * no instance and therefore no modifiers to apply — and absent for a face-down card, which
+   * renders no values at all. A COMPUTED ANSWER, never state: `<Card>` has no `PlayState` and must
+   * not acquire one, or v1 §6.3's "catalog and play render identically" stops being structural.
+   */
+  effective?: Record<Id, number | boolean>;
+  /** §5.4/§6.8. From `effectiveTags()`. Defaults to `template.tags`. */
+  tags?: string[];
   onClick?: (e: MouseEvent | KeyboardEvent) => void;
 }
 
@@ -32,8 +42,18 @@ export interface CardProps {
  * container (`--cb-card-w` + container queries in card.css). That is what *structurally* guarantees
  * "catalog and play render identically" rather than leaving it to a convention someone breaks.
  */
-export function Card({ template, instance, faceDown, definition, onClick }: CardProps) {
+export function Card({
+  template,
+  instance,
+  faceDown,
+  definition,
+  effective,
+  tags,
+  onClick,
+}: CardProps) {
   const hidden = faceDown ?? instance?.faceDown ?? false;
+  // The catalog passes nothing and reads the template, which is the whole point of §6.8's default.
+  const shownTags = tags ?? template.tags;
 
   const rulesText = useMemo(() => {
     // The whole "override replaces the generated text without altering the RuleSet" criterion is
@@ -92,16 +112,28 @@ export function Card({ template, instance, faceDown, definition, onClick }: Card
                 <Icon id={template.faceIcon} />
               </div>
               {/* Ellipsised at small sizes and hidden below 88px by container query, so the full
-                  list has to survive somewhere reachable. */}
-              <div className="cb-card__tagline" title={template.tags.join(' · ')}>
-                {template.tags.join(' · ')}
+                  list has to survive somewhere reachable. Per-tag spans rather than one join,
+                  because §6.8 wants a tag a rule ADDED at runtime distinguishable from a printed
+                  one — the same distinction the boolean pip makes, and by shape, not by colour. */}
+              <div className="cb-card__tagline" title={shownTags.join(' · ')}>
+                {shownTags.map((tag, i) => (
+                  <Fragment key={`${i}-${tag}`}>
+                    {i > 0 && ' · '}
+                    <span
+                      className="cb-card__tag"
+                      data-granted={template.tags.includes(tag) ? undefined : true}
+                    >
+                      {tag}
+                    </span>
+                  </Fragment>
+                ))}
               </div>
               <div className="cb-card__rules">{rulesText}</div>
               {/* Inside the body grid so the overlay can be pinned below the marquee row — a pip
                   anchored to the whole card lands on the title. */}
               <div className="cb-card__pips">
                 {template.indexes.map((index) => (
-                  <Pip key={index.id} index={index} instance={instance} />
+                  <Pip key={index.id} index={index} instance={instance} effective={effective} />
                 ))}
               </div>
             </div>
@@ -112,24 +144,64 @@ export function Card({ template, instance, faceDown, definition, onClick }: Card
   );
 }
 
-function Pip({ index, instance }: { index: CardIndex; instance?: CardInstance }) {
-  const current = instance?.indexValues[index.id] ?? index.value.defaultValue;
+/**
+ * One index, as the card currently reads (§6.8).
+ *
+ * The pip cannot name WHICH rule modified it: §5.4 returns a value with no provenance and modifiers
+ * are derived at read time, so there is no log line to look it up in. `title` says `base 3` and
+ * stops; the answer lives in the Rules library, filtered to rules with a modifier.
+ */
+function Pip({
+  index,
+  instance,
+  effective,
+}: {
+  index: CardIndex;
+  instance?: CardInstance;
+  effective?: Record<Id, number | boolean>;
+}) {
+  const base = instance?.indexValues[index.id] ?? index.value.defaultValue;
+  const current = effective?.[index.id] ?? base;
 
-  // A false flag renders nothing at all. Showing a greyed "Tapped" pip on every untapped card is
-  // noise on a 92px thumbnail, and there is no number to show for a boolean.
   if (index.value.type === 'boolean') {
-    if (current !== true) return null;
+    // An unmodified false flag renders nothing at all. Showing a greyed "Tapped" pip on every
+    // untapped card is noise on a 92px thumbnail, and there is no number to show for a boolean.
+    if (current !== true && base !== true) return null;
+    // Granted reads as a dashed outline, removed as a struck-through pip — SHAPE, so it survives a
+    // monochrome print. A removed keyword that simply vanished would be indistinguishable from a
+    // card that never had it, so it stays on the card, crossed out.
+    const modified = current === base ? undefined : current === true ? 'granted' : 'removed';
     return (
-      <span className="cb-pip" data-pos={index.position}>
-        <Icon id={index.icon} label={index.value.name} />
+      <span
+        className="cb-pip"
+        data-pos={index.position}
+        data-modified={modified}
+        title={modified === undefined ? undefined : `base ${String(base)}`}
+      >
+        <Icon
+          id={index.icon}
+          // The outline and the strike are invisible to a screen reader, and announcing a removed
+          // keyword by its bare name would state the opposite of the truth.
+          label={modified === undefined ? index.value.name : `${index.value.name} (${modified})`}
+        />
       </span>
     );
   }
 
+  const delta = typeof current === 'number' && typeof base === 'number' ? current - base : 0;
+
   return (
-    <span className="cb-pip" data-pos={index.position}>
+    <span
+      className="cb-pip"
+      data-pos={index.position}
+      data-modified={delta === 0 ? undefined : delta > 0 ? 'up' : 'down'}
+      title={delta === 0 ? undefined : `base ${String(base)}`}
+    >
       <Icon id={index.icon} label={index.value.name} />
       <b>{String(current)}</b>
+      {/* The TEXT is the carrier; the green/red tint is redundant reinforcement (§6.9 — colour is
+          never the sole carrier of meaning). */}
+      {delta !== 0 && <sup className="cb-pip__delta">{delta > 0 ? `+${delta}` : delta}</sup>}
     </span>
   );
 }

@@ -18,18 +18,22 @@ import {
   SCHEMA_VERSION,
   START_STATE_ID,
   type CardInstance,
+  type CriteriaNode,
   type Effect,
   type GameDefinition,
   type Id,
   type LogLine,
   type PlayState,
   type RuleSet,
+  type TargetSelector,
   type TriggerContext,
   type ValueRef,
 } from './types';
 import { applyEffect, type EffectContext } from './effects';
+import { evalCriteriaBool } from './criteria';
 import { collectModifiers, effectiveIndex, effectiveTags } from './modifiers';
-import { zoneKey } from './valueRef';
+import { resolveTargets } from './targets';
+import { resolveValueRef, zoneKey } from './valueRef';
 
 // ---------------------------------------------------------------------------
 // Fixture
@@ -417,5 +421,182 @@ describe('effectiveTags (§5.4, §4.3)', () => {
   it('is empty for a card that does not exist', () => {
     const def = makeDef();
     expect(effectiveTags(makeState([], {}), def, 'nope')).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 14 — the read sites (§5.4)
+// ---------------------------------------------------------------------------
+
+/** A `+2` lord on the battlefield and a base-3 bear beside it. */
+function buffedBoard() {
+  const def = makeDef({
+    ruleSets: [modifierRule(RS_ADJUST, 'adjust', lit(2)), modifierRule(RS_SET, 'set', lit(0))],
+  });
+  const state = makeState(
+    [card('c0', T_BEAR, { indexValues: { [POWER]: 3 } }), card('c1', T_ADJUST_LORD)],
+    { [BF_KEY]: ['c0', 'c1'] }
+  );
+  return { def, state };
+}
+
+/** `triggeringCard` is the only selector that names one instance; `ecFor` binds it. */
+function setIndex(op: 'add' | 'subtract' | 'set', amount: number): Effect {
+  return { kind: 'setCardIndex', target: { kind: 'triggeringCard' }, indexId: POWER, op, amount: lit(amount) };
+}
+
+function ecFor(state: PlayState, def: GameDefinition, cardId: Id): EffectContext {
+  return { ...effectContext(state, def), ctx: { ...ctx, triggeringCardId: cardId } };
+}
+
+describe('setCardIndex reads EFFECTIVE and writes BASE (§5.4)', () => {
+  it('subtracts from what the card currently reads as, and stores that as the new base', () => {
+    const { def, state } = buffedBoard();
+    expect(effectiveIndex(state, def, 'c0', POWER)).toBe(5); // base 3 + the lord's 2
+
+    expect(applyEffect(setIndex('subtract', 1), ecFor(state, def, 'c0'))).toEqual({ ok: true });
+
+    // THE assertion of this read site: 5 − 1 = 4 is written to the BASE, not 3 − 1 = 2. Read-base /
+    // write-base would make damage on a buffed creature behave differently from damage on an
+    // unbuffed one.
+    expect(state.cards['c0'].indexValues[POWER]).toBe(4);
+    // …and the modifier is still derived on top of the new base, so the card now reads 6.
+    expect(effectiveIndex(produced(state), def, 'c0', POWER)).toBe(6);
+  });
+
+  it('is unchanged from v1 when no modifier is active — effective IS the base', () => {
+    const def = makeDef({ ruleSets: [] });
+    const state = makeState([card('c0', T_BEAR, { indexValues: { [POWER]: 3 } })], { [BF_KEY]: ['c0'] });
+    expect(applyEffect(setIndex('subtract', 1), ecFor(state, def, 'c0'))).toEqual({ ok: true });
+    expect(state.cards['c0'].indexValues[POWER]).toBe(2);
+  });
+
+  it('leaves the base alone when the arithmetic lands back where it started', () => {
+    const { def, state } = buffedBoard();
+    // add 2 then subtract 2 — the second read sees the first write, so this is a real round trip.
+    applyEffect(setIndex('add', 2), ecFor(state, def, 'c0'));
+    expect(state.cards['c0'].indexValues[POWER]).toBe(7); // 5 + 2
+    applyEffect(setIndex('subtract', 2), ecFor(state, def, 'c0'));
+    // 7 + 2 = 9 effective, − 2 = 7. Stale memoization across the two effects would have written 5.
+    expect(state.cards['c0'].indexValues[POWER]).toBe(7);
+  });
+
+  it('clamps the effective arithmetic against the index bounds, not the base arithmetic', () => {
+    const { def, state } = buffedBoard();
+    // 5 + 8 = 13, clamped to the index max of 10 — base 3 + 8 = 11 would have clamped too, but to a
+    // different value on the way in.
+    applyEffect(setIndex('add', 8), ecFor(state, def, 'c0'));
+    expect(state.cards['c0'].indexValues[POWER]).toBe(10);
+  });
+
+  it('`set` overwrites the base outright and reads nothing', () => {
+    const { def, state } = buffedBoard();
+    applyEffect(setIndex('set', 1), ecFor(state, def, 'c0'));
+    expect(state.cards['c0'].indexValues[POWER]).toBe(1);
+    expect(effectiveIndex(produced(state), def, 'c0', POWER)).toBe(3);
+  });
+});
+
+describe('the other engine read sites (§5.4)', () => {
+  it('valueRef `cardIndex` resolves the effective value, so criteria compare what the card reads as', () => {
+    const { def, state } = buffedBoard();
+    const ref: ValueRef = { kind: 'cardIndex', card: { kind: 'instance', id: 'c0' }, indexId: POWER };
+    expect(resolveValueRef(ref, state, ctx, def)).toEqual({ ok: true, values: [5], quantifier: 'every' });
+  });
+
+  it('…and still reports a dangling indexId rather than answering effectiveIndex`s 0', () => {
+    const { def, state } = buffedBoard();
+    const ref: ValueRef = { kind: 'cardIndex', card: { kind: 'instance', id: 'c0' }, indexId: 'nope' };
+    const res = resolveValueRef(ref, state, ctx, def);
+    expect(res.ok).toBe(false);
+    expect(res.ok === false && res.reason).toBe('MISSING_REFERENT');
+  });
+
+  it('criteria inherit the change through resolveValueRef, with no read site of their own', () => {
+    const { def, state } = buffedBoard();
+    const node: CriteriaNode = {
+      kind: 'criteria',
+      left: { kind: 'cardIndex', card: { kind: 'instance', id: 'c0' }, indexId: POWER },
+      op: '>=',
+      right: lit(5),
+    };
+    // 5 >= 5 on the effective value; the stored base of 3 would fail it.
+    expect(evalCriteriaBool(node, state, ctx, def)).toBe(true);
+    expect(state.cards['c0'].indexValues[POWER]).toBe(3);
+  });
+
+  it('taggedInZone reads the INSTANCE tags, so a tag no template lists still selects', () => {
+    const def = makeDef();
+    const state = makeState(
+      [card('c0', T_BEAR, { tags: [CREATURE, 'enchanted'] }), card('c1', T_BEAR)],
+      { [BF_KEY]: ['c0', 'c1'] }
+    );
+    const sel: TargetSelector = { kind: 'taggedInZone', zone: { zoneId: BF, seat: null }, tag: 'enchanted' };
+    const res = resolveTargets(sel, state, ctx, def);
+    expect(res.ok && res.kind === 'cards' && res.cardIds).toEqual(['c0']);
+  });
+
+  it('…and a template tag removed from the instance no longer selects', () => {
+    const def = makeDef();
+    const state = makeState([card('c0', T_BEAR, { tags: [] })], { [BF_KEY]: ['c0'] });
+    const sel: TargetSelector = { kind: 'taggedInZone', zone: { zoneId: BF, seat: null }, tag: CREATURE };
+    const res = resolveTargets(sel, state, ctx, def);
+    // §5.9 row 2 — matching nothing is NO_TARGETS, not an empty success. The template still lists
+    // `creature`; only the instance's copy was emptied, and that is the list that decides.
+    expect(res.ok).toBe(false);
+    expect(res.ok === false && res.reason).toBe('NO_TARGETS');
+  });
+});
+
+describe('a self-referential modifier terminates instead of recursing (§5.4 is silent)', () => {
+  /** "Creatures get +1/+1 as long as a creature reads 3 or more" — the condition re-enters here. */
+  const gated = (): GameDefinition =>
+    makeDef({
+      ruleSets: [
+        {
+          ...modifierRule(RS_ADJUST, 'adjust', lit(1)),
+          condition: {
+            kind: 'criteria',
+            left: { kind: 'cardIndex', card: { kind: 'instance', id: 'c0' }, indexId: POWER },
+            op: '>=',
+            right: lit(3),
+          },
+        },
+        modifierRule(RS_SET, 'set', lit(0)),
+      ],
+    });
+
+  it('answers with the BASE inside a gate, so the modifier cannot see its own output', () => {
+    const def = gated();
+    const state = makeState(
+      [card('c0', T_BEAR, { indexValues: { [POWER]: 3 } }), card('c1', T_ADJUST_LORD)],
+      { [BF_KEY]: ['c0', 'c1'] }
+    );
+    // Gate reads base 3 >= 3 → passes → +1.
+    expect(effectiveIndex(state, def, 'c0', POWER)).toBe(4);
+    // Order-independent: reading the lord first must not change the bear's answer.
+    const other = produced(state);
+    expect(effectiveIndex(other, def, 'c1', POWER)).toBe(3);
+    expect(effectiveIndex(other, def, 'c0', POWER)).toBe(4);
+  });
+
+  it('answers with the BASE for an `amount` that refers back to the index it is computing', () => {
+    const def = makeDef({
+      ruleSets: [
+        // "+X, where X is c0's power" — resolving the amount re-enters c0's own read.
+        modifierRule(RS_ADJUST, 'adjust', {
+          kind: 'cardIndex',
+          card: { kind: 'instance', id: 'c0' },
+          indexId: POWER,
+        }),
+        modifierRule(RS_SET, 'set', lit(0)),
+      ],
+    });
+    const state = makeState(
+      [card('c0', T_BEAR, { indexValues: { [POWER]: 3 } }), card('c1', T_ADJUST_LORD)],
+      { [BF_KEY]: ['c0', 'c1'] }
+    );
+    // 3 + 3, not a stack overflow.
+    expect(effectiveIndex(state, def, 'c0', POWER)).toBe(6);
   });
 });

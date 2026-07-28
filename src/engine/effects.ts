@@ -22,6 +22,9 @@
 import { parseZoneKey, resolvePoolDef, resolveSeat, resolveValueRef, zoneKey } from './valueRef';
 import type { ResolutionFail } from './valueRef';
 import { resolveTargets } from './targets';
+// Cyclic with `modifiers.ts` (it imports `clampValue` from here) by design (§5.4). Both directions
+// are function-body calls only, so module evaluation order never matters.
+import { effectiveIndex, invalidateEffective } from './modifiers';
 import { applyTransition } from './stateMachine';
 import { hashSeed, shuffle } from './rng';
 import type {
@@ -408,6 +411,11 @@ function writeNote(v: GameValue, op: NumericOp, before: number | boolean, after:
 export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
   const { state, def, ctx } = ec;
 
+  // §5.4's memo is keyed on state identity, which is a fresh object per immer produce — but NOT per
+  // effect: this draft has been mutated in place by every effect before this one. Dropping the memo
+  // here is the one place that cannot be forgotten when a new effect kind is added.
+  invalidateEffective(state);
+
   switch (effect.kind) {
     // -----------------------------------------------------------------------
     case 'moveCards': {
@@ -579,7 +587,7 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
       const amount = singleAmount(ec, effect, effect.amount);
       if (!('value' in amount)) return amount;
 
-      const writes: { id: Id; before: number | boolean; after: number | boolean; value: GameValue }[] = [];
+      const writes: { id: Id; before: number | boolean; from: number | boolean; after: number | boolean; value: GameValue }[] = [];
       for (const id of targets.cardIds) {
         const card = state.cards[id];
         // §9.4 item 14 — a card destroyed by an earlier effect this RuleSet is skipped, never thrown on.
@@ -595,14 +603,24 @@ export function applyEffect(effect: Effect, ec: EffectContext): EffectResult {
         if (before === undefined) {
           return reject(ec, effect, 'MISSING_REFERENT', `SetIndex(${effect.indexId}) on ${id}: index has no value on this instance.`);
         }
+        // §5.4's read site: `add`/`subtract` operate on what the card currently READS AS, and the
+        // result is written back as its new BASE. "This creature gets -1/-1 permanently" has to
+        // subtract from the buffed value, or damage on a buffed creature behaves differently from
+        // damage on an unbuffed one. `set` overwrites outright and reads nothing, so it stays on the
+        // base and skips the modifier scan. With no modifiers active `from === before` and every
+        // pre-v2 result is unchanged.
+        const from = effect.op === 'set' ? before : effectiveIndex(state, def, id, effect.indexId);
         // Same clampValue as pools — that shared call is the whole point of §9.3's warning.
-        const next = nextValue(indexDef.value, effect.op, before, amount.value, `Index "${indexDef.value.name}"`);
+        const next = nextValue(indexDef.value, effect.op, from, amount.value, `Index "${indexDef.value.name}"`);
         if (!next.ok) return reject(ec, effect, 'TYPE_MISMATCH', next.message);
-        writes.push({ id, before, after: next.value, value: indexDef.value });
+        writes.push({ id, before, from, after: next.value, value: indexDef.value });
       }
 
       for (const w of writes) {
-        const note = writeNote(w.value, effect.op, w.before, w.after, amount.value);
+        // `w.from`, not `w.before`: writeNote re-derives the raw arithmetic to spot a clamp, so it
+        // has to be handed the number the arithmetic actually used. The CHANGE line below still
+        // records the base either side, which is what a rewind replays.
+        const note = writeNote(w.value, effect.op, w.from, w.after, amount.value);
         if (w.before === w.after) {
           emit(ec, effect, 'info', `${w.value.name} on ${w.id}: ${note}. No change.`);
           continue;

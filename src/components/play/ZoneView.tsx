@@ -1,9 +1,11 @@
 import { Fragment, type CSSProperties } from 'react';
 import { resolveVisibility } from '../../engine/visibility';
+import { effectiveIndex, effectiveTags } from '../../engine/modifiers';
 import type {
-  CardInstance,
+  CardTemplate,
   GameDefinition,
   Id,
+  PlayState,
   PlayZone,
   ZoneInstance,
   ZoneKey,
@@ -20,7 +22,12 @@ export interface ZoneViewProps {
   zone: PlayZone;
   instance: ZoneInstance;
   definition: GameDefinition;
-  cards: Record<Id, CardInstance>;
+  /**
+   * The whole state, not just `cards`: §5.4's `effectiveIndex` / `effectiveTags` are resolved HERE
+   * and handed to `<Card>` as computed answers, and a modifier's source can be any card in any
+   * zone. One source of truth, so nothing can drift from `state.cards`.
+   */
+  state: PlayState;
   viewingSeat: number;
   revealAll: boolean;
   /** Ids the engine would accept as a prompt answer right now; `null` when no prompt is open. */
@@ -51,7 +58,7 @@ export function ZoneView({
   zone,
   instance,
   definition,
-  cards,
+  state,
   viewingSeat,
   revealAll,
   legalTargets = null,
@@ -101,10 +108,18 @@ export function ZoneView({
       {count === 0 && <span className="cb-zone__empty">empty</span>}
 
       {visibleIds.map((cardId, i) => {
-        const instanceCard = cards[cardId];
+        const instanceCard = state.cards[cardId];
         if (!instanceCard) return null;
         const template = definition.templates.find((t) => t.id === instanceCard.templateId);
         if (!template) return null;
+
+        const hidden = resolveVisibility(zone, instanceCard, viewingSeat, instance.seat, revealAll);
+        // §6.8: NOT computed at all for a face-down card. The value is not in the DOM either way —
+        // a hidden card renders `.cb-card__back` instead of its body — but not computing it keeps
+        // the §6.2 redaction discipline honest, and skips a modifier scan per card in every
+        // opponent's hand.
+        const effective = hidden ? undefined : effectiveValues(state, definition, template, cardId);
+        const tags = hidden ? undefined : effectiveTags(state, definition, cardId);
 
         const targetable = legalTargets?.has(cardId) ?? false;
         const isChosen = chosen?.has(cardId) ?? false;
@@ -129,7 +144,9 @@ export function ZoneView({
                 template={template}
                 instance={instanceCard}
                 definition={definition}
-                faceDown={resolveVisibility(zone, instanceCard, viewingSeat, instance.seat, revealAll)}
+                faceDown={hidden}
+                effective={effective}
+                tags={tags}
                 onClick={clickable && onCardClick ? () => onCardClick(cardId) : undefined}
               />
             </CardDraggable>
@@ -197,6 +214,20 @@ export function ZoneView({
       )}
     </section>
   );
+}
+
+/** Every index the template declares, as the card currently reads (§5.4). */
+function effectiveValues(
+  state: PlayState,
+  definition: GameDefinition,
+  template: CardTemplate,
+  cardId: Id
+): Record<Id, number | boolean> {
+  const out: Record<Id, number | boolean> = {};
+  for (const index of template.indexes) {
+    out[index.id] = effectiveIndex(state, definition, cardId, index.id);
+  }
+  return out;
 }
 
 function rangeInclusive(n: number): number[] {
