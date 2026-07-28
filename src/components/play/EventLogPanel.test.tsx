@@ -4,10 +4,11 @@
  * entry and shows what will be lost BEFORE the click.
  */
 
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LogEntry, LogLine } from '../../engine/types';
+import { useUiStore } from '../../stores/uiStore';
 import { EventLogPanel } from './EventLogPanel';
 
 const line = (over: Partial<LogLine> = {}): LogLine => ({
@@ -34,6 +35,13 @@ const panel = (log: LogEntry[]) => {
   const onRewind = vi.fn();
   return { onRewind, user: userEvent.setup(), ...render(<EventLogPanel log={log} onRewind={onRewind} />) };
 };
+
+// The panel reads `viewingSeat`/`revealAll` straight from `uiStore` (the `PlayToolbar` precedent),
+// so every test starts from the same pinned seat rather than inheriting whatever an earlier test
+// left behind.
+beforeEach(() => {
+  useUiStore.setState({ viewingSeat: 0, revealAll: false });
+});
 
 describe('<EventLogPanel>', () => {
   it('says so when nothing has happened yet', () => {
@@ -107,6 +115,80 @@ describe('<EventLogPanel>', () => {
     await user.tab();
     expect(screen.getByRole('button', { name: 'Rewind to entry 0' })).toHaveFocus();
     expect(screen.getByLabelText('Entry 1')).toHaveAttribute('data-doomed', 'true');
+  });
+});
+
+describe('§6.2 log redaction', () => {
+  const SECRET = 'Ambush Viper';
+
+  it('redacts a line hidden from the pinned seat, and the secret touches no attribute either', () => {
+    useUiStore.setState({ viewingSeat: 2 });
+    const { container } = panel([
+      entry(0, {
+        lines: [line({ message: `${SECRET} enters the battlefield`, change: { path: 'x', before: 0, after: 1 }, visibility: [1] })],
+      }),
+    ]);
+
+    expect(screen.getByLabelText('Entry 0')).toHaveTextContent('hidden from you');
+    // Raw HTML, not just the accessible text — this is what would also catch a `title` or `data-*` leak.
+    expect(container.innerHTML).not.toContain(SECRET); // AC: SP12
+  });
+
+  it("keeps a redacted line's slot: same count, level, kind, and glyph as an unredacted one (§6.2)", () => {
+    useUiStore.setState({ viewingSeat: 2 });
+    panel([
+      entry(0, {
+        lines: [
+          line({ message: 'public one', visibility: null }),
+          line({ message: SECRET, level: 'warn', kind: 'rule', visibility: [1] }),
+        ],
+      }),
+    ]);
+
+    const lines = screen.getByLabelText('Entry 0').querySelectorAll('.cb-log__line');
+    expect(lines).toHaveLength(2); // slot survives — rewind indices must not shift per seat
+    expect(lines[1]).toHaveAttribute('data-redacted', 'true');
+    expect(lines[1]).toHaveAttribute('data-level', 'warn');
+    expect(lines[1]).toHaveAttribute('data-kind', 'rule');
+    expect(within(lines[1] as HTMLElement).getByText('⚠')).toBeInTheDocument(); // glyph still rendered
+  });
+
+  it('un-redacts live when reveal-all flips, with no remount of the panel', () => {
+    const { container } = panel([entry(0, { lines: [line({ message: SECRET, visibility: [1] })] })]);
+    // Pinned to the default seat 0 — the line is hidden to start.
+    expect(container.innerHTML).not.toContain(SECRET);
+
+    act(() => useUiStore.setState({ revealAll: true }));
+
+    expect(screen.getByLabelText('Entry 0')).toHaveTextContent(SECRET);
+  });
+
+  it('treats visibility: null as public for every seat', () => {
+    useUiStore.setState({ viewingSeat: 3 });
+    panel([entry(0, { lines: [line({ message: 'nothing to hide here', visibility: null })] })]);
+    expect(screen.getByLabelText('Entry 0')).toHaveTextContent('nothing to hide here');
+  });
+
+  it('redacts a cause to its seat, not its description — "P3 acted"', () => {
+    const { container } = panel([
+      entry(0, { cause: { kind: 'userAction', description: `Play ${SECRET}`, seat: 2, visibility: [2] } }),
+    ]);
+
+    expect(screen.getByLabelText('Entry 0')).toHaveTextContent('P3 acted');
+    expect(container.innerHTML).not.toContain(SECRET); // AC: SP12
+  });
+
+  it('rewinds to the right seq with a redacted line in the way', async () => {
+    useUiStore.setState({ viewingSeat: 2 });
+    const { user, onRewind } = panel([
+      entry(0, { lines: [line({ message: SECRET, visibility: [1] })] }),
+      entry(1),
+      entry(2),
+    ]);
+
+    await user.click(screen.getByRole('button', { name: 'Rewind to entry 1' }));
+    await user.click(screen.getByRole('button', { name: /discard 2 entries/i }));
+    expect(onRewind).toHaveBeenCalledWith(1); // AC: SP12
   });
 });
 

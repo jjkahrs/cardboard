@@ -213,7 +213,9 @@ describe('modified values (§6.8)', () => {
     expect(pip.querySelector('b')).toHaveTextContent('3');
     // The text is the CARRIER; the green tint is redundant reinforcement (§6.9). A test that only
     // asserted data-modified would keep passing after someone deleted the <sup>.
-    expect(pip.querySelector('.cb-pip__delta')).toHaveTextContent('+2');
+    // The UI half of MTG6 (engine half: modifiers.test.ts) — a static bonus reads on the pip with
+    // no recalculation action, exactly as effectiveIndex() handed it in.
+    expect(pip.querySelector('.cb-pip__delta')).toHaveTextContent('+2'); // AC: MTG6
     expect(pip).toHaveAttribute('data-modified', 'up');
     expect(pip).toHaveAttribute('title', 'base 1');
   });

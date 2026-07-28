@@ -712,3 +712,78 @@
   color: var(--cb-ink-700);
   font-size: 0.8em;
 }
+
+/* ── §6.2 log redaction ─────────────────────────────────────────────────────────────────────────
+   Verbatim from the design doc. Same crosshatch vocabulary as .cb-card__back (card.css:160) —
+   "there is something here you are not being shown" reads identically on a card and a log line. */
+
+.cb-log__line[data-redacted="true"] {
+  color: var(--cb-ink-500);
+  font-style: italic;
+  background: repeating-linear-gradient(45deg, transparent 0 3px, var(--cb-kraft-300) 3px 4px);
+}
+
+/* ── §6.4 The pending-action rail (step 36) ──────────────────────────────────────────────────────
+   `.cb-panel` supplies the rough surface/padding; everything below is this rail's own internals. */
+
+/* The right column of `.cb-play__main` (table.css:13-19), which is still a TWO-column grid — the
+   stack and the log share one column because §6.4 refuses a second rail: horizontal space at a
+   five-seat table is the scarce resource. `auto 1fr` gives the log the leftover height, and an
+   empty `actionStack` renders no node at all, so the log gets the whole column exactly as in v1. */
+.cb-play__rail {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: var(--cb-s3);
+  min-block-size: 0;
+}
+
+.cb-action-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-s3);
+}
+
+.cb-action-rail__row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-s1);
+  padding-block-end: var(--cb-s2);
+  border-block-end: 1px dashed var(--cb-kraft-500);
+}
+
+.cb-action-rail__row:last-child {
+  border-block-end: none;
+}
+
+.cb-action-rail__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--cb-s2);
+  flex-wrap: wrap;
+}
+
+.cb-action-rail__ordinal {
+  color: var(--cb-ink-700);
+  font-size: 0.85em;
+}
+
+/* "What targets what" is hover, not lines (§6.4) — the referenced row picks up the same dashed
+   accent outline a legal-target card/seat uses elsewhere, so "this is what the hover means" reads
+   identically no matter what kind of thing is being pointed at. */
+.cb-action-rail__row[data-targeted="true"] {
+  outline: 2px dashed var(--cb-accent);
+  outline-offset: var(--cb-s1);
+}
+
+/* Countered stays visible until `resolve` removes it (§4.10) — struck through rather than hidden,
+   so the log naming both is legible against a row the tester can still see. */
+.cb-action-rail__row[data-countered="true"] .cb-action-rail__head,
+.cb-action-rail__row[data-countered="true"] .cb-action-rail__targets {
+  text-decoration: line-through;
+  color: var(--cb-ink-500);
+}
+
+.cb-action-rail__countered {
+  color: var(--cb-danger);
+  font-weight: bold;
+}

@@ -272,3 +272,93 @@ describe('unordered zones and React keys (§9.4 item 16)', () => {
     expect([...container.querySelectorAll('.cb-card-slot')].map((el) => el.textContent)).toEqual(before);
   });
 });
+
+describe('seat bands at five seats (§6.3 amendment 1)', () => {
+  /** `duel` is a fixed 2-seat definition; only the seat-band composition is under test here, so a
+   * ring of 5 is synthesized on top of it rather than authoring a second fixture. */
+  function fiveSeats(overrides: Partial<PlayState> = {}): PlayState {
+    const state = emptyBoard(duel, MAIN);
+    return { ...state, playerCount: 5, seatOrder: [0, 1, 2, 3, 4], eliminated: [], ...overrides };
+  }
+
+  const headingsIn = (label: string) =>
+    within(screen.getByLabelText(label))
+      .getAllByRole('heading', { level: 2 })
+      .map((h) => h.textContent);
+
+  it('reads left-to-right as ring order from pinned+1 — prey through predator', () => {
+    table(fiveSeats(), { viewingSeat: 2 });
+    // Pinned at P3 (index 2): array-order-minus-self would read P1, P2, P4, P5, which disagrees
+    // with `relative`/`next`/`previous` (§4.1) at exactly the table size where they matter.
+    expect(headingsIn('Opponents')).toEqual(['Player 4', 'Player 5', 'Player 1', 'Player 2']); // AC: SP12
+  });
+
+  it('re-keys the ring when the pin moves, with no special-casing', () => {
+    table(fiveSeats(), { viewingSeat: 0 });
+    expect(headingsIn('Opponents')).toEqual(['Player 2', 'Player 3', 'Player 4', 'Player 5']);
+  });
+});
+
+describe('eliminated seats (§6.3 amendment 3)', () => {
+  it('render after the live ring, greyed via data-eliminated, and still show their zones', () => {
+    const state = bombBoard();
+    state.seatOrder = [0];
+    state.eliminated = [1];
+    table(state);
+
+    const seat2 = screen.getByLabelText('Player 2');
+    expect(seat2).toHaveAttribute('data-eliminated', 'true');
+    // Elimination is not deletion (§5.12): the zone still renders under the normal visibility rule.
+    expect(within(seat2).getByLabelText('Hand (seat 2)')).toBeInTheDocument(); // AC: SP12
+  });
+
+  it('are never a legal drop target', async () => {
+    const state = bombBoard();
+    state.seatOrder = [0];
+    state.eliminated = [1];
+    const onPlace = vi.fn();
+    const { user } = table(state, {
+      destinations: held(state, 'g1'),
+      placing: true,
+      heldCardId: 'g1',
+      onPlace,
+    });
+
+    const badge = within(screen.getByLabelText('Hand (seat 2)')).getByRole('button', {
+      name: /can’t move here/i,
+    });
+    expect(badge).toBeDisabled();
+    expect(badge).toHaveAttribute('title', 'that seat has been eliminated'); // AC: SP12
+
+    await user.click(badge);
+    expect(onPlace).not.toHaveBeenCalled();
+  });
+
+  it('stay pinned when the pinned seat is the one eliminated — the view never jumps', () => {
+    const state = bombBoard();
+    state.seatOrder = [1];
+    state.eliminated = [0];
+    table(state, { viewingSeat: 0 });
+
+    const ownBand = screen.getByLabelText(/your seat/i);
+    expect(ownBand).toHaveTextContent('Player 1');
+    expect(ownBand.querySelector('.cb-seat')).toHaveAttribute('data-eliminated', 'true'); // AC: SP12
+    // One seat, one band: the ousted pin does not also show up in the opponents band's tail.
+    expect(within(screen.getByLabelText('Opponents')).queryByLabelText('Player 1')).toBeNull();
+  });
+});
+
+describe('legalSeats (§6.6 — the chooseSeat highlight)', () => {
+  it('puts data-legal-target on exactly the candidate seats', () => {
+    const { container } = table(bombBoard(), { legalSeats: new Set([1]) });
+
+    const marked = container.querySelectorAll('.cb-seat[data-legal-target]');
+    expect(marked).toHaveLength(1);
+    expect(within(marked[0] as HTMLElement).getByRole('heading')).toHaveTextContent('Player 2'); // AC: SP12
+  });
+
+  it('marks nothing when no chooseSeat interaction is open', () => {
+    const { container } = table(bombBoard());
+    expect(container.querySelectorAll('.cb-seat[data-legal-target]')).toHaveLength(0);
+  });
+});

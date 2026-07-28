@@ -46,6 +46,15 @@
   --cb-edge: var(--cb-accent);
 }
 
+/* §6.3's vocabulary, minimal treatment: greyed, marked, still one click to view as. */
+.cb-seat-switch[data-eliminated="true"] {
+  opacity: .55;
+}
+.cb-seat-switch[data-eliminated="true"]::after {
+  content: " — ousted";
+  color: var(--cb-ink-red);
+}
+
 /* ── Bands (§6.4) ────────────────────────────────────────────────────────────────────────────── */
 
 /* One rule for 2–4 seats: the viewing seat is always the bottom band, every other seat shares the
@@ -67,7 +76,10 @@
 
 .cb-band--opponents {
   grid-auto-flow: column;
-  grid-auto-columns: 1fr;
+  /* §6.3 amendment 2 — a floor, not a fixed width: at five seats each column stays at least wide
+     enough for a title plus two 92px zones, and `.cb-table`'s existing overflow:auto scrolls past
+     four opponents instead of crushing every seat into illegibility. */
+  grid-auto-columns: minmax(220px, 1fr);
   --cb-card-w: 92px;
 }
 
@@ -90,6 +102,32 @@
   display: grid;
   gap: var(--cb-s2);
   padding: var(--cb-s2);
+}
+
+/* §6.3 amendment 3 — an ousted seat is not deleted from the view, it is greyed and marked. `relative`
+   is added here (the doc's snippet takes it for granted) so the slash overlay's `inset: 0` sizes
+   against the seat box and not whatever ancestor happens to be positioned. */
+.cb-seat[data-eliminated="true"] {
+  position: relative;
+  opacity: .55;
+}
+.cb-seat[data-eliminated="true"] .cb-seat__title::after {
+  content: " — ousted";
+  color: var(--cb-ink-red);
+}
+/* The marker slash: the same "this is closed" vocabulary a full zone already uses. */
+.cb-seat[data-eliminated="true"]::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(to bottom right, transparent 49%, var(--cb-ink-red) 49% 51%, transparent 51%);
+}
+
+/* §6.6 — `chooseSeat` highlight. The seat-level twin of `.cb-card--targetable` (card.css:174):
+   same outline, same offset, same pulse, so "pick a thing" reads identically whether the thing is a
+   card or a seat. */
+.cb-seat[data-legal-target="true"] {
+  outline: 3px dashed var(--cb-accent);
+  outline-offset: 4px;
+  animation: cb-pulse 1.4s ease-in-out infinite;
 }
 
 /* A seat's zones sit SIDE BY SIDE (§6.4's sketch: `Board ▤▤▤   Hand ⟨── fan ──⟩`). Stacked, four
@@ -355,6 +393,10 @@
 /* The pulse must have a static substitute, not simply be removed — the outline is what marks a
    legal target, and reduced motion must not cost that information (§6.9). */
 @media (prefers-reduced-motion: reduce) {
+  .cb-seat[data-legal-target="true"] {
+    animation: none;
+    outline-offset: 6px;
+  }
   .cb-card-slot[data-legal-target] .cb-card__rough {
     animation: none;
     outline-offset: 6px;

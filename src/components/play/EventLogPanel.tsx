@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import type { LogEntry, LogLine } from '../../engine/types';
+import type { LogEntry, LogLine, SeatId } from '../../engine/types';
+import { projectCause, projectLogLine } from '../../engine/visibility';
+import { useUiStore } from '../../stores/uiStore';
 
 /**
  * The right rail (§6.6): every entry, its lines, and rewind.
@@ -7,6 +9,11 @@ import type { LogEntry, LogLine } from '../../engine/types';
  * Hovering (or focusing) an entry's rewind control dims and strikes through every LATER entry —
  * a live preview of exactly what would be discarded, before the click. Confirmation is inline
  * rather than a modal because rewind is frequent during a playtest.
+ *
+ * §6.2 log redaction: reads `viewingSeat`/`revealAll` straight from the store (the `PlayToolbar`
+ * precedent) rather than as a prop, so no `PlayScreen` plumbing. `visible()` below is §6.2's own
+ * sketch verbatim — the one predicate, used for both lines and the entry cause, per §6.2's "nothing
+ * else needs a second copy of this rule."
  */
 export function EventLogPanel({
   log,
@@ -15,6 +22,10 @@ export function EventLogPanel({
   log: LogEntry[];
   onRewind: (length: number) => void;
 }) {
+  const viewingSeat = useUiStore((s) => s.viewingSeat);
+  const revealAll = useUiStore((s) => s.revealAll);
+  const visible = (v: SeatId[] | null) => revealAll || v === null || v.includes(viewingSeat);
+
   /** Entry seq whose rewind is being previewed, and the one awaiting confirmation. */
   const [preview, setPreview] = useState<number | null>(null);
   const [confirming, setConfirming] = useState<number | null>(null);
@@ -61,26 +72,45 @@ export function EventLogPanel({
           >
             <header className="cb-log__head">
               <span className="cb-log__seq">{entry.seq}</span>
-              <span>▸ {entry.cause.description}</span>
+              {/* Redacted cause: the seat is not secret, the description is (§6.2) — `▸ P3 acted`.
+                  `cause.seat` is untouched by `projectCause` (it only redacts `description`), so
+                  the panel prepends it itself, but only on the hidden branch. One text node, like
+                  the original, so there is no JSX whitespace to fuss over. */}
+              <span>
+                ▸{' '}
+                {(visible(entry.cause.visibility) ? '' : seatLabel(entry.cause.seat)) +
+                  projectCause(entry.cause, viewingSeat, revealAll).description}
+              </span>
               {entry.flags.override && <span title="Designer override">⚑</span>}
               {entry.flags.haltedByLoopGuard && <span title="Halted by the loop guard">⚠</span>}
               {entry.flags.suspended && <span title="Waiting for a prompt answer">⏸</span>}
             </header>
 
-            {entry.lines.map((line, i) => (
+            {entry.lines.map((line, i) => {
+              const proj = projectLogLine(line, viewingSeat, revealAll);
               // Lines are display-only detail inside one entry and never reorder — index keys are
               // exactly right here, unlike the card slots on the table (§9.4 item 16).
-              <p key={i} className="cb-log__line" data-level={line.level} data-kind={line.kind}>
-                <span aria-hidden="true">{glyph(line)}</span>
-                <span>{line.message}</span>
-                {line.change && (
-                  <span>
-                    {' '}
-                    {String(line.change.before)} → {String(line.change.after)}
-                  </span>
-                )}
-              </p>
-            ))}
+              return visible(line.visibility) ? (
+                <p key={i} className="cb-log__line" data-level={line.level} data-kind={line.kind}>
+                  <span aria-hidden="true">{glyph(line)}</span>
+                  <span>{proj.message}</span>
+                  {proj.change && (
+                    <span>
+                      {' '}
+                      {String(proj.change.before)} → {String(proj.change.after)}
+                    </span>
+                  )}
+                </p>
+              ) : (
+                // Structure survives redaction (§6.2): same slot, level, kind, and glyph. No
+                // message, no change, no title, no data-* carrying any part of either — the
+                // hidden text must be ABSENT, not present and styled away (§6.2, §6.3).
+                <p key={i} className="cb-log__line" data-level={line.level} data-kind={line.kind} data-redacted="true">
+                  <span aria-hidden="true">{glyph(line)}</span>
+                  <span>hidden from you</span>
+                </p>
+              );
+            })}
 
             {confirming === entry.seq ? (
               <span>
@@ -137,6 +167,13 @@ function glyph(line: LogLine): string {
     default:
       return '·';
   }
+}
+
+/** `P{n+1} ` for the redacted-cause header (§6.2's `▸ P3 acted`), matching the `P${seat + 1}`
+ * convention already used by `PlayToolbar`/`PromptBar`. `''` for an engine-caused entry — there is
+ * no seat to name, so `projectCause`'s bare `'acted'` stands on its own. */
+function seatLabel(seat: SeatId | null): string {
+  return seat === null ? '' : `P${seat + 1} `;
 }
 
 // ponytail: no [filter ▾] control (§6.4's sketch shows one). Every line is rendered and Ctrl-F

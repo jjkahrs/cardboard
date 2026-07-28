@@ -21,10 +21,12 @@ import {
   type MoveDestination,
 } from '../../components/dnd/destinations';
 import { parseCardDragId, parseDropId } from '../../components/dnd/ids';
+import { ActionStackRail } from '../../components/play/ActionStackRail';
 import { EventLogPanel } from '../../components/play/EventLogPanel';
+import { InteractionBar } from '../../components/play/InteractionBar';
 import { PlayTable } from '../../components/play/PlayTable';
 import { PlayToolbar } from '../../components/play/PlayToolbar';
-import { PromptBar, type ChooseCardsInteraction } from '../../components/play/PromptBar';
+import { type ChooseCardsInteraction } from '../../components/play/PromptBar';
 import { validateDefinition } from '../../engine/schema';
 import type { GameDefinition, Id, Interaction, LogEntry, PlayState } from '../../engine/types';
 import { getGame } from '../../stores/persistence';
@@ -47,14 +49,14 @@ const collisionDetection: CollisionDetection = (args) => {
 const NO_SENSORS: SensorDescriptor<SensorOptions>[] = [];
 
 /**
- * Picks the surface a raised `Interaction` renders as. Narrowing happens HERE, once, at the
- * boundary where the interaction is read — everything downstream (the table's legal-target
- * highlighting, `PromptBar` itself) sees the arm, not the union.
+ * The one arm whose picker is THE TABLE (§6.5): `chooseCards` highlights candidates on the board
+ * and `PromptBar` only narrates. Every other arm is answered inside `InteractionBar` itself — its
+ * buttons ARE the picker — so they need none of the board plumbing below (`chosen`, `legalTargets`,
+ * the click-means-choose branch) and return `null` here.
  *
- * Deliberately no `default:` — a new `Interaction` kind is a compile error right here rather than
- * silently rendering nothing (§8). The return type widened to `| null` in v2 §4.9/§4.12/§4.6: five
- * new arms exist (steps 24/28/29 raise them) with no play-UI surface yet — Phase 3's job (§6.6) —
- * so they render nothing rather than mis-rendering as a card prompt.
+ * Narrowing happens HERE, once, at the boundary where the interaction is read. Deliberately no
+ * `default:` — a new `Interaction` kind is a compile error right here rather than silently
+ * rendering nothing (§8).
  */
 function interactionSurface(interaction: Interaction): ChooseCardsInteraction | null {
   switch (interaction.kind) {
@@ -91,6 +93,8 @@ export function PlayScreen() {
   const startSession = useSessionStore((s) => s.startSession);
   const dispatch = useSessionStore((s) => s.dispatch);
   const overrideEnabled = useUiStore((s) => s.overrideEnabled);
+  /** Only to stamp the acting seat onto an `activate` (§6.7); the board reads its own copy. */
+  const viewingSeat = useUiStore((s) => s.viewingSeat);
 
   useEffect(() => {
     if (gameId === undefined) return;
@@ -222,7 +226,11 @@ export function PlayScreen() {
   const { state, log } = session;
 
   return (
-    <main className="cb-play" data-cb-prompt={prompt ? '1' : undefined}>
+    // §6.5: `data-cb-prompt` is set for EVERY interaction kind, not just the card prompt. One rule
+    // — while the engine is suspended the board is not draggable and non-targetable cards are
+    // greyed. For a `chooseOption` that greys the whole board, which is correct: nothing on the
+    // table is an answer, and the grey says so.
+    <main className="cb-play" data-cb-prompt={interaction ? '1' : undefined}>
       {blocker.state === 'blocked' && (
         <div className="cb-prompt-bar" role="alert">
           <span>Leave the playtest? The session and its log are discarded.</span>
@@ -240,11 +248,14 @@ export function PlayScreen() {
         state={state}
         log={log}
         onTransition={(toStateId) => dispatch({ kind: 'transition', toStateId }, overrideEnabled)}
+        // §6.7's other half — a rule that is not `perInstance` has no card to sit on, so it sits
+        // here. Same action, same seat, `cardId: null`.
+        onActivate={(ruleId) => dispatch({ kind: 'activate', ruleId, cardId: null, seat: viewingSeat })}
         onRestart={() => setPhase('setup')}
       />
 
       <DndContext
-        sensors={prompt ? NO_SENSORS : sensors}
+        sensors={interaction ? NO_SENSORS : sensors}
         collisionDetection={collisionDetection}
         onDragEnd={handleDragEnd}
       >
@@ -253,6 +264,7 @@ export function PlayScreen() {
           state={state}
           log={log}
           prompt={prompt}
+          interaction={interaction}
           chosen={chosen}
           onChoose={(cardId) =>
             setChosen((previous) =>
@@ -264,13 +276,10 @@ export function PlayScreen() {
         />
       </DndContext>
 
-      {prompt && (
-        <PromptBar
-          prompt={prompt}
-          chosen={chosen}
-          onConfirm={() => dispatch({ kind: 'answerPrompt', chosen })}
-          onCancel={() => dispatch({ kind: 'cancelPrompt' })}
-        />
+      {/* One bar for every kind of pause (§6.5). It owns the pinned-seat gate and the per-kind
+          surfaces; `PromptBar` still renders the `chooseCards` arm inside it, unchanged. */}
+      {interaction && (
+        <InteractionBar interaction={interaction} chosen={chosen} dispatch={dispatch} />
       )}
     </main>
   );
@@ -281,6 +290,9 @@ interface PlayBoardProps {
   state: PlayState;
   log: LogEntry[];
   prompt: ChooseCardsInteraction | null;
+  /** The whole union, not just the card arm: §6.5's one rule for the board applies to EVERY kind,
+   *  and §6.5's priority bar also lights the cards its legal responses name. */
+  interaction: Interaction | null;
   chosen: Id[];
   onChoose: (cardId: Id) => void;
 }
@@ -293,7 +305,8 @@ interface PlayBoardProps {
  * in carry-mode forever, which is exactly what a synthetic drag produced during browser testing.
  * Derived state cannot desynchronise from its source.
  */
-function PlayBoard({ definition, state, log, prompt, chosen, onChoose }: PlayBoardProps) {
+function PlayBoard({ definition, state, log, prompt, interaction, chosen, onChoose }: PlayBoardProps) {
+  const suspended = interaction !== null;
   /** Click-to-place: the card picked up by clicking. Dragging is the other input for the same move. */
   const [selected, setSelected] = useState<Id | null>(null);
 
@@ -311,15 +324,26 @@ function PlayBoard({ definition, state, log, prompt, chosen, onChoose }: PlayBoa
   // Picking a card up with the pointer puts down whatever the keyboard was holding.
   useDndMonitor({ onDragStart: () => setSelected(null) });
 
-  // A prompt takes the table over (§6.7): whatever was picked up is put back down.
-  const promptId = prompt?.promptId ?? null;
+  // Any interaction takes the table over (§6.5, §6.7): whatever was picked up is put back down.
   useEffect(() => {
-    if (promptId !== null) setSelected(null);
-  }, [promptId]);
+    if (suspended) setSelected(null);
+  }, [suspended]);
 
-  const legalTargets = useMemo(
-    () => (prompt ? new Set(prompt.candidates) : null),
-    [prompt]
+  // §6.5: a priority offer lights up the cards its per-instance responses name, reusing the set the
+  // table already takes rather than minting a second highlight channel. The bar stays the picker —
+  // the card's own activate button (§6.7) is the other way to press the same response.
+  const legalTargets = useMemo(() => {
+    if (prompt) return new Set(prompt.candidates);
+    if (interaction?.kind === 'priority') {
+      return new Set(interaction.legal.map((l) => l.cardId).filter((id) => id !== null));
+    }
+    return null;
+  }, [prompt, interaction]);
+
+  /** §6.6 — `chooseSeat` highlights the seat BAND, not cards: "pick a thing" reads the same either way. */
+  const legalSeats = useMemo(
+    () => (interaction?.kind === 'chooseSeat' ? new Set(interaction.candidates) : null),
+    [interaction]
   );
 
   const destinationList = useMemo(
@@ -372,6 +396,7 @@ function PlayBoard({ definition, state, log, prompt, chosen, onChoose }: PlayBoa
           viewingSeat={viewingSeat}
           revealAll={revealAll}
           legalTargets={legalTargets}
+          legalSeats={legalSeats}
           chosen={new Set(chosen)}
           onCardClick={(cardId) => {
             // One click, two meanings, decided by whether the engine is waiting on an answer:
@@ -380,16 +405,30 @@ function PlayBoard({ definition, state, log, prompt, chosen, onChoose }: PlayBoa
               onChoose(cardId);
               return;
             }
+            // Suspended on an interaction the TABLE cannot answer (§6.6 — an option list, a
+            // number, a seat): the board is inert, so a click must not pick a card up either.
+            if (suspended) return;
             setSelected((previous) => (previous === cardId ? null : cardId));
           }}
+          // §6.7 — the card's own button and the priority bar dispatch the SAME `activate`; the
+          // seat is always the pinned one, because you do not activate an opponent's abilities.
+          onActivate={(ruleId, cardId) =>
+            dispatch({ kind: 'activate', ruleId, cardId, seat: viewingSeat })
+          }
           destinations={destinations}
           placing={selected !== null}
           override={overrideEnabled}
           onPlace={place}
           heldCardId={selected}
-          dragEnabled={!prompt}
+          dragEnabled={!suspended}
         />
-        <EventLogPanel log={log} onRewind={rewind} />
+        {/* §6.4 — above the log in the EXISTING right rail, not a second one: horizontal space at
+            a five-seat table is the scarce resource, and the rail renders nothing at all while
+            `actionStack` is empty, so a v1-shaped game sees precisely the v1 right rail. */}
+        <div className="cb-play__rail">
+          <ActionStackRail definition={definition} state={state} />
+          <EventLogPanel log={log} onRewind={rewind} />
+        </div>
       </div>
 
       <CardDragOverlay

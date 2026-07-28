@@ -192,6 +192,20 @@
   }
 }
 
+/* ── §6.7 per-instance activation ────────────────────────────────────────────────────────────────
+   Sibling of .cb-card, inside the (position: relative) .cb-card-slot (table.css:243) — verbatim
+   from the design doc. Only existing tokens; no new dependency. */
+
+.cb-card-activate {
+  position: absolute;
+  inset-block-end: -6px;
+  inset-inline: var(--cb-s1);
+  z-index: var(--cb-z-card-raised);
+  display: flex;
+  gap: var(--cb-s1);
+  justify-content: center;
+}
+
 /* ── §6.9 performance escape hatches ─────────────────────────────────────────────────────────── */
 
 /* A catalog of a few hundred thumbnails is the one place the filter cost is visible. */
