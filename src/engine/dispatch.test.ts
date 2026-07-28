@@ -1607,6 +1607,135 @@ describe('chooseNumber + ValueRef{kind:"promptNumber"} — end to end', () => {
 });
 
 // ---------------------------------------------------------------------------
+// §9.4(a) — nested suspension: a chooseNumber inside an activated response, itself inside an open
+// priority window, itself inside a pending action's resolution. §5.10 claims the stack needs no
+// special case for this — frames just stack — and this is the test that actually drives three
+// suspension layers deep rather than asserting the claim by quoting it. Rewinding across all three
+// is `sessionStore.test.ts`'s half of this same scenario (assertions 3–4 of §9.4(a)).
+// ---------------------------------------------------------------------------
+
+describe('§9.4(a) — a chooseNumber suspends a rule frame stacked above an open priority window', () => {
+  const WIN = 'win_nested';
+  const CAN_RESPOND = 'pool_canRespondNested';
+  const RS_ANNOUNCE = 'rs_nestedAnnounce';
+  const RS_ORIGINAL = 'rs_nestedOriginal';
+  const RS_RESPOND = 'rs_nestedRespond';
+  const RESPOND_SEAT = 1;
+
+  function nestedDef(): GameDefinition {
+    const canRespond: CriteriaNode = {
+      kind: 'criteria',
+      left: { kind: 'pool', poolId: CAN_RESPOND, seat: { kind: 'triggeringSeat' } },
+      op: '=',
+      right: { kind: 'literal', value: true },
+    };
+    return mini({
+      playerCount: 3,
+      pools: [
+        { id: N, scope: 'game', value: { type: 'integer', name: 'n', defaultValue: 0, min: 0, max: null } },
+        { id: CAN_RESPOND, scope: 'player', value: { type: 'boolean', name: 'Can Respond', defaultValue: false } },
+      ],
+      priorityWindows: [
+        { id: WIN, name: 'Nested', start: 'active', direction: 'forward', includeStart: true, passesToClose: null, collapseEmptyOffers: true },
+      ],
+      ruleSets: [
+        bump(RS_ANNOUNCE, 'e', { effects: [{ kind: 'announceAction', ruleId: RS_ORIGINAL, window: WIN }] }),
+        bump(RS_ORIGINAL, 'never_nestedOriginal', {
+          effects: [{ kind: 'changePool', poolId: N, seat: null, op: 'add', amount: { kind: 'literal', value: 100 } }],
+        }),
+        bump(RS_RESPOND, 'never_nestedRespond', {
+          effects: [
+            { kind: 'chooseNumber', promptText: 'Pick a number', seat: { kind: 'seat', index: RESPOND_SEAT }, min: { kind: 'literal', value: 0 }, max: { kind: 'literal', value: 5 }, key: 'x' },
+            { kind: 'changePool', poolId: N, seat: null, op: 'add', amount: { kind: 'promptNumber', key: 'x' } },
+          ],
+          activation: { costCheck: canRespond, cost: [], window: WIN, perInstance: false, label: 'Respond' },
+        }),
+      ],
+      globalRuleSetIds: [RS_ANNOUNCE],
+    });
+  }
+
+  function priorityFrame(state: PlayState) {
+    const frame = state.stack.find((f) => f.kind === 'priority');
+    if (!frame || frame.kind !== 'priority') throw new Error('expected a priority frame on the stack');
+    return frame;
+  }
+
+  /** Drives to the first point `state.interaction` matches `kind`, one `CONTINUE` at a time. */
+  function driveTo(state: PlayState, def: GameDefinition, kind: string, lines: LogLine[]): void {
+    let n = 0;
+    while (state.interaction?.kind !== kind) {
+      if (++n > 100_000) throw new Error(`§9.4(a) driver runaway — never reached interaction "${kind}"`);
+      step(state, CONTINUE, lines, def);
+    }
+  }
+
+  it('suspends with a fresh rule frame stacked directly above the open priority frame, depth +1 — not flattened, and the rule frame is parked ON the chooseNumber effect', () => {
+    const def = nestedDef();
+    const state = createPlayState(def, 'seed-nest-a');
+    state.playerPools[CAN_RESPOND][RESPOND_SEAT] = true;
+    const lines: LogLine[] = [];
+
+    step(state, { kind: 'action', action: { kind: 'fireEvent', name: 'e', seat: 0 }, override: false }, lines, def);
+    driveTo(state, def, 'priority', lines);
+    expect(state.interaction).toMatchObject({ kind: 'priority', seat: RESPOND_SEAT }); // seat 0 auto-passed silently first
+    expect(state.actionStack).toHaveLength(1); // RS_ORIGINAL is the one pending action, untouched so far
+    // The `fireEvent`/RS_ANNOUNCE frames that OPENED this window are still further down the same LIFO
+    // stack, unpopped — standard nested-frame behaviour (they cannot pop until everything pushed
+    // above them, including the whole pending-action resolution, is gone). §9.4(a)'s "the stack is
+    // left exactly as-is" is about the increment ON TOP of that, which this test isolates by depth
+    // delta rather than assuming a literal stack length.
+    const depthAtPriority = state.stack.length;
+    expect(state.stack[depthAtPriority - 1].kind).toBe('priority');
+
+    step(state, { kind: 'action', action: { kind: 'activate', ruleId: RS_RESPOND, cardId: null, seat: RESPOND_SEAT }, override: false }, lines, def);
+    driveTo(state, def, 'chooseNumber', lines);
+
+    // Assertion 1 (§9.4(a)) — exactly ONE frame added on top: a `rule` frame directly above the
+    // (untouched) `priority` frame. Not flattened into it, not replacing it.
+    expect(state.stack.length).toBe(depthAtPriority + 1);
+    expect(state.stack.slice(-2).map((f) => f.kind)).toEqual(['priority', 'rule']);
+    const ruleFrame = state.stack[state.stack.length - 1];
+    if (ruleFrame.kind !== 'rule') throw new Error('unreachable');
+    expect(ruleFrame.ruleId).toBe(RS_RESPOND);
+    expect(ruleFrame.cursor).toBe(0); // parked ON the chooseNumber effect, index 0 of RS_RESPOND
+    expect(ruleFrame.aborted).toBe(false);
+    expect(state.actionStack).toHaveLength(1); // still just the original — the response hasn't resolved
+  });
+
+  it('answering resumes the rule frame, pops it once its effects complete, and the priority frame continues past the responder rather than restarting the round', () => {
+    const def = nestedDef();
+    const state = createPlayState(def, 'seed-nest-b');
+    state.playerPools[CAN_RESPOND][RESPOND_SEAT] = true;
+    const lines: LogLine[] = [];
+
+    step(state, { kind: 'action', action: { kind: 'fireEvent', name: 'e', seat: 0 }, override: false }, lines, def);
+    driveTo(state, def, 'priority', lines);
+    step(state, { kind: 'action', action: { kind: 'activate', ruleId: RS_RESPOND, cardId: null, seat: RESPOND_SEAT }, override: false }, lines, def);
+    driveTo(state, def, 'chooseNumber', lines);
+    const depthWhileChoosing = state.stack.length;
+    expect(state.stack.slice(-2).map((f) => f.kind)).toEqual(['priority', 'rule']);
+
+    step(state, { kind: 'action', action: { kind: 'answerNumber', value: 3 }, override: false }, lines, def);
+    // Drive until the rule frame pops — depth drops back below where it stood while suspended.
+    let n = 0;
+    while (state.stack.length >= depthWhileChoosing) {
+      if (++n > 100_000) throw new Error('§9.4(a) driver runaway — the rule frame never popped');
+      step(state, CONTINUE, lines, def);
+    }
+
+    // Assertion 2 (§9.4(a)) — the rule frame's remaining effect ran (N += 3, the chosen number) and
+    // popped it; the priority frame directly beneath is resumed, not reopened or replaced.
+    expect(state.stack.length).toBe(depthWhileChoosing - 1);
+    expect(state.stack[state.stack.length - 1].kind).toBe('priority');
+    expect(state.pools[N]).toBe(3); // RS_ORIGINAL has NOT resolved yet — the window is still open
+    const frame = priorityFrame(state);
+    expect(frame.consecutivePasses).toBe(0); // reset by the response, same discipline as V4
+    expect(frame.order[frame.cursor]).toBe(2); // continues at seat 2, NOT restarted at seat 0
+  });
+});
+
+// ---------------------------------------------------------------------------
 // v2 §4.5, §4.9, §5.11, step 29 — AC: V5, §9.4(b)'s sealed bullet, §9.4(f) point 2, §9.5 edge case 8.
 // ---------------------------------------------------------------------------
 

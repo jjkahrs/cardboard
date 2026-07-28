@@ -45,6 +45,16 @@ export const VOTES_FOR = 'pool_votesFor';
 export const VOTES_AGAINST = 'pool_votesAgainst';
 export const BLOCKED = 'pool_blocked'; // game bool — marks V4's "one seat blocks" outcome.
 export const REFERENDUM_PASSED = 'pool_referendumPassed'; // game bool — V6/V7's verdict.
+/**
+ * V6 — "log names both resolved totals, not just the verdict." No effect in this engine can log an
+ * arbitrary composed message (no such primitive exists — see the step-32 report), so the referendum
+ * rules write each side's SUMMED total into its own game pool via an ordinary `changePool`, whose own
+ * log line already names the pool and the resolved value. Two distinguishable lines ("Votes For
+ * Total: 0 → 4.", "Votes Against Total: 0 → 0.") is the route to "the log names both totals" that
+ * exists without inventing a new primitive.
+ */
+export const VOTES_FOR_TOTAL = 'pool_votesForTotal';
+export const VOTES_AGAINST_TOTAL = 'pool_votesAgainstTotal';
 
 export const UNCONTROLLED = 'zone_uncontrolled';
 export const READY = 'zone_ready'; // V11's two ends.
@@ -100,6 +110,8 @@ const pools: PointPool[] = [
   { id: VOTES_AGAINST, scope: 'player', value: { type: 'integer', name: 'Votes Against', defaultValue: 0, min: 0, max: 10 } },
   { id: BLOCKED, scope: 'game', value: { type: 'boolean', name: 'Blocked', defaultValue: false } },
   { id: REFERENDUM_PASSED, scope: 'game', value: { type: 'boolean', name: 'Referendum Passed', defaultValue: false } },
+  { id: VOTES_FOR_TOTAL, scope: 'game', value: { type: 'integer', name: 'Votes For Total', defaultValue: 0, min: 0, max: 50 } },
+  { id: VOTES_AGAINST_TOTAL, scope: 'game', value: { type: 'integer', name: 'Votes Against Total', defaultValue: 0, min: 0, max: 50 } },
 ];
 
 // ---------------------------------------------------------------------------
@@ -256,17 +268,27 @@ export const readyRule: RuleSet = {
  * "cast vote" ability from reading its own card's value), and the referendum sums those pools across
  * every seat.
  */
+/** Both sides' summed totals, resolved via the SAME `sum` quantifier the condition below reads. */
+const votesForSum: ValueRef = { kind: 'pool', poolId: VOTES_FOR, seat: { kind: 'all', quantifier: 'sum' } };
+const votesAgainstSum: ValueRef = { kind: 'pool', poolId: VOTES_AGAINST, seat: { kind: 'all', quantifier: 'sum' } };
+
 export const referendumPassRule: RuleSet = {
   ...baseRule,
   id: RS_REFERENDUM_PASS,
   name: 'Referendum Passes',
   trigger: ON_REFERENDUM_CLOSE,
-  effects: [{ kind: 'changePool', poolId: REFERENDUM_PASSED, seat: null, op: 'set', amount: lit(true) }],
+  effects: [
+    // AC: V6 — writes each side's RESOLVED total into its own pool before the verdict, so the log
+    // names both totals ("Votes For Total: 0 → 4.", "Votes Against Total: 0 → 0."), not just "passed".
+    { kind: 'changePool', poolId: VOTES_FOR_TOTAL, seat: null, op: 'set', amount: votesForSum },
+    { kind: 'changePool', poolId: VOTES_AGAINST_TOTAL, seat: null, op: 'set', amount: votesAgainstSum },
+    { kind: 'changePool', poolId: REFERENDUM_PASSED, seat: null, op: 'set', amount: lit(true) },
+  ],
   condition: {
     kind: 'criteria',
-    left: { kind: 'pool', poolId: VOTES_FOR, seat: { kind: 'all', quantifier: 'sum' } },
+    left: votesForSum,
     op: '>',
-    right: { kind: 'pool', poolId: VOTES_AGAINST, seat: { kind: 'all', quantifier: 'sum' } },
+    right: votesAgainstSum,
   },
 };
 
@@ -275,12 +297,16 @@ export const referendumFailRule: RuleSet = {
   id: RS_REFERENDUM_FAIL,
   name: 'Referendum Fails',
   trigger: ON_REFERENDUM_CLOSE,
-  effects: [{ kind: 'changePool', poolId: REFERENDUM_PASSED, seat: null, op: 'set', amount: lit(false) }],
+  effects: [
+    { kind: 'changePool', poolId: VOTES_FOR_TOTAL, seat: null, op: 'set', amount: votesForSum },
+    { kind: 'changePool', poolId: VOTES_AGAINST_TOTAL, seat: null, op: 'set', amount: votesAgainstSum },
+    { kind: 'changePool', poolId: REFERENDUM_PASSED, seat: null, op: 'set', amount: lit(false) },
+  ],
   condition: {
     kind: 'criteria',
-    left: { kind: 'pool', poolId: VOTES_FOR, seat: { kind: 'all', quantifier: 'sum' } },
+    left: votesForSum,
     op: '<=',
-    right: { kind: 'pool', poolId: VOTES_AGAINST, seat: { kind: 'all', quantifier: 'sum' } },
+    right: votesAgainstSum,
   },
 };
 

@@ -856,3 +856,132 @@ describe('rewind — activation (AC: SP8, §9.4(e) case 3)', () => {
     expect(session().history).toHaveLength(before);
   });
 });
+
+// ---------------------------------------------------------------------------
+// §9.4(a) — nested suspension, rewind half. `dispatch.test.ts` proves the stack shape while
+// suspended (a chooseNumber suspends a fresh rule frame stacked directly above an open priority
+// window, and answering pops it and resumes the round in place, not restarted). This is the rewind
+// half: §5.10 claims rewinding across all three suspension layers (pending action -> priority window
+// -> chooseNumber) needs no special case — the stack is just frames, so unwinding it is the same
+// mechanism H1 already proves for one layer. This is the test that actually drives three layers deep
+// rather than asserting the claim by quoting it.
+// ---------------------------------------------------------------------------
+
+describe('rewind — §9.4(a) nested suspension (chooseNumber inside an open priority window)', () => {
+  const N_ID = 'pool_nested_session';
+  const WIN_ID = 'win_nested_session';
+
+  const rsOriginalNested: RuleSet = {
+    id: 'rs_original_nested_session',
+    name: 'Original',
+    trigger: 'never_original_nested_session',
+    stateFilter: null,
+    condition: null,
+    effects: [{ kind: 'changePool', poolId: N_ID, seat: null, op: 'add', amount: { kind: 'literal', value: 100 } }],
+    priority: 0,
+    onRejection: 'continue',
+    modifier: null,
+    continuous: false,
+    replaces: null,
+    activation: null,
+  };
+
+  const rsAnnounceNested: RuleSet = {
+    id: 'rs_announce_nested_session',
+    name: 'AnnounceNested',
+    trigger: 'doAnnounceNested',
+    stateFilter: null,
+    condition: null,
+    effects: [{ kind: 'announceAction', ruleId: rsOriginalNested.id, window: WIN_ID }],
+    priority: 0,
+    onRejection: 'continue',
+    modifier: null,
+    continuous: false,
+    replaces: null,
+    activation: null,
+  };
+
+  // Freely activatable (no costCheck) — the same simplification `rsRespondMtg` above makes: this
+  // test is about the REWIND shape across a nested suspension, not per-seat legality (priority.test.ts
+  // already covers legality thoroughly).
+  const rsRespondNested: RuleSet = {
+    id: 'rs_respond_nested_session',
+    name: 'RespondNested',
+    trigger: 'never_respond_nested_session',
+    stateFilter: null,
+    condition: null,
+    effects: [
+      { kind: 'chooseNumber', promptText: 'Pick a number', seat: { kind: 'seat', index: 0 }, min: { kind: 'literal', value: 0 }, max: { kind: 'literal', value: 5 }, key: 'x' },
+      { kind: 'changePool', poolId: N_ID, seat: null, op: 'add', amount: { kind: 'promptNumber', key: 'x' } },
+    ],
+    priority: 0,
+    onRejection: 'continue',
+    modifier: null,
+    continuous: false,
+    replaces: null,
+    activation: { costCheck: null, cost: [], window: WIN_ID, perInstance: false, label: 'Respond' },
+  };
+
+  const winNestedSession: PriorityWindow = {
+    id: WIN_ID,
+    name: 'Nested',
+    start: 'active',
+    direction: 'forward',
+    includeStart: true,
+    passesToClose: null,
+    collapseEmptyOffers: true,
+  };
+
+  const nestedDef: GameDefinition = {
+    ...testDef,
+    id: 'test-session-def-nested',
+    pools: [{ id: N_ID, scope: 'game', value: { type: 'integer', name: 'N', defaultValue: 0, min: 0, max: null } }],
+    customEvents: [...testDef.customEvents, 'doAnnounceNested'],
+    ruleSets: [...testDef.ruleSets, rsOriginalNested, rsAnnounceNested, rsRespondNested],
+    globalRuleSetIds: [...testDef.globalRuleSetIds, rsAnnounceNested.id],
+    priorityWindows: [winNestedSession],
+  };
+
+  it('rewinds across all three suspension layers with no special case: to the pre-answer chooseNumber, and to before the response ever happened', () => {
+    useSessionStore.getState().startSession(nestedDef, SEED);
+
+    useSessionStore.getState().dispatch({ kind: 'fireEvent', name: 'doAnnounceNested', seat: 0 });
+    expect(session().state.interaction?.kind).toBe('priority');
+    const afterAnnounce = session().log.length;
+    const stackAfterAnnounce = session().state.stack;
+    const actionStackAfterAnnounce = session().state.actionStack;
+    const pendingActionsAfterAnnounce = session().state.pendingActions;
+    expect(actionStackAfterAnnounce).toHaveLength(1); // RS_ORIGINAL, the one pending action
+
+    useSessionStore.getState().dispatch({ kind: 'activate', ruleId: rsRespondNested.id, cardId: null, seat: 0 });
+    expect(session().state.interaction?.kind).toBe('chooseNumber');
+    // Same shape `dispatch.test.ts` pins directly: a fresh rule frame stacked above the (untouched)
+    // priority frame.
+    expect(session().state.stack.map((f: Frame) => f.kind).slice(-2)).toEqual(['priority', 'rule']);
+    const beforeAnswer = session().log.length;
+    const interactionBeforeAnswer = session().state.interaction;
+    const stackBeforeAnswer = session().state.stack;
+
+    useSessionStore.getState().dispatch({ kind: 'answerNumber', value: 3 });
+    // Whatever this settles into (the round may re-offer priority, since the response is freely
+    // repeatable) is provably DIFFERENT from the pre-answer suspension — the baseline assertion 3
+    // needs before rewinding away from it.
+    expect(session().state.interaction).not.toEqual(interactionBeforeAnswer);
+
+    // Assertion 3 (§9.4(a)) — rewinding to the point before the number was asked restores the EXACT
+    // pre-answer suspension: the same chooseNumber interaction, the same stack (['priority','rule'],
+    // rule frame cursor un-advanced) — not popped, not advanced.
+    useSessionStore.getState().rewind(beforeAnswer);
+    expect(session().state.interaction).toEqual(interactionBeforeAnswer);
+    expect(session().state.stack).toEqual(stackBeforeAnswer);
+
+    // Assertion 4 (§9.4(a)) — rewinding to before seat 0 ever responded restores EXACTLY the open
+    // priority window, the one original pending action, and nothing about the response left over —
+    // the whole nested frame is gone, per §5.10's "no special case" claim, not merely popped once.
+    useSessionStore.getState().rewind(afterAnnounce);
+    expect(session().state.interaction?.kind).toBe('priority');
+    expect(session().state.stack).toEqual(stackAfterAnnounce);
+    expect(session().state.actionStack).toEqual(actionStackAfterAnnounce);
+    expect(session().state.pendingActions).toEqual(pendingActionsAfterAnnounce);
+  });
+});

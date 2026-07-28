@@ -385,6 +385,33 @@ describe('effectiveIndex (§5.4)', () => {
     // The stored BASE is untouched; the +1 exists nowhere in state (§5.4 derivation).
     expect(after.cards['c0'].indexValues[POWER]).toBe(2);
   });
+
+  // §9.5 edge case 5 — a rule's effect list first destroys the modifier's SOURCE, and a LATER effect
+  // in the SAME rule (same draft, no `produce` boundary in between) reads the buffed card. Since
+  // modifiers are derived from `state.cards` on every read rather than materialized, this must just
+  // work — the read after removal already reflects the loss — but it is exactly the class of bug a
+  // cached/materialized design would get wrong (a stale buffed value surviving until the next
+  // recompute), so it earns its own test rather than trusting the derivation argument in prose.
+  it('§9.5 edge case 5 — a later effect in the SAME rule reads the buff as already gone once its source is destroyed', () => {
+    const def = makeDef();
+    const state = makeState(
+      [card('c0', T_BEAR), card('c1', T_ADJUST_LORD)],
+      { [BF_KEY]: ['c1', 'c0'] } // lord first, so topOfZone(count:1) below names only the lord
+    );
+    expect(effectiveIndex(state, def, 'c0', POWER)).toBe(3); // 2 base + 1 from the lord's buff
+
+    const ec = effectContext(state, def);
+    const destroy: Effect = {
+      kind: 'destroyCards',
+      target: { kind: 'topOfZone', zone: { zoneId: BF, seat: null }, count: lit(1) },
+    };
+    expect(applyEffect(destroy, ec)).toEqual({ ok: true });
+    expect(state.cards['c1']).toBeUndefined(); // the lord really is gone
+
+    // Read within the SAME rule's resolution — same state object, no produce boundary — and the buff
+    // is already gone: effectiveIndex is derived from state.cards on every read, never materialized.
+    expect(effectiveIndex(state, def, 'c0', POWER)).toBe(2);
+  });
 });
 
 // ---------------------------------------------------------------------------

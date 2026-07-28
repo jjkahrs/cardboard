@@ -1037,6 +1037,17 @@ describe('attach / detach (§4.3)', () => {
     expect(h.state.cards[item].attachedTo).toBeNull();
   });
 
+  // §9.5 edge case 6 — the host was destroyed EARLIER IN THE SAME CASCADE (not merely unbound, as
+  // above). `CardRef{kind:'instance'}` must fail TARGET_GONE, not create a dangling `attachedTo`
+  // pointing at an id absent from `state.cards`.
+  it('§9.5 edge case 6 — a host destroyed earlier in the same cascade rejects TARGET_GONE, not a dangling attachedTo', () => {
+    const { host, item } = pair();
+    delete h.state.cards[host]; // destroyed earlier in this cascade
+    const result = applyEffect(attach(host), h.ec);
+    expect(result).toMatchObject({ ok: false, reason: 'TARGET_GONE' });
+    expect(h.state.cards[item].attachedTo).toBeNull();
+  });
+
   it('resolves CardRef{kind:"host"} off the RULE\'s card, not the triggering card', () => {
     const { host, item } = pair();
     applyEffect(attach(host), h.ec);

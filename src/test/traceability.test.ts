@@ -5,8 +5,11 @@
  * every criterion in scope has at least one.
  *
  * A criterion whose only possible proof is an unbuilt screen goes in PENDING and is not asserted,
- * so this suite doesn't red the whole build over work nobody has started yet. As of step 25 that
- * list is empty — the play screen was the last thing holding UI-only proofs.
+ * so this suite doesn't red the whole build over work nobody has started yet. Steps 21–32 landed
+ * v2's pending-action/priority/activation/modifier/replacement/continuous/sealed-choice layer and
+ * its two fixtures; step 33 (§8's phase-2 GATE) is what wired every criterion those steps made
+ * provable into IN_SCOPE. PENDING holds exactly the one row §8's phase-2 exit criteria name as
+ * out of scope for this gate — SP12, the pinned play UI — which Phase 3 owns.
  */
 
 import { readFileSync, readdirSync } from 'node:fs';
@@ -98,12 +101,37 @@ const IN_SCOPE: Criterion[] = [
   // predicate that silently drops a candidate is the failure mode the per-candidate line exists for.
   { id: 'SP1', prose: '`matching{where: power>2}` over a zone selects only qualifying candidates; the resolved id set excludes the power<=2 candidate and a log line exists per candidate with `criteria` kind and a boolean outcome (§5.9 row 3)', expected: 'targets.test.ts' },
   { id: 'SP4', prose: 'Host destroyed -> the attachment is not cascaded; the card stays in state.cards with attachedTo null, and the detachment logs its own change line distinct from the destroy line', expected: 'effects.test.ts (destroyCards)' },
+  // §8 step 33 — the phase-2 gate. Steps 21–32 landed the pending-action/priority/activation/
+  // modifier/replacement/continuous/sealed-choice layer and the two fixtures; this batch is every
+  // criterion those steps made provable that hadn't yet been wired into IN_SCOPE.
+  { id: 'SP7', prose: 'Cost precondition requiring 2, only 1 available -> nothing runs, nothing spent, cost named', expected: 'activation.test.ts' },
+  { id: 'SP8', prose: 'Same rule with 2 available -> one transaction, rewind restores the spent total exactly', expected: 'activation.test.ts, sessionStore.test.ts' },
+  { id: 'SP9', prose: "First rule's effect makes the second's condition newly true -> both fire in the same transaction", expected: 'continuous.test.ts' },
+  { id: 'SP10', prose: 'chooseMode pauses showing mode labels rather than cards, no later effect has run, chosen branch runs in order', expected: 'dispatch.test.ts' },
+  { id: 'MTG1', prose: 'Pending action placed -> every seat offered priority in turn order; a legal responder may respond above the original', expected: 'priority.test.ts' },
+  { id: 'MTG2', prose: 'Stack of two, no further response -> most recently placed resolves first', expected: 'pending.test.ts' },
+  { id: 'MTG3', prose: 'Counter resolves -> countered action removed without applying; log names both', expected: 'pending.test.ts' },
+  { id: 'MTG4', prose: 'Priority round with no legal response anywhere -> collapses, no per-seat log entry', expected: 'priority.test.ts' },
+  { id: 'MTG5', prose: 'A seat with a legal response passes anyway -> own log entry and rewind point', expected: 'priority.test.ts, sessionStore.test.ts' },
+  { id: 'MTG9', prose: 'Continuous rule eliminates a seat at zero life; elimination lands at next settle; session continues', expected: 'continuous.test.ts, seats.test.ts' },
+  { id: 'MTG10', prose: 'Replacement: a draw becomes two; substitution before any card moves; log distinguishes original from substitute', expected: 'replacement.test.ts' },
+  { id: 'MTG11', prose: 'Attacker/blocker via attachment; damage resolves via the continuous-condition rule, not bespoke combat code', expected: "mtgish.ts-driven scenario in fixtures.test.ts" },
+  { id: 'V3', prose: 'Announced action -> block window offers each other seat in order; closes only after all decline consecutively', expected: "priority.test.ts (vtesish block window)" },
+  { id: 'V4', prose: 'One seat blocks -> resolution continues from the resulting combat, not re-offered to already-declined seats', expected: 'priority.test.ts' },
+  { id: 'V5', prose: 'Two hidden strikes: first submission invisible/unlogged; second submission -> both reveal, one transaction, one log entry (engine half — the component half is the pinned play UI, Phase 3)', expected: 'dispatch.test.ts (sealedChoice), fixtures.test.ts' },
+  { id: 'V6', prose: 'Vote values 1/2/1 summed -> 4; log names both resolved totals, not just the verdict', expected: 'fixtures.test.ts (vtesish scenario)' },
+  { id: 'V7', prose: 'Votes-for > votes-against -> passing branch runs; votes added mid-window are included', expected: 'fixtures.test.ts (vtesish scenario)' },
+  { id: 'V8', prose: "Equipment attached to a vampire; discipline-value->=2 check permitted only for that host", expected: 'fixtures.test.ts (vtesish hostOf scenario)' },
+  { id: 'V11', prose: 'Influence counters reach capacity -> authored rule moves the minion to Ready, via existing v1 primitives', expected: 'fixtures.test.ts (vtesish scenario)' },
 ];
 
-// Every criterion in §9.1 now has a home: step 25 landed the play screen, which was the last one
-// holding UI-only proofs. Kept (empty) because the day a criterion is added ahead of its tests,
-// this is where it goes rather than into IN_SCOPE where it would red the build.
-const PENDING: Criterion[] = [];
+// SP12 (the pinned play UI, PlayTable/EventLogPanel/PlayToolbar) and V5's component half (the
+// `submitted` count in PromptBar/EventLogPanel) are the two rows §8's phase-2 exit criteria name as
+// out of scope for this gate — Phase 3 owns the UI. V5's ENGINE half is already proved above under
+// IN_SCOPE, so it does not also need a PENDING entry; only SP12 has no headless proof at all.
+const PENDING: Criterion[] = [
+  { id: 'SP12', prose: 'Play UI pinned to seat 2 discloses nothing hidden, log included; switching pinned seat is an explicit action', expected: 'PlayTable.test.tsx, EventLogPanel.test.tsx, PlayToolbar.test.tsx (Phase 3 — names the pinned play UI, which does not exist as a v2 seat-walk yet)' },
+];
 
 const tags = scanTags(listTestFiles(SRC_DIR));
 

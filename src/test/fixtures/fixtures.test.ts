@@ -617,7 +617,7 @@ describe('vtesish', () => {
   });
 
   it('declares the pool/vote pools and the four §9.3 zones', () => {
-    expect(vtesish.pools.map((p) => p.id)).toEqual([vtes.POOL, vtes.VOTES_FOR, vtes.VOTES_AGAINST, vtes.BLOCKED, vtes.REFERENDUM_PASSED]);
+    expect(vtesish.pools.map((p) => p.id)).toEqual([vtes.POOL, vtes.VOTES_FOR, vtes.VOTES_AGAINST, vtes.BLOCKED, vtes.REFERENDUM_PASSED, vtes.VOTES_FOR_TOTAL, vtes.VOTES_AGAINST_TOTAL]);
     expect(vtesish.pools[0]).toMatchObject({ scope: 'player', value: { defaultValue: 30, min: 0, max: 30 } });
     expect(vtesish.zones.map((z) => z.name)).toEqual(['Uncontrolled', 'Ready', 'Library', 'Hand']);
   });
@@ -674,7 +674,7 @@ describe('vtesish', () => {
   // AC: V11 — see the dedicated describe block below for the structural "no announceAction/priority/
   // replaces/modifier field touched" proof and the behavioral drive.
 
-  it('AC: V6/V7 — the referendum sums VOTES_FOR/VOTES_AGAINST across every seat (SP6), not per-card', () => {
+  it('AC: V6, V7 — the referendum sums VOTES_FOR/VOTES_AGAINST across every seat (SP6), not per-card', () => {
     const pass = vtesish.ruleSets.find((r) => r.id === vtes.RS_REFERENDUM_PASS)!;
     expect(pass.condition).toEqual({
       kind: 'criteria',
@@ -684,7 +684,7 @@ describe('vtesish', () => {
     });
   });
 
-  it('AC: V6/V7 behavioral — 1/2/1 votes for, 0 against, sum to 4 and the referendum passes', () => {
+  it('AC: V6 behavioral — 1/2/1 votes for, 0 against, resolve to a sum of 4; the referendum passes; the log names BOTH totals, not just the verdict', () => {
     const state = emptyBoard(vtesish, 'state_main');
     state.playerPools[vtes.VOTES_FOR] = [1, 2, 1, 0, 0];
     const lines: LogLine[] = [];
@@ -694,6 +694,38 @@ describe('vtesish', () => {
       if (++n > 10_000) throw new Error('runaway');
       result = step(state, CONTINUE, lines, vtesish);
     }
+    // The `sum` ValueRef resolves to one arithmetic total (SP6) — asserted directly, not just via the
+    // pass/fail boolean it feeds.
+    expect(state.pools[vtes.VOTES_FOR_TOTAL]).toBe(4);
+    expect(state.pools[vtes.VOTES_AGAINST_TOTAL]).toBe(0);
+    expect(state.pools[vtes.REFERENDUM_PASSED]).toBe(true);
+    expect(lines.some((l) => l.ruleId === vtes.RS_REFERENDUM_PASS && l.kind === 'rule')).toBe(true);
+    // The log names BOTH resolved totals — two distinguishable lines naming the actual numbers, not
+    // merely a verdict boolean flipping. (The verdict line itself, "Referendum Passed: false → true.",
+    // is a THIRD, separate line — its pool name happens to contain the word "passed", which is not
+    // what this criterion is guarding against; the guard is that the totals are ALSO there.)
+    expect(lines.some((l) => l.message.includes('Votes For Total') && l.message.includes('4'))).toBe(true);
+    expect(lines.some((l) => l.message.includes('Votes Against Total') && l.message.includes('0'))).toBe(true);
+  });
+
+  it('AC: V7 — votes-for > votes-against passes; a vote added AFTER the initial tally but BEFORE the close event still resolves into the sum', () => {
+    const state = emptyBoard(vtesish, 'state_main');
+    // Starts BEHIND — 1 for, 2 against — would fail the referendum if it resolved right now.
+    state.playerPools[vtes.VOTES_FOR] = [1, 0, 0, 0, 0];
+    state.playerPools[vtes.VOTES_AGAINST] = [0, 2, 0, 0, 0];
+    // A vote cast later, before the close event ever fires — nothing here freezes the tally early.
+    state.playerPools[vtes.VOTES_FOR][2] = 3;
+
+    const lines: LogLine[] = [];
+    let result = step(state, { kind: 'action', action: { kind: 'fireEvent', name: vtes.ON_REFERENDUM_CLOSE, seat: 0 }, override: false }, lines, vtesish);
+    let n = 0;
+    while (!result.done) {
+      if (++n > 10_000) throw new Error('runaway');
+      result = step(state, CONTINUE, lines, vtesish);
+    }
+    // 1+0+3+0+0 = 4 for, 0+2+0+0+0 = 2 against — passes, and ONLY because the late vote is included.
+    expect(state.pools[vtes.VOTES_FOR_TOTAL]).toBe(4);
+    expect(state.pools[vtes.VOTES_AGAINST_TOTAL]).toBe(2);
     expect(state.pools[vtes.REFERENDUM_PASSED]).toBe(true);
     expect(lines.some((l) => l.ruleId === vtes.RS_REFERENDUM_PASS && l.kind === 'rule')).toBe(true);
   });
