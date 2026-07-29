@@ -1,15 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { createEmptyDefinition } from '../stores/definitionStore';
-import {
-  deleteGame,
-  getAllGames,
-  getGame,
-  importJson,
-  putGame,
-  setLastOpenedGameId,
-} from '../stores/persistence';
-import { downloadDefinition, newGameId } from './gameFile';
+import { deleteGame, getAllGames, getGame, putGame, setLastOpenedGameId } from '../stores/persistence';
+import { downloadDefinition, newGameId, readDefinitionFile } from './gameFile';
+import { useFileDrop } from './useFileDrop';
 import type { GameDefinition } from '../engine/types';
 
 /**
@@ -24,7 +18,6 @@ export function GameListScreen() {
   const [error, setError] = useState<string | null>(null);
   /** Import/export problems. Separate from `error`: the list itself still loaded and still renders. */
   const [problems, setProblems] = useState<string[]>([]);
-  const [notice, setNotice] = useState<string | null>(null);
   /** Id awaiting a second click. Inline, because window.confirm blocks the whole tab. */
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -66,8 +59,7 @@ export function GameListScreen() {
 
   const importFile = async (file: File) => {
     setProblems([]);
-    setNotice(null);
-    const result = importJson(await file.text());
+    const result = await readDefinitionFile(file);
     if (!result.ok) {
       setProblems(result.errors);
       return;
@@ -78,8 +70,11 @@ export function GameListScreen() {
     const collides = (await getGame(result.definition.id)) !== undefined;
     const id = collides ? newGameId() : result.definition.id;
     await putGame({ ...result.definition, id });
-    setNotice(`Imported “${result.definition.name}”${collides ? ' as a new game' : ''}.`);
-    await refresh();
+    // v3 (IM1): open what was just imported rather than returning to the list. The imported game's
+    // editor, with its name in the rail, confirms the import better than a sentence on a screen the
+    // user is about to leave — so the success notice went with the navigation, and `refresh()` with
+    // it. The rejection path above still keeps the user here, looking at the errors.
+    open(id);
   };
 
   const onFilePicked = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -89,9 +84,11 @@ export function GameListScreen() {
     if (file) void importFile(file);
   };
 
+  /** A dropped file means what this screen's Import button means (v3 §4.4): a new game. */
+  const dragging = useFileDrop((file) => void importFile(file));
+
   const exportGame = (game: GameDefinition) => {
     setProblems([]);
-    setNotice(null);
     try {
       downloadDefinition(game);
     } catch (e) {
@@ -128,7 +125,11 @@ export function GameListScreen() {
         </button>
       </header>
 
-      {notice !== null && <p role="status">{notice}</p>}
+      {dragging && (
+        <p className="cb-dropzone" role="status">
+          Drop a game file to import it as a new game
+        </p>
+      )}
       {problems.length > 0 && (
         <ul className="cb-list">
           {problems.map((problem) => (

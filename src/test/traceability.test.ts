@@ -129,6 +129,18 @@ const IN_SCOPE: Criterion[] = [
   // raw HTML) and duel (the three-part explicit-switch proof from §6.1), not from a component in
   // isolation, which is the point of it being the gate.
   { id: 'SP12', prose: 'Play UI pinned to seat 2 discloses nothing hidden, log included; switching pinned seat is an explicit action', expected: 'play.test.tsx' },
+  // v3 §6 — importing an exported game into the editor. Every row here is a screen-level proof, so
+  // none of them could have been written before Phase 3; they land with the feature itself.
+  { id: 'IM1', prose: 'Import from the list stores the file and lands in that game\'s editor, not back on the list', expected: 'routing.test.tsx' },
+  { id: 'IM2', prose: 'Id collision mints a new id; the game it collided with is byte-identical afterwards', expected: 'routing.test.tsx' },
+  { id: 'IM3', prose: 'Replace overwrites the open game in place — same id, same route, same list slot, file\'s content', expected: 'import.test.tsx' },
+  { id: 'IM4', prose: 'Replace takes two clicks, names file and game between them, and writes nothing if cancelled', expected: 'import.test.tsx' },
+  { id: 'IM5', prose: 'A file failing any gate changes nothing: open definition referentially identical, IndexedDB untouched', expected: 'import.test.tsx' },
+  { id: 'IM6', prose: 'Drop on the list imports as a new game; drop in the editor offers a replace and commits nothing on its own', expected: 'import.test.tsx' },
+  { id: 'IM7', prose: 'A drop on a screen that handles none is preventDefault-ed — the tab never navigates to the file', expected: 'import.test.tsx' },
+  { id: 'IM8', prose: 'A file from another schema version is rejected naming both versions, from the editor surface too', expected: 'import.test.tsx' },
+  { id: 'IM9', prose: 'Replace stamps its own updatedAt; the file\'s timestamp does not survive into the stored game', expected: 'import.test.tsx' },
+  { id: 'IM10', prose: 'While a file drag is over the window each screen states what a drop would do, and stops when it leaves', expected: 'import.test.tsx' },
 ];
 
 // Nothing lands here right now. A criterion goes in PENDING only when its sole possible proof is a

@@ -234,6 +234,13 @@ describe('mtgish, re-authored through the UI', () => {
 
     const boltId = await addTemplate(router, user);
     const counterMagicId = await addTemplate(router, user);
+    // Anthem Lord carries the modifier rule. It gets its own template rather than riding on Bear
+    // (mtgish.ts does the same — `anthemLordRule` is on RS_ANTHEM_LORD's card, not the Bear) and
+    // that separation is load-bearing here, not cosmetic: `modifiers.ts:158-176` collects from every
+    // card ON THE BOARD carrying a modifier rule, so a modifier attached to Bear would be live
+    // during the MTG11 replay at the bottom of this test and would silently move both Bears' Power.
+    // Anthem Lord is never placed, so the replay sees exactly the fixture's own numbers.
+    const anthemLordId = await addTemplate(router, user);
 
     // -- The ten rules — created as stubs first (so cross-rule references have something to point
     // at), then configured. Order of creation, captured by id:
@@ -406,13 +413,45 @@ describe('mtgish, re-authored through the UI', () => {
       },
     ]);
 
-    // -- Modifier rule: value-modifier mode (a static +1/+1-shaped rule). AC-adjacent: MTG6/MTG7.
+    // -- Modifier rule: value-modifier mode — mtgish's `anthemLordRule`, an anthem over every tagged
+    // creature on the Battlefield, live only while its own source sits there. AC-adjacent: MTG6.
+    // NOT MTG7: that criterion is specifically "every `set` applies before every `adjust`", which is
+    // §5.4's algorithm rather than an authoring shape, needs a second `op:'set'` modifier to observe
+    // at all, and is already proven headlessly by `modifiers.test.ts` / the `powerSetRule` pairing.
+    // `indexId`/`op`/`amount` are the mode-switch's own defaults (`RuleSetEditor.tsx:127-133`) and
+    // coincide with the fixture, the same way Counter Magic's effect picker default does — so the
+    // three fields DRIVEN here (scope kind, its zone and tag, and `activeZones`) are what make this
+    // more than a read-back of that patch.
     await goto(router, `/game/${GAME_ID}/rules/${modifierRuleId}`);
     await screen.findByRole('heading', { level: 1 });
     await user.click(screen.getByRole('radio', { name: 'value modifier' }));
+    await user.click(screen.getByRole('button', { name: 'Which cards are modified' }));
+    await user.click(screen.getByRole('radio', { name: /cards with a tag, in a zone/i }));
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Zone' }), battlefieldId);
+    await user.type(screen.getByRole('textbox', { name: 'Tag' }), 'creature');
+    await closePopovers(user);
+    // "Applies while its source is in" labels its checkboxes with the zone's own name; zones are
+    // never renamed in this trim, so the name is read back rather than spelled out.
+    const battlefieldName = definition().zones.find((z) => z.id === battlefieldId)!.name;
+    await user.click(screen.getByRole('checkbox', { name: battlefieldName }));
+
     const modifierRule = () => definition().ruleSets.find((r) => r.id === modifierRuleId)!;
-    expect(modifierRule().modifier).toMatchObject({ scope: { kind: 'triggeringCard' }, op: 'adjust', amount: { kind: 'literal', value: 1 } });
+    expect(modifierRule().modifier).toEqual({
+      scope: { kind: 'taggedInZone', zone: { zoneId: battlefieldId, seat: null }, tag: 'creature' },
+      indexId: powerId,
+      op: 'adjust',
+      amount: { kind: 'literal', value: 1 },
+      activeZones: [battlefieldId],
+    });
     expect(modifierRule()).toMatchObject({ continuous: false, replaces: null, activation: null });
+    // The same construct as mtgish.ts authors it — field for field, ids aside.
+    expect(mtg.anthemLordRule.modifier).toEqual({
+      scope: { kind: 'taggedInZone', zone: { zoneId: mtg.MTG_BATTLEFIELD, seat: null }, tag: mtg.MTG_CREATURE_TAG },
+      indexId: mtg.MTG_POWER,
+      op: 'adjust',
+      amount: { kind: 'literal', value: 1 },
+      activeZones: [mtg.MTG_BATTLEFIELD],
+    });
 
     // -- Return to Owner: activation, global, no cost, no window (every default matches) — moves
     // every card on the Battlefield to the OWNER of the top card's Hand. AC-adjacent: MTG8, SP5.
@@ -533,14 +572,18 @@ describe('mtgish, re-authored through the UI', () => {
     // -- Attach rules to Bear and Bolt/Counter Magic through the card editor's checkboxes.
     await goto(router, `/game/${GAME_ID}/cards/${bearId}`);
     await screen.findByRole('heading', { level: 1 });
-    for (const name of ['New rule 4', 'New rule 5', 'New rule 6']) {
+    for (const name of ['New rule 4', 'New rule 5']) {
       await user.click(screen.getByRole('checkbox', { name }));
     }
     expect(definition().templates.find((t) => t.id === bearId)!.ruleSetIds).toEqual([
       lethalDamageId,
       blockId,
-      modifierRuleId,
     ]);
+
+    await goto(router, `/game/${GAME_ID}/cards/${anthemLordId}`);
+    await screen.findByRole('heading', { level: 1 });
+    await user.click(screen.getByRole('checkbox', { name: 'New rule 6' }));
+    expect(definition().templates.find((t) => t.id === anthemLordId)!.ruleSetIds).toEqual([modifierRuleId]);
 
     await goto(router, `/game/${GAME_ID}/cards/${boltId}`);
     await screen.findByRole('heading', { level: 1 });
@@ -651,6 +694,22 @@ describe('vtesish, re-authored through the UI', () => {
     const windowBlockId = definition().priorityWindows[0].id;
     await user.selectOptions(screen.getByRole('combobox', { name: 'Poll starts at' }), 'controllerOfAction');
     await user.click(screen.getByRole('checkbox', { name: /include the starting seat/i }));
+    // The (b2) replay below passes priority unconditionally until `done`, so it comes out the same
+    // whichever seat the poll starts at — these two fields are proven HERE, against the fixture's
+    // own literals, or nowhere. `direction`/`passesToClose` are add-time defaults that happen to
+    // match, asserted alongside so a control writing the wrong field of the same shape is caught.
+    expect(definition().priorityWindows[0]).toMatchObject({
+      start: 'controllerOfAction',
+      direction: 'forward',
+      includeStart: false,
+      passesToClose: null,
+    });
+    expect(vtes.windowBlock).toMatchObject({
+      start: 'controllerOfAction',
+      direction: 'forward',
+      includeStart: false,
+      passesToClose: null,
+    });
 
     // -- Events: onUntap (V11) and onReferendumClose (the votes rule's trigger).
     await goto(router, `/game/${GAME_ID}/events`);

@@ -36,6 +36,17 @@ const PINNED = [
 ];
 
 /**
+ * The full 52-card face, because the Hold'em sample names every one of them (src/samples/holdem.ts).
+ * Computed rather than typed out, but still resolved against the upstream set below like any other
+ * pin — the `tabletop` pattern cannot reach these: `/^card-[a-z]/` needs a LETTER after the dash, so
+ * every numbered pip (`card-2-hearts` … `card-10-spades`) fell outside it and the sample had to
+ * borrow its suit's ace glyph for all 36 of them.
+ */
+const RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'jack', 'queen', 'king', 'ace'];
+const SUITS = ['clubs', 'diamonds', 'hearts', 'spades'];
+const PLAYING_CARDS = RANKS.flatMap((rank) => SUITS.map((suit) => `card-${rank}-${suit}`));
+
+/**
  * Curated spread for the picker. `limit` is per category, applied to an alphabetical sort, so the
  * same upstream version always yields the same sprite — the generated files diff cleanly.
  */
@@ -45,7 +56,7 @@ const CATEGORIES = [
   { key: 'magic', limit: 26, match: [/magic/, /spell/, /wizard/, /^rune/, /^orb/, /potion/, /^wand/, /enchant/, /^scroll/] },
   { key: 'creatures', limit: 32, match: [/dragon/, /-head$/, /goblin/, /^wolf/, /spider/, /^bat-/, /zombie/, /^ghost/, /^snake/] },
   { key: 'resources', limit: 26, match: [/coin/, /^gold/, /gem/, /crystal/, /^ore/, /^wheat/, /^wood/, /^stone/, /barrel/, /^chest/] },
-  { key: 'tabletop', limit: 32, match: [/^card-[a-z]/, /^dice/, /^perspective-dice/, /meeple/, /^token/, /^pawn/, /^rolling/] },
+  { key: 'tabletop', limit: 16, match: [/^card-[a-z]/, /^dice/, /^perspective-dice/, /meeple/, /^token/, /^pawn/, /^rolling/] },
   { key: 'status', limit: 26, match: [/^heart/, /wound/, /poison/, /^stun/, /burn/, /frozen/, /^sleep/, /shield-bash/, /^blood/] },
   { key: 'actions', limit: 24, match: [/^run$/, /^jump/, /^punch/, /^throw/, /^grab/, /^move/, /^swap/, /^cycle/, /^return/, /^search/] },
   { key: 'places', limit: 24, match: [/^castle/, /tower/, /^forest/, /^cave/, /^mountain/, /village/, /^temple/, /^dungeon/, /^island/] },
@@ -57,7 +68,7 @@ const TARGET_MAX = 340;
 
 const available = new Set(Object.keys(data.icons));
 
-const missingPins = PINNED.filter((n) => !available.has(n));
+const missingPins = [...PINNED, ...PLAYING_CARDS].filter((n) => !available.has(n));
 if (missingPins.length > 0) {
   throw new Error(
     `These pinned icons are not in @iconify-json/game-icons@${require('@iconify-json/game-icons/package.json').version}: ${missingPins.join(', ')}`
@@ -67,6 +78,10 @@ if (missingPins.length > 0) {
 /** name -> category, first writer wins so an icon is never listed twice. */
 const chosen = new Map();
 for (const name of PINNED) chosen.set(name, 'core');
+// `tabletop`, not `core` — the picker groups by category, and a playing card belongs with the dice
+// and meeples. Claiming them here also takes the 16 court cards off the pattern pass below, which
+// is why its limit drops to match.
+for (const name of PLAYING_CARDS) chosen.set(name, 'tabletop');
 
 for (const { key, limit, match } of CATEGORIES) {
   const hits = [...available]

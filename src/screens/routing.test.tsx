@@ -132,16 +132,20 @@ describe('import / export (step 24)', () => {
     );
   };
 
-  it('imports a valid file and lists it, without leaving the game list', async () => {
+  // AC: IM1 — v3 changed this. Import used to stay on the list; it now opens what it imported, so
+  // the assertion that this test made in v1 ("without leaving the game list") is the current bug.
+  it('imports a valid file and opens it in the editor', async () => {
     const user = userEvent.setup();
     const { router } = at('/');
     await screen.findByText(/no games yet/i);
 
     await upload(user, exportJson(createEmptyDefinition('g9', 'Skirmish', '2026-01-01T00:00:00.000Z')));
 
-    expect(await screen.findByRole('link', { name: 'Skirmish' })).toBeInTheDocument();
-    expect(router.state.location.pathname).toBe('/');
+    await waitFor(() => expect(router.state.location.pathname).toBe('/game/g9/pools'));
+    // The rail, not the list: proof the definition actually loaded under that route.
+    expect(await screen.findByRole('heading', { name: 'Skirmish' })).toBeInTheDocument();
     expect((await getAllGames()).map((g) => g.id)).toEqual(['g9']);
+    expect(localStorage.getItem('cardboard:lastOpenedGameId')).toBe('g9');
   });
 
   it('rejects a malformed file naming the field, leaving stored games untouched (AC: P3)', async () => {
@@ -168,18 +172,22 @@ describe('import / export (step 24)', () => {
     expect(await getAllGames()).toHaveLength(0);
   });
 
+  // AC: IM2
   it('gives an imported game a new id rather than overwriting the game it collides with', async () => {
     const stored = await seed({ id: 'g1', name: 'Duel of Wits' });
     const user = userEvent.setup();
-    at('/');
+    const { router } = at('/');
     await screen.findByRole('link', { name: 'Duel of Wits' });
 
     await upload(user, exportJson({ ...stored, name: 'Duel of Wits, remixed' }));
 
-    expect(await screen.findByRole('link', { name: 'Duel of Wits, remixed' })).toBeInTheDocument();
+    await waitFor(async () => expect(await getAllGames()).toHaveLength(2));
     const games = await getAllGames();
-    expect(games).toHaveLength(2);
+    // The game it collided with is byte-identical, and the import opened the copy, not the original.
     expect(games.find((g) => g.id === 'g1')).toEqual(stored);
+    const minted = games.find((g) => g.id !== 'g1');
+    expect(minted?.name).toBe('Duel of Wits, remixed');
+    expect(router.state.location.pathname).toBe(`/game/${minted?.id ?? ''}/pools`);
   });
 
   it('exports a game from the list as canonical JSON under a filename from its name', async () => {

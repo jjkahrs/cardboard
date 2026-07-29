@@ -14,7 +14,7 @@ import type {
   ZoneKey,
 } from '../../engine/types';
 import { zoneKey } from '../../engine/valueRef';
-import { STACK_VISIBLE, fanTransform, rowOverlap, stackOffset } from '../../theme/layout';
+import { STACK_VISIBLE, fanTransform, gridColumns, rowOverlap, stackOffset } from '../../theme/layout';
 import { Card } from '../card/Card';
 import { CardDraggable } from '../dnd/CardDraggable';
 import { GapDroppable } from '../dnd/GapDroppable';
@@ -259,12 +259,20 @@ export function ZoneView({
     </>
   );
 
-  const cardsStyle = { '--cb-overlap': rowOverlap(count) } as CSSProperties;
+  // `--cb-cols` is only read by the grid layout, but it costs one number to always write and keeps
+  // this the single place the zone's own card count reaches CSS.
+  const cardsStyle = {
+    '--cb-overlap': rowOverlap(count),
+    '--cb-cols': gridColumns(count),
+  } as CSSProperties;
 
   return (
     <section className="cb-zone" data-full={full} aria-label={label}>
       <header className="cb-zone__head">
-        <span className="cb-zone__name">{label}</span>
+        {/* `title` because the name is ellipsised at 12ch so it can't widen the zone (table.css). */}
+        <span className="cb-zone__name" title={label}>
+          {label}
+        </span>
         <span className="cb-zone__count" data-full={full}>
           {zone.maxCapacity === null ? count : `${count}/${zone.maxCapacity}`}
         </span>

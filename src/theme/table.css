@@ -83,9 +83,13 @@
   --cb-card-w: 92px;
 }
 
+/* Zones size to their own contents (§6.4 amendment: "cards it holds plus room for one more"), so the
+   tracks are max-content rather than equal 1fr columns — a 2-card zone no longer sprawls to a third
+   of the band. `justify-content: start` keeps the leftover space at the end instead of stretching. */
 .cb-band--shared {
   grid-auto-flow: column;
-  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-columns: max-content;
+  justify-content: start;
   --cb-card-w: 116px;
 }
 
@@ -136,7 +140,8 @@
 .cb-seat__zones {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-columns: max-content;
+  justify-content: start;
   gap: var(--cb-s2);
 }
 
@@ -168,7 +173,8 @@
   display: grid;
   grid-template-rows: auto 1fr;
   gap: var(--cb-s1);
-  padding: var(--cb-s2);
+  /* Breathing room between the dashed edge and the cards/stack inside it. */
+  padding: var(--cb-s3);
   border: 2px dashed var(--cb-kraft-400);
 }
 
@@ -178,6 +184,17 @@
   justify-content: space-between;
   gap: var(--cb-s2);
   font-size: 0.85em;
+}
+
+/* The zone is sized by its CARDS, so a long author-supplied zone name must not be what widens it.
+   `max-inline-size` caps the header's max-content contribution (ellipsis alone would not — under an
+   intrinsic constraint the full string still counts); the untruncated name stays available in the
+   `title` and in the section's `aria-label`. */
+.cb-zone__name {
+  overflow: hidden;
+  max-inline-size: 12ch;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Capacity: `count` or `count/max`. At max it is red AND double-underlined AND the zone edge takes
@@ -192,11 +209,32 @@
   border-style: solid;
 }
 
+/* A zone is exactly as wide as the cards it holds plus room for one more, never a stretched column.
+   The "one more" is a trailing padding rather than a placeholder node: it must not be a droppable, a
+   drag target or a tab stop, and dnd-kit measures every droppable at drag start, so an extra child
+   would be one more rect to keep honest for nothing. Each layout reserves what ONE more card would
+   actually add in that layout, which is not a card width once cards overlap. */
 .cb-zone__cards {
   display: flex;
-  gap: var(--cb-s1);
+  gap: var(--cb-s2);
   align-items: flex-start;
-  min-block-size: calc(var(--cb-card-w) * 7 / 5);
+  min-inline-size: var(--cb-card-w);
+  /* Padding around the cards, and a nominal card height plus room for it. The extra is not slop: a
+     card's `__rough`/`__tilt` jitter renders ~4px past its own box by design, so a box sized to the
+     exact 5:7 makes every `grid` zone (the one layout that scrolls) show a scrollbar for a single
+     row of cards. `border-box` means the padding comes OUT of `min-block-size`, hence both. */
+  padding-block: var(--cb-s1);
+  min-block-size: calc(var(--cb-card-w) * 7 / 5 + var(--cb-s4));
+}
+
+/* row — one more card costs its width plus the gap, less however far it shingles back. */
+.cb-zone__cards[data-layout="row"] {
+  padding-inline-end: calc(var(--cb-card-w) + var(--cb-s2) + var(--cb-overlap, 0px));
+}
+
+/* fan — cards sit back 45% over their neighbour, so one more only adds the exposed 55%. */
+.cb-zone__cards[data-layout="fan"] {
+  padding-inline-end: calc(0.55 * var(--cb-card-w) + var(--cb-s2));
 }
 
 .cb-zone__empty {
@@ -204,11 +242,14 @@
   font-size: 0.8em;
 }
 
-/* stack — only the top three nodes exist; the badge carries the real count. */
+/* stack — only the top three nodes exist; the badge carries the real count. One more card lands ON
+   the pile, so the reserve is not a card width: it is the 2px-per-card lean `stackOffset` applies,
+   which is also what the absolutely-positioned slots would otherwise spill past the edge. */
 .cb-zone__cards[data-layout="stack"] {
   position: relative;
   display: block;
-  inline-size: var(--cb-card-w);
+  inline-size: calc(var(--cb-card-w) + 6px);
+  padding-inline-end: 0;
 }
 
 .cb-zone__cards[data-layout="stack"] > .cb-card-slot {
@@ -232,10 +273,14 @@
 
 /* row — shingled by --cb-overlap rather than scrolled; see the `~` rule in the drag section */
 
-/* grid — the one layout that scrolls, because a collection zone genuinely can be unbounded */
+/* grid — the one layout that scrolls, because a collection zone genuinely can be unbounded.
+   `auto-fill` is gone: it needs a definite width to count tracks, and a shrink-to-fit zone has none
+   (under a max-content constraint every `auto-fill` repeat collapses to 1, which would file a
+   40-card collection into a single column). `--cb-cols` is `ZoneView`'s count-derived answer
+   instead — cards plus one, capped — and rows wrap under it. */
 .cb-zone__cards[data-layout="grid"] {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--cb-card-w), 1fr));
+  grid-template-columns: repeat(var(--cb-cols, 1), var(--cb-card-w));
   max-block-size: 46vh;
   overflow-y: auto;
 }
@@ -367,9 +412,12 @@
 
 /* The targetable flag sits on the SLOT, not on <Card>: the card renderer takes no play concepts at
    all, which is what keeps the catalog rendering the identical component (§6.3). */
+/* Dimmed enough to read as "not an answer", not so dim the tester can't read the board it is being
+   asked about — the grey, the missing outline and `pointer-events: none` all carry the same signal,
+   so opacity does not have to do it alone (§6.9). */
 [data-cb-prompt="1"] .cb-card-slot:not([data-legal-target]) .cb-card {
   filter: grayscale(1);
-  opacity: 0.35;
+  opacity: 0.65;
   pointer-events: none;
 }
 

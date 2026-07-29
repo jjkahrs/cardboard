@@ -2,6 +2,7 @@
 
 - [**v1**](#requirements-cardboard-v1) — shipped. The baseline engine.
 - [**v2**](#v2--reference-games-magic-the-gathering-and-vampire-the-eternal-struggle) — what it would take to author Magic: The Gathering and Vampire: The Eternal Struggle.
+- [**v3**](#v3--importing-an-exported-game-into-the-editor) — importing an exported game into the editor.
 
 ---
 
@@ -608,3 +609,126 @@ Named explicitly so their absence is a decision rather than a bug.
 - **How much of VTES combat is authorable content versus a required primitive?** Simultaneous sealed
   choice is clearly a primitive. Ranges, maneuvers, presses, and torpor are believed authorable on top
   of it, but that has not been demonstrated end to end.
+
+---
+
+# v3 — Importing an exported game into the editor
+
+## Why
+
+v1 shipped export and a one-way import: a `.json` file dropped into the game list becomes a *new*
+game. That covers "give me a copy of your game" and nothing else. The two things a designer actually
+does with an exported file are not covered:
+
+- **Pull a build back into the game you are already editing.** The file came from your own export an
+  hour ago, or from a coauthor working on the same game. Today the only way in is a second game in
+  the list with the same name, which you then have to keep straight by eye and delete by hand.
+- **Get to work.** Importing lands you on the list, looking at a link you now have to click.
+
+v3 makes an exported file a first-class way *into* the editor, on both surfaces, without changing
+what a file is or what the four import gates do.
+
+## Baseline — what already exists
+
+Stated so v3's scope is only the delta.
+
+| Exists | Where |
+|---|---|
+| Canonical export, byte-identical round trip | `engine/schema.ts` `exportJson` / `importJson` (§7.1) |
+| Four import gates: JSON parse → schemaVersion → shape → referential integrity | `engine/schema.ts` `importJson` (§7.2) |
+| Import a file as a new game, id collision mints a new id | `screens/GameListScreen.tsx` |
+| Export from the list, and from the authoring rail | `screens/gameFile.ts`, `screens/AuthoringLayout.tsx` |
+| Store-level `importDefinition(text)` | `stores/definitionStore.ts` — written, never called by a screen |
+
+## Scope
+
+**In scope**
+
+- **Import → editor.** Importing from the game list opens the imported game in the editor rather
+  than returning to the list.
+- **Replace in place.** From inside the editor, replace the open game's whole definition with a
+  file, keeping that game's `id`, its URL, and its slot in the list. Destructive, so it is confirmed.
+- **Drag and drop a `.json`.** Onto the game list = import as a new game. Onto the editor = replace
+  the open game. Same outcomes as the buttons on those screens, same confirmation.
+- **A drop is never a navigation.** Dropping a file anywhere in the app must not make the browser
+  leave the app to display that file.
+
+**Out of scope (v3 non-goals)**
+
+- **Selective / partial import.** No "pull just the card catalog" or "merge these three rule sets".
+  Import is whole-definition, always.
+- **Migration.** Only a `schemaVersion` equal to the version this build reads is accepted. v1 files
+  stay unconvertible, and a newer file is still a clear rejection, not a best-effort load. Reaffirms
+  TECHNICAL_DESIGN_V2 §2.3 item 6.
+- **Undo of a replace.** The confirmation is the safety. No automatic backup download, no in-memory
+  undo buffer.
+- **Importing during a playtest.** Replace is reachable from the authoring rail only. The play screen
+  has no import affordance and does not gain one.
+- **Multi-file import**, folder import, import from a URL, or any server round trip.
+- **Conflict resolution between two versions of the same game.** Replace is wholesale. Diffing and
+  three-way merge are a different feature and not this one.
+
+## Concepts
+
+### Import as a new game
+File → four gates → a new row in the game list. The file's own `id` is kept when free, so
+re-importing your own export in a second browser stays the same game; on collision a fresh id is
+minted rather than overwriting an existing game. Unchanged from v1, with one addition: on success the
+editor for that game opens.
+
+### Replace in place
+File → four gates → the *open* game's definition becomes the file's, except that the open game's
+`id` is kept. The URL does not change, the list does not gain a row, nothing else in the browser is
+touched. `updatedAt` becomes the time of the replace, because a replace is an edit to that game like
+any other, not a restoration of the file's history.
+
+### Drop target
+A dragged `.json` means "do what this screen's import control does". The screen states which that is
+while the drag is over the window, before the drop commits anything.
+
+## Acceptance criteria
+
+Ids are `IM*` and are traced by `src/test/traceability.test.ts` like every other criterion.
+
+| Id | Criterion |
+|---|---|
+| **IM1** | Importing a valid file from the game list stores it and lands the browser in that game's editor (`/game/<id>/pools`), with the rail showing the imported game's name — not back on the list. |
+| **IM2** | A file whose `id` matches a stored game is imported under a newly minted id; the stored game it collided with is byte-identical afterwards. |
+| **IM3** | While editing game *G*, choosing a file and confirming the replace leaves the route on *G*, leaves *G*'s `id` unchanged and the list at the same number of games, and makes *G*'s name, cards, zones, decks, rules, priority windows and state machine those of the file. Re-reading *G* from IndexedDB after the replace returns the imported content, not the old content. |
+| **IM4** | Replace takes two deliberate clicks. Between them the app names both the incoming file and the game that would be overwritten. Cancelling leaves the definition referentially identical and writes nothing. |
+| **IM5** | A file rejected by any of the four gates changes nothing: the open game and every stored game are untouched, and the failure is reported as the list of messages `importJson` produced, field paths included. |
+| **IM6** | A `.json` dropped on the game list behaves exactly as IM1. A `.json` dropped inside the editor behaves exactly as IM3/IM4, confirmation included — a drop alone never overwrites a game. |
+| **IM7** | Dropping a file — of any type, on any screen — never navigates the tab away from the app. |
+| **IM8** | A file whose `schemaVersion` is absent, `1`, or any value other than the one this build reads is rejected from both surfaces with a message naming the file's version and the build's. |
+| **IM9** | A replace sets the game's `updatedAt` to the time of the replace; the file's own `updatedAt` does not survive into the stored game. `importJson` itself still writes no timestamp — the round trip in **P2** stays byte-identical. |
+| **IM10** | While a file drag is over the window, the app states what a drop would do — "import as a new game" on the list, "replace *<game name>*" in the editor — and that affordance disappears when the drag leaves or the drop completes. |
+
+## Inputs
+
+A single `.json` file, chosen with a file picker or dropped on the window, containing exactly what
+`exportJson` writes: one `GameDefinition`, no envelope, no metadata wrapper.
+
+## Outputs
+
+Either a stored game and a route change (import), or a rewritten stored game at the same id
+(replace), or an unchanged browser and a list of gate errors (rejection). There is no fourth outcome.
+
+## Constraints & dependencies
+
+- **No new dependencies.** The picker is an `<input type="file">` like the one that already exists;
+  drag and drop is the platform's HTML5 drop events. No file-drop library.
+- **The gates are not reimplemented.** Both surfaces call `importJson`; a rule that holds for one
+  holds for the other because it is the same function.
+- **The engine does not learn about files.** Everything v3 adds lives at or above `src/screens/`.
+- **Determinism rules are untouched.** Ids minted for imported games remain a browser concern, not an
+  engine one.
+- **Accessible without a mouse.** Drag and drop is an addition to the picker, never a replacement:
+  every v3 outcome is reachable by keyboard.
+
+## Open questions — resolved
+
+- **Is v3 more than import?** No. v3 is this feature and ships alone.
+- **Does replace keep the open game's name?** No — everything but `id` comes from the file.
+- **Does a drop mean the same thing everywhere?** No, it means what the screen's own import control
+  means: new game on the list, replace in the editor, always confirmed there.
+- **Is there a migration path for older files?** No. Version equality, as before.

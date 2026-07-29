@@ -169,7 +169,7 @@
 /* ── §6.7 prompt mode, verbatim ──────────────────────────────────────────────────────────────── */
 
 [data-cb-prompt="1"] .cb-card:not(.cb-card--targetable) {
-  filter: grayscale(1); opacity: .35; pointer-events: none;
+  filter: grayscale(1); opacity: .65; pointer-events: none;
 }
 .cb-card--targetable .cb-card__rough {
   outline: 3px dashed var(--cb-accent); outline-offset: 4px;

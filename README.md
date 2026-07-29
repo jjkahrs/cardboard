@@ -50,9 +50,12 @@ To stop it, press `Ctrl+C` in that terminal.
 
 ## Deploying
 
-`npm run build` produces a fully static `dist/` — drop it on any static host, or open it from
-`file://`. The app uses hash routing (`#/game/...`) precisely so it needs no SPA fallback rule on
-the server.
+`npm run build` produces a fully static `dist/` — drop it on any static host. The app uses hash
+routing (`#/game/...`) precisely so it needs no SPA fallback rule on the server.
+
+It must be served from the root of a host, not opened from `file://`: Vite emits absolute asset
+paths (`/assets/…`). To host it under a subpath, or to open the build directly off disk, set `base`
+in `vite.config.ts` (`base: './'` for `file://`) and rebuild.
 
 ## Notes
 
@@ -61,4 +64,10 @@ the server.
   download icon data. Run `npm run icons` only when changing which icons ship.
 - **Play sessions are not persisted.** Refreshing the page during a playtest ends it; the game
   definition itself is saved continuously as you edit.
-- Design docs live in `docs/` — `REQUIREMENTS.md` and `TECHNICAL_DESIGN.md`.
+- **`samples/` holds importable games.** `samples/texas-holdem.json` is a six-seat Texas Hold'em
+  table — import it from the game list. It is generated from `src/samples/holdem.ts` by
+  `src/test/holdem.test.ts`, so `npm test` regenerates it; that file's header documents what the
+  rules engine can and cannot enforce for poker (hand ranking and pot splitting are human-judged).
+- Design docs live in `docs/` — `REQUIREMENTS.md`, `TECHNICAL_DESIGN.md`,
+  `TECHNICAL_DESIGN_V2.md` (the v2 rules engine: modifiers, replacements, activations, priority
+  windows), and `TECHNICAL_DESIGN_V3.md` (importing an exported game into the editor).

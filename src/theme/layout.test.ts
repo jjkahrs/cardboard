@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { STACK_VISIBLE, fanTransform, rowOverlap, stackOffset } from './layout';
+import { GRID_MAX_COLS, STACK_VISIBLE, fanTransform, gridColumns, rowOverlap, stackOffset } from './layout';
 
 const deg = (value: string) => Number.parseFloat(value);
 
@@ -42,6 +42,17 @@ describe('stackOffset', () => {
 
   it('renders three cards at most — a 40-card deck is not 40 DOM nodes', () => {
     expect(STACK_VISIBLE).toBe(3);
+  });
+});
+
+describe('gridColumns', () => {
+  it('is the cards it holds plus room for one more', () => {
+    expect(gridColumns(0)).toBe(1);
+    expect(gridColumns(3)).toBe(4);
+  });
+
+  it('caps instead of growing without bound — a big collection wraps and scrolls', () => {
+    expect(gridColumns(40)).toBe(GRID_MAX_COLS);
   });
 });
 

@@ -4,8 +4,27 @@
  * plus the id minting the game list and the importer share.
  */
 
-import { exportJson } from '../stores/persistence';
+import { exportJson, importJson, type ImportResult } from '../stores/persistence';
 import type { GameDefinition } from '../engine/types';
+
+/**
+ * v3 §4.1 — the ONLY place a `File` becomes a definition. The game list and the authoring rail both
+ * call it, so "what counts as a valid game file" cannot drift between them: it is `importJson`'s
+ * four gates, reached the same way from both.
+ *
+ * `file.text()` rejects only when the file moved or became unreadable between the picker handing it
+ * over and this read. That is a fifth failure mode, not a fifth gate, so it lands in the same
+ * `errors` shape callers already render rather than throwing at them.
+ */
+export async function readDefinitionFile(file: File): Promise<ImportResult> {
+  let text: string;
+  try {
+    text = await file.text();
+  } catch (e) {
+    return { ok: false, errors: [`Could not read “${file.name}”: ${(e as Error).message}`] };
+  }
+  return importJson(text);
+}
 
 /**
  * Ids only have to be unique inside this browser, and they must not collide with the definition

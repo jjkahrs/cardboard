@@ -273,6 +273,32 @@
   background: var(--cb-kraft-100);
 }
 
+/* Replace-from-file sits under Export, and the confirm has to be readable in a narrow rail. */
+.cb-rail__replace {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-s2);
+  margin-block-start: var(--cb-s2);
+  overflow-wrap: anywhere;
+}
+
+/* ── Drop affordance (v3, IM10) ──────────────────────────────────────────────────────────────────
+   Pinned rather than inline: a drag is over the WHOLE window, so the answer to "what happens if I
+   let go" must not depend on how far the screen under it is scrolled. pointer-events:none because a
+   panel that intercepts the drop is a panel that eats the drop. */
+.cb-dropzone {
+  position: fixed;
+  inset-block-start: var(--cb-s4);
+  inset-inline: var(--cb-s6);
+  z-index: var(--cb-z-toast);
+  padding: var(--cb-s3);
+  border: 3px dashed var(--cb-accent);
+  background: var(--cb-kraft-50);
+  color: var(--cb-fg);
+  text-align: center;
+  pointer-events: none;
+}
+
 /* ── Popover (§6.6 / §6.8 — never a modal) ───────────────────────────────────────────────────── */
 
 .cb-popover {

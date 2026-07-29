@@ -35,6 +35,21 @@ export function fanTransform(i: number, n: number): { rot: string; lift: string 
  * inline size and solve `overlap` for it; every consumer already reads `--cb-overlap`, so the swap
  * is this function's body plus the observer.
  */
+/** How many cards a `grid` zone fits per row: the cards it holds plus room for one more (§6.4). */
+export const GRID_MAX_COLS = 6;
+
+/**
+ * Column count for a `grid` zone. The zone is shrink-to-fit, so CSS `auto-fill` cannot count tracks
+ * for itself (an indefinite width resolves every `auto-fill` repeat to 1) — the count comes from
+ * here instead and the zone is exactly `n + 1` cards wide until it hits the cap and wraps.
+ *
+ * ponytail: a fixed cap, not a viewport measurement. Upgrade path if a wide screen should fit more:
+ * solve the cap against the band's inline size; the CSS already reads whatever `--cb-cols` says.
+ */
+export function gridColumns(n: number): number {
+  return Math.max(1, Math.min(GRID_MAX_COLS, n + 1));
+}
+
 export function rowOverlap(n: number): string {
   if (n <= 4) return '0px';
   // 5 cards -> -8%, tightening to the -55% floor around 20 cards; beyond that they'd hide each

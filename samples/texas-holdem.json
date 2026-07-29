@@ -1,0 +1,2719 @@
+{
+  "schemaVersion": 2,
+  "id": "game_texasHoldem",
+  "name": "Texas Hold’em",
+  "playerCount": 6,
+  "pools": [
+    {
+      "id": "pool_chips",
+      "scope": "player",
+      "value": {
+        "type": "integer",
+        "name": "Chips",
+        "defaultValue": 1000,
+        "min": 0,
+        "max": 1000000
+      }
+    },
+    {
+      "id": "pool_pot",
+      "scope": "game",
+      "value": {
+        "type": "integer",
+        "name": "Pot",
+        "defaultValue": 0,
+        "min": 0,
+        "max": 1000000
+      }
+    },
+    {
+      "id": "pool_committed",
+      "scope": "player",
+      "value": {
+        "type": "integer",
+        "name": "Committed",
+        "defaultValue": 0,
+        "min": 0,
+        "max": 1000000
+      }
+    },
+    {
+      "id": "pool_folded",
+      "scope": "player",
+      "value": {
+        "type": "boolean",
+        "name": "Folded",
+        "defaultValue": false
+      }
+    }
+  ],
+  "zones": [
+    {
+      "id": "zone_deck",
+      "name": "Deck",
+      "scope": "shared",
+      "visibility": "faceDown",
+      "layout": "stack",
+      "ordered": true,
+      "maxCapacity": null
+    },
+    {
+      "id": "zone_hand",
+      "name": "Hole Cards",
+      "scope": "player",
+      "visibility": "ownerOnly",
+      "layout": "fan",
+      "ordered": true,
+      "maxCapacity": 2
+    },
+    {
+      "id": "zone_board",
+      "name": "Board",
+      "scope": "shared",
+      "visibility": "faceUp",
+      "layout": "row",
+      "ordered": true,
+      "maxCapacity": 5
+    },
+    {
+      "id": "zone_burn",
+      "name": "Burn",
+      "scope": "shared",
+      "visibility": "faceDown",
+      "layout": "stack",
+      "ordered": true,
+      "maxCapacity": null
+    }
+  ],
+  "templates": [
+    {
+      "id": "tpl_2s",
+      "name": "2♠",
+      "marquee": "2♠",
+      "faceIcon": "gi-card-2-spades",
+      "borderColor": "#1f2430",
+      "tags": [
+        "spades"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 2,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_3s",
+      "name": "3♠",
+      "marquee": "3♠",
+      "faceIcon": "gi-card-3-spades",
+      "borderColor": "#1f2430",
+      "tags": [
+        "spades"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 3,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_4s",
+      "name": "4♠",
+      "marquee": "4♠",
+      "faceIcon": "gi-card-4-spades",
+      "borderColor": "#1f2430",
+      "tags": [
+        "spades"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 4,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_5s",
+      "name": "5♠",
+      "marquee": "5♠",
+      "faceIcon": "gi-card-5-spades",
+      "borderColor": "#1f2430",
+      "tags": [
+        "spades"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 5,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_6s",
+      "name": "6♠",
+      "marquee": "6♠",
+      "faceIcon": "gi-card-6-spades",
+      "borderColor": "#1f2430",
+      "tags": [
+        "spades"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 6,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_7s",
+      "name": "7♠",
+      "marquee": "7♠",
+      "faceIcon": "gi-card-7-spades",
+      "borderColor": "#1f2430",
+      "tags": [
+        "spades"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 7,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_8s",
+      "name": "8♠",
+      "marquee": "8♠",
+      "faceIcon": "gi-card-8-spades",
+      "borderColor": "#1f2430",
+      "tags": [
+        "spades"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 8,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_9s",
+      "name": "9♠",
+      "marquee": "9♠",
+      "faceIcon": "gi-card-9-spades",
+      "borderColor": "#1f2430",
+      "tags": [
+        "spades"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 9,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_10s",
+      "name": "10♠",
+      "marquee": "10♠",
+      "faceIcon": "gi-card-10-spades",
+      "borderColor": "#1f2430",
+      "tags": [
+        "spades"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 10,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_js",
+      "name": "J♠",
+      "marquee": "J♠",
+      "faceIcon": "gi-card-jack-spades",
+      "borderColor": "#1f2430",
+      "tags": [
+        "spades"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 11,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_qs",
+      "name": "Q♠",
+      "marquee": "Q♠",
+      "faceIcon": "gi-card-queen-spades",
+      "borderColor": "#1f2430",
+      "tags": [
+        "spades"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 12,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_ks",
+      "name": "K♠",
+      "marquee": "K♠",
+      "faceIcon": "gi-card-king-spades",
+      "borderColor": "#1f2430",
+      "tags": [
+        "spades"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 13,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_as",
+      "name": "A♠",
+      "marquee": "A♠",
+      "faceIcon": "gi-card-ace-spades",
+      "borderColor": "#1f2430",
+      "tags": [
+        "spades"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 14,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_2h",
+      "name": "2♥",
+      "marquee": "2♥",
+      "faceIcon": "gi-card-2-hearts",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "hearts"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 2,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_3h",
+      "name": "3♥",
+      "marquee": "3♥",
+      "faceIcon": "gi-card-3-hearts",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "hearts"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 3,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_4h",
+      "name": "4♥",
+      "marquee": "4♥",
+      "faceIcon": "gi-card-4-hearts",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "hearts"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 4,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_5h",
+      "name": "5♥",
+      "marquee": "5♥",
+      "faceIcon": "gi-card-5-hearts",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "hearts"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 5,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_6h",
+      "name": "6♥",
+      "marquee": "6♥",
+      "faceIcon": "gi-card-6-hearts",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "hearts"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 6,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_7h",
+      "name": "7♥",
+      "marquee": "7♥",
+      "faceIcon": "gi-card-7-hearts",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "hearts"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 7,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_8h",
+      "name": "8♥",
+      "marquee": "8♥",
+      "faceIcon": "gi-card-8-hearts",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "hearts"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 8,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_9h",
+      "name": "9♥",
+      "marquee": "9♥",
+      "faceIcon": "gi-card-9-hearts",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "hearts"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 9,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_10h",
+      "name": "10♥",
+      "marquee": "10♥",
+      "faceIcon": "gi-card-10-hearts",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "hearts"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 10,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_jh",
+      "name": "J♥",
+      "marquee": "J♥",
+      "faceIcon": "gi-card-jack-hearts",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "hearts"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 11,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_qh",
+      "name": "Q♥",
+      "marquee": "Q♥",
+      "faceIcon": "gi-card-queen-hearts",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "hearts"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 12,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_kh",
+      "name": "K♥",
+      "marquee": "K♥",
+      "faceIcon": "gi-card-king-hearts",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "hearts"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 13,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_ah",
+      "name": "A♥",
+      "marquee": "A♥",
+      "faceIcon": "gi-card-ace-hearts",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "hearts"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 14,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_2d",
+      "name": "2♦",
+      "marquee": "2♦",
+      "faceIcon": "gi-card-2-diamonds",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "diamonds"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 2,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_3d",
+      "name": "3♦",
+      "marquee": "3♦",
+      "faceIcon": "gi-card-3-diamonds",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "diamonds"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 3,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_4d",
+      "name": "4♦",
+      "marquee": "4♦",
+      "faceIcon": "gi-card-4-diamonds",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "diamonds"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 4,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_5d",
+      "name": "5♦",
+      "marquee": "5♦",
+      "faceIcon": "gi-card-5-diamonds",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "diamonds"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 5,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_6d",
+      "name": "6♦",
+      "marquee": "6♦",
+      "faceIcon": "gi-card-6-diamonds",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "diamonds"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 6,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_7d",
+      "name": "7♦",
+      "marquee": "7♦",
+      "faceIcon": "gi-card-7-diamonds",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "diamonds"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 7,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_8d",
+      "name": "8♦",
+      "marquee": "8♦",
+      "faceIcon": "gi-card-8-diamonds",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "diamonds"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 8,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_9d",
+      "name": "9♦",
+      "marquee": "9♦",
+      "faceIcon": "gi-card-9-diamonds",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "diamonds"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 9,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_10d",
+      "name": "10♦",
+      "marquee": "10♦",
+      "faceIcon": "gi-card-10-diamonds",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "diamonds"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 10,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_jd",
+      "name": "J♦",
+      "marquee": "J♦",
+      "faceIcon": "gi-card-jack-diamonds",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "diamonds"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 11,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_qd",
+      "name": "Q♦",
+      "marquee": "Q♦",
+      "faceIcon": "gi-card-queen-diamonds",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "diamonds"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 12,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_kd",
+      "name": "K♦",
+      "marquee": "K♦",
+      "faceIcon": "gi-card-king-diamonds",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "diamonds"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 13,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_ad",
+      "name": "A♦",
+      "marquee": "A♦",
+      "faceIcon": "gi-card-ace-diamonds",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "diamonds"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 14,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_2c",
+      "name": "2♣",
+      "marquee": "2♣",
+      "faceIcon": "gi-card-2-clubs",
+      "borderColor": "#1f2430",
+      "tags": [
+        "clubs"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 2,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_3c",
+      "name": "3♣",
+      "marquee": "3♣",
+      "faceIcon": "gi-card-3-clubs",
+      "borderColor": "#1f2430",
+      "tags": [
+        "clubs"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 3,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_4c",
+      "name": "4♣",
+      "marquee": "4♣",
+      "faceIcon": "gi-card-4-clubs",
+      "borderColor": "#1f2430",
+      "tags": [
+        "clubs"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 4,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_5c",
+      "name": "5♣",
+      "marquee": "5♣",
+      "faceIcon": "gi-card-5-clubs",
+      "borderColor": "#1f2430",
+      "tags": [
+        "clubs"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 5,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_6c",
+      "name": "6♣",
+      "marquee": "6♣",
+      "faceIcon": "gi-card-6-clubs",
+      "borderColor": "#1f2430",
+      "tags": [
+        "clubs"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 6,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_7c",
+      "name": "7♣",
+      "marquee": "7♣",
+      "faceIcon": "gi-card-7-clubs",
+      "borderColor": "#1f2430",
+      "tags": [
+        "clubs"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 7,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_8c",
+      "name": "8♣",
+      "marquee": "8♣",
+      "faceIcon": "gi-card-8-clubs",
+      "borderColor": "#1f2430",
+      "tags": [
+        "clubs"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 8,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_9c",
+      "name": "9♣",
+      "marquee": "9♣",
+      "faceIcon": "gi-card-9-clubs",
+      "borderColor": "#1f2430",
+      "tags": [
+        "clubs"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 9,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_10c",
+      "name": "10♣",
+      "marquee": "10♣",
+      "faceIcon": "gi-card-10-clubs",
+      "borderColor": "#1f2430",
+      "tags": [
+        "clubs"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 10,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_jc",
+      "name": "J♣",
+      "marquee": "J♣",
+      "faceIcon": "gi-card-jack-clubs",
+      "borderColor": "#1f2430",
+      "tags": [
+        "clubs"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 11,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_qc",
+      "name": "Q♣",
+      "marquee": "Q♣",
+      "faceIcon": "gi-card-queen-clubs",
+      "borderColor": "#1f2430",
+      "tags": [
+        "clubs"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 12,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_kc",
+      "name": "K♣",
+      "marquee": "K♣",
+      "faceIcon": "gi-card-king-clubs",
+      "borderColor": "#1f2430",
+      "tags": [
+        "clubs"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 13,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    },
+    {
+      "id": "tpl_ac",
+      "name": "A♣",
+      "marquee": "A♣",
+      "faceIcon": "gi-card-ace-clubs",
+      "borderColor": "#1f2430",
+      "tags": [
+        "clubs"
+      ],
+      "indexes": [
+        {
+          "id": "idx_rank",
+          "value": {
+            "type": "integer",
+            "name": "Rank",
+            "defaultValue": 14,
+            "min": 2,
+            "max": 14
+          },
+          "icon": "gi-card-random",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": null
+    }
+  ],
+  "decks": [
+    {
+      "id": "deck_standard52",
+      "name": "Standard 52",
+      "zoneId": "zone_deck",
+      "entries": [
+        {
+          "templateId": "tpl_2s",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_3s",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_4s",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_5s",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_6s",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_7s",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_8s",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_9s",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_10s",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_js",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_qs",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_ks",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_as",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_2h",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_3h",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_4h",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_5h",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_6h",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_7h",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_8h",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_9h",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_10h",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_jh",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_qh",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_kh",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_ah",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_2d",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_3d",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_4d",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_5d",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_6d",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_7d",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_8d",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_9d",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_10d",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_jd",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_qd",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_kd",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_ad",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_2c",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_3c",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_4c",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_5c",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_6c",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_7c",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_8c",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_9c",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_10c",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_jc",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_qc",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_kc",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_ac",
+          "quantity": 1
+        }
+      ]
+    }
+  ],
+  "customEvents": [],
+  "ruleSets": [
+    {
+      "id": "rs_deal",
+      "name": "Deal a New Hand",
+      "trigger": "onStateEnter",
+      "stateFilter": "state_deal",
+      "condition": null,
+      "effects": [
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "allInZone",
+            "zone": {
+              "zoneId": "zone_board",
+              "seat": null
+            }
+          },
+          "to": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "position": "bottom"
+        },
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "allInZone",
+            "zone": {
+              "zoneId": "zone_burn",
+              "seat": null
+            }
+          },
+          "to": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "position": "bottom"
+        },
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "allInZone",
+            "zone": {
+              "zoneId": "zone_hand",
+              "seat": {
+                "kind": "seat",
+                "index": 0
+              }
+            }
+          },
+          "to": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "position": "bottom"
+        },
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "allInZone",
+            "zone": {
+              "zoneId": "zone_hand",
+              "seat": {
+                "kind": "seat",
+                "index": 1
+              }
+            }
+          },
+          "to": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "position": "bottom"
+        },
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "allInZone",
+            "zone": {
+              "zoneId": "zone_hand",
+              "seat": {
+                "kind": "seat",
+                "index": 2
+              }
+            }
+          },
+          "to": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "position": "bottom"
+        },
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "allInZone",
+            "zone": {
+              "zoneId": "zone_hand",
+              "seat": {
+                "kind": "seat",
+                "index": 3
+              }
+            }
+          },
+          "to": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "position": "bottom"
+        },
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "allInZone",
+            "zone": {
+              "zoneId": "zone_hand",
+              "seat": {
+                "kind": "seat",
+                "index": 4
+              }
+            }
+          },
+          "to": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "position": "bottom"
+        },
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "allInZone",
+            "zone": {
+              "zoneId": "zone_hand",
+              "seat": {
+                "kind": "seat",
+                "index": 5
+              }
+            }
+          },
+          "to": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "position": "bottom"
+        },
+        {
+          "kind": "shuffleZone",
+          "zone": {
+            "zoneId": "zone_deck",
+            "seat": null
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_pot",
+          "seat": null,
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 0
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_committed",
+          "seat": {
+            "kind": "all"
+          },
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 0
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_folded",
+          "seat": {
+            "kind": "all"
+          },
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": false
+          }
+        },
+        {
+          "kind": "drawCards",
+          "from": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "to": {
+            "zoneId": "zone_hand",
+            "seat": {
+              "kind": "seat",
+              "index": 0
+            }
+          },
+          "count": {
+            "kind": "literal",
+            "value": 2
+          }
+        },
+        {
+          "kind": "drawCards",
+          "from": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "to": {
+            "zoneId": "zone_hand",
+            "seat": {
+              "kind": "seat",
+              "index": 1
+            }
+          },
+          "count": {
+            "kind": "literal",
+            "value": 2
+          }
+        },
+        {
+          "kind": "drawCards",
+          "from": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "to": {
+            "zoneId": "zone_hand",
+            "seat": {
+              "kind": "seat",
+              "index": 2
+            }
+          },
+          "count": {
+            "kind": "literal",
+            "value": 2
+          }
+        },
+        {
+          "kind": "drawCards",
+          "from": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "to": {
+            "zoneId": "zone_hand",
+            "seat": {
+              "kind": "seat",
+              "index": 3
+            }
+          },
+          "count": {
+            "kind": "literal",
+            "value": 2
+          }
+        },
+        {
+          "kind": "drawCards",
+          "from": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "to": {
+            "zoneId": "zone_hand",
+            "seat": {
+              "kind": "seat",
+              "index": 4
+            }
+          },
+          "count": {
+            "kind": "literal",
+            "value": 2
+          }
+        },
+        {
+          "kind": "drawCards",
+          "from": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "to": {
+            "zoneId": "zone_hand",
+            "seat": {
+              "kind": "seat",
+              "index": 5
+            }
+          },
+          "count": {
+            "kind": "literal",
+            "value": 2
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_chips",
+          "seat": {
+            "kind": "relative",
+            "from": {
+              "kind": "active"
+            },
+            "offset": 1
+          },
+          "op": "subtract",
+          "amount": {
+            "kind": "literal",
+            "value": 10
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_pot",
+          "seat": null,
+          "op": "add",
+          "amount": {
+            "kind": "literal",
+            "value": 10
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_committed",
+          "seat": {
+            "kind": "relative",
+            "from": {
+              "kind": "active"
+            },
+            "offset": 1
+          },
+          "op": "add",
+          "amount": {
+            "kind": "literal",
+            "value": 10
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_chips",
+          "seat": {
+            "kind": "relative",
+            "from": {
+              "kind": "active"
+            },
+            "offset": 2
+          },
+          "op": "subtract",
+          "amount": {
+            "kind": "literal",
+            "value": 20
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_pot",
+          "seat": null,
+          "op": "add",
+          "amount": {
+            "kind": "literal",
+            "value": 20
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_committed",
+          "seat": {
+            "kind": "relative",
+            "from": {
+              "kind": "active"
+            },
+            "offset": 2
+          },
+          "op": "add",
+          "amount": {
+            "kind": "literal",
+            "value": 20
+          }
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_preflop",
+      "name": "Preflop Betting",
+      "trigger": "onStateEnter",
+      "stateFilter": "state_preflop",
+      "condition": null,
+      "effects": [
+        {
+          "kind": "openPriority",
+          "window": "win_betting"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_flop",
+      "name": "Deal the Flop",
+      "trigger": "onStateEnter",
+      "stateFilter": "state_flop",
+      "condition": null,
+      "effects": [
+        {
+          "kind": "drawCards",
+          "from": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "to": {
+            "zoneId": "zone_burn",
+            "seat": null
+          },
+          "count": {
+            "kind": "literal",
+            "value": 1
+          }
+        },
+        {
+          "kind": "drawCards",
+          "from": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "to": {
+            "zoneId": "zone_board",
+            "seat": null
+          },
+          "count": {
+            "kind": "literal",
+            "value": 3
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_committed",
+          "seat": {
+            "kind": "all"
+          },
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 0
+          }
+        },
+        {
+          "kind": "openPriority",
+          "window": "win_betting"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_turn",
+      "name": "Deal the Turn",
+      "trigger": "onStateEnter",
+      "stateFilter": "state_turn",
+      "condition": null,
+      "effects": [
+        {
+          "kind": "drawCards",
+          "from": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "to": {
+            "zoneId": "zone_burn",
+            "seat": null
+          },
+          "count": {
+            "kind": "literal",
+            "value": 1
+          }
+        },
+        {
+          "kind": "drawCards",
+          "from": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "to": {
+            "zoneId": "zone_board",
+            "seat": null
+          },
+          "count": {
+            "kind": "literal",
+            "value": 1
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_committed",
+          "seat": {
+            "kind": "all"
+          },
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 0
+          }
+        },
+        {
+          "kind": "openPriority",
+          "window": "win_betting"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_river",
+      "name": "Deal the River",
+      "trigger": "onStateEnter",
+      "stateFilter": "state_river",
+      "condition": null,
+      "effects": [
+        {
+          "kind": "drawCards",
+          "from": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "to": {
+            "zoneId": "zone_burn",
+            "seat": null
+          },
+          "count": {
+            "kind": "literal",
+            "value": 1
+          }
+        },
+        {
+          "kind": "drawCards",
+          "from": {
+            "zoneId": "zone_deck",
+            "seat": null
+          },
+          "to": {
+            "zoneId": "zone_board",
+            "seat": null
+          },
+          "count": {
+            "kind": "literal",
+            "value": 1
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_committed",
+          "seat": {
+            "kind": "all"
+          },
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 0
+          }
+        },
+        {
+          "kind": "openPriority",
+          "window": "win_betting"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_fold",
+      "name": "Fold",
+      "trigger": "never_fold",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "changePool",
+          "poolId": "pool_folded",
+          "seat": {
+            "kind": "triggeringSeat"
+          },
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": true
+          }
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "criteria",
+          "left": {
+            "kind": "pool",
+            "poolId": "pool_folded",
+            "seat": {
+              "kind": "triggeringSeat"
+            }
+          },
+          "op": "=",
+          "right": {
+            "kind": "literal",
+            "value": false
+          }
+        },
+        "cost": [],
+        "window": "win_betting",
+        "perInstance": false,
+        "label": "Fold"
+      }
+    },
+    {
+      "id": "rs_wager",
+      "name": "Bet, Call or Raise",
+      "trigger": "never_wager",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "chooseNumber",
+          "promptText": "Chips into the pot (call, bet or raise — Pass to check or to give up the hand’s action)",
+          "seat": {
+            "kind": "triggeringSeat"
+          },
+          "min": {
+            "kind": "literal",
+            "value": 1
+          },
+          "max": {
+            "kind": "pool",
+            "poolId": "pool_chips",
+            "seat": {
+              "kind": "triggeringSeat"
+            }
+          },
+          "key": "wager"
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_chips",
+          "seat": {
+            "kind": "triggeringSeat"
+          },
+          "op": "subtract",
+          "amount": {
+            "kind": "promptNumber",
+            "key": "wager"
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_pot",
+          "seat": null,
+          "op": "add",
+          "amount": {
+            "kind": "promptNumber",
+            "key": "wager"
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_committed",
+          "seat": {
+            "kind": "triggeringSeat"
+          },
+          "op": "add",
+          "amount": {
+            "kind": "promptNumber",
+            "key": "wager"
+          }
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "group",
+          "combinator": "and",
+          "children": [
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_folded",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": false
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_chips",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": ">",
+              "right": {
+                "kind": "literal",
+                "value": 0
+              }
+            }
+          ]
+        },
+        "cost": [],
+        "window": "win_betting",
+        "perInstance": false,
+        "label": "Bet / Call / Raise"
+      }
+    },
+    {
+      "id": "rs_takePot",
+      "name": "Take the Pot",
+      "trigger": "never_takePot",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "changePool",
+          "poolId": "pool_chips",
+          "seat": {
+            "kind": "triggeringSeat"
+          },
+          "op": "add",
+          "amount": {
+            "kind": "pool",
+            "poolId": "pool_pot",
+            "seat": null
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_pot",
+          "seat": null,
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 0
+          }
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "criteria",
+          "left": {
+            "kind": "pool",
+            "poolId": "pool_pot",
+            "seat": null
+          },
+          "op": ">",
+          "right": {
+            "kind": "literal",
+            "value": 0
+          }
+        },
+        "cost": [],
+        "window": null,
+        "perInstance": false,
+        "label": "Take the Pot"
+      }
+    },
+    {
+      "id": "rs_buttonAdvance",
+      "name": "Move the Button",
+      "trigger": "onStateExit",
+      "stateFilter": "state_payout",
+      "condition": null,
+      "effects": [
+        {
+          "kind": "changePool",
+          "poolId": "activePlayer",
+          "seat": null,
+          "op": "add",
+          "amount": {
+            "kind": "literal",
+            "value": 1
+          }
+        }
+      ],
+      "priority": 1,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_buttonWrap",
+      "name": "Button Wraps to Seat 0",
+      "trigger": "onStateExit",
+      "stateFilter": "state_payout",
+      "condition": {
+        "kind": "criteria",
+        "left": {
+          "kind": "pool",
+          "poolId": "activePlayer",
+          "seat": null
+        },
+        "op": ">=",
+        "right": {
+          "kind": "literal",
+          "value": 6
+        }
+      },
+      "effects": [
+        {
+          "kind": "changePool",
+          "poolId": "activePlayer",
+          "seat": null,
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 0
+          }
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    }
+  ],
+  "globalRuleSetIds": [
+    "rs_deal",
+    "rs_preflop",
+    "rs_flop",
+    "rs_turn",
+    "rs_river",
+    "rs_fold",
+    "rs_wager",
+    "rs_takePot",
+    "rs_buttonAdvance",
+    "rs_buttonWrap"
+  ],
+  "priorityWindows": [
+    {
+      "id": "win_betting",
+      "name": "Betting Round",
+      "start": "active",
+      "direction": "forward",
+      "includeStart": true,
+      "passesToClose": null,
+      "collapseEmptyOffers": true
+    }
+  ],
+  "machine": {
+    "states": [
+      {
+        "id": "start",
+        "name": "Start",
+        "enterableFrom": [],
+        "exitableTo": [
+          "state_deal"
+        ],
+        "entryCriteria": null,
+        "transitionLabel": null,
+        "priority": 0,
+        "position": {
+          "x": 0,
+          "y": 0
+        }
+      },
+      {
+        "id": "state_deal",
+        "name": "Deal",
+        "enterableFrom": [
+          "start",
+          "state_payout"
+        ],
+        "exitableTo": [
+          "state_preflop"
+        ],
+        "entryCriteria": null,
+        "transitionLabel": "Deal a new hand",
+        "priority": 0,
+        "position": {
+          "x": 160,
+          "y": 0
+        }
+      },
+      {
+        "id": "state_preflop",
+        "name": "Preflop",
+        "enterableFrom": [
+          "state_deal"
+        ],
+        "exitableTo": [
+          "state_flop",
+          "state_payout"
+        ],
+        "entryCriteria": null,
+        "transitionLabel": "Preflop betting",
+        "priority": 0,
+        "position": {
+          "x": 320,
+          "y": 0
+        }
+      },
+      {
+        "id": "state_flop",
+        "name": "Flop",
+        "enterableFrom": [
+          "state_preflop"
+        ],
+        "exitableTo": [
+          "state_turn",
+          "state_payout"
+        ],
+        "entryCriteria": null,
+        "transitionLabel": "Deal the flop",
+        "priority": 0,
+        "position": {
+          "x": 480,
+          "y": 0
+        }
+      },
+      {
+        "id": "state_turn",
+        "name": "Turn",
+        "enterableFrom": [
+          "state_flop"
+        ],
+        "exitableTo": [
+          "state_river",
+          "state_payout"
+        ],
+        "entryCriteria": null,
+        "transitionLabel": "Deal the turn",
+        "priority": 0,
+        "position": {
+          "x": 640,
+          "y": 0
+        }
+      },
+      {
+        "id": "state_river",
+        "name": "River",
+        "enterableFrom": [
+          "state_turn"
+        ],
+        "exitableTo": [
+          "state_showdown",
+          "state_payout"
+        ],
+        "entryCriteria": null,
+        "transitionLabel": "Deal the river",
+        "priority": 0,
+        "position": {
+          "x": 800,
+          "y": 0
+        }
+      },
+      {
+        "id": "state_showdown",
+        "name": "Showdown",
+        "enterableFrom": [
+          "state_river"
+        ],
+        "exitableTo": [
+          "state_payout"
+        ],
+        "entryCriteria": null,
+        "transitionLabel": "Showdown — compare hands",
+        "priority": 0,
+        "position": {
+          "x": 960,
+          "y": 0
+        }
+      },
+      {
+        "id": "state_payout",
+        "name": "Payout",
+        "enterableFrom": [
+          "state_preflop",
+          "state_flop",
+          "state_turn",
+          "state_river",
+          "state_showdown"
+        ],
+        "exitableTo": [
+          "state_deal",
+          "end"
+        ],
+        "entryCriteria": null,
+        "transitionLabel": "Award the pot",
+        "priority": 0,
+        "position": {
+          "x": 1120,
+          "y": 0
+        }
+      },
+      {
+        "id": "end",
+        "name": "End",
+        "enterableFrom": [
+          "state_payout"
+        ],
+        "exitableTo": [],
+        "entryCriteria": null,
+        "transitionLabel": null,
+        "priority": 0,
+        "position": {
+          "x": 1280,
+          "y": 0
+        }
+      }
+    ],
+    "startStateId": "start",
+    "endStateId": "end"
+  },
+  "limits": {
+    "maxDepth": 256,
+    "maxEffects": 50000,
+    "maxSettleIterations": 64,
+    "maxPriorityRounds": 256
+  },
+  "updatedAt": "2026-07-29T00:00:00.000Z"
+}

@@ -1,4 +1,5 @@
 import { Navigate, type RouteObject } from 'react-router-dom';
+import { AppFrame } from './screens/AppFrame';
 import { AuthoringLayout } from './screens/AuthoringLayout';
 import { GameListScreen } from './screens/GameListScreen';
 import { NotFoundScreen } from './screens/NotFoundScreen';
@@ -24,7 +25,7 @@ import { ZonesScreen } from './screens/authoring/ZonesScreen';
  * Every route now points at its real screen; `UnbuiltScreen`, which stood in for the later steps,
  * went with the last of them (step 25).
  */
-export const routes: RouteObject[] = [
+const screens: RouteObject[] = [
   { path: '/', element: <GameListScreen /> },
   {
     path: '/game/:gameId',
@@ -50,3 +51,6 @@ export const routes: RouteObject[] = [
   { path: '/game/:gameId/play', element: <PlayScreen /> },
   { path: '*', element: <NotFoundScreen /> },
 ];
+
+/** Every screen under one pathless layout, so `AppFrame`'s drop guard covers every route (v3 §4.3). */
+export const routes: RouteObject[] = [{ element: <AppFrame />, children: screens }];
