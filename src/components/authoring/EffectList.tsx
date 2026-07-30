@@ -16,6 +16,8 @@ export interface EffectListProps {
   emptyHint?: string;
   /** §6.11 — how many effect lists deep this one sits. `chooseMode` is refused at depth 1. */
   depth?: number;
+  /** v4 §4.5 — this list is a `RuleSet.activation.cost`, which still refuses three kinds. */
+  inCost?: boolean;
   /** The rule this list belongs to, so an `announceAction` naming it can warn (§6.10). */
   ruleId?: Id;
 }
@@ -36,6 +38,7 @@ export function EffectList({
   addLabel = 'Add an effect',
   emptyHint = 'No effects yet — this rule does nothing.',
   depth = 0,
+  inCost = false,
   ruleId,
 }: EffectListProps) {
   const move = (from: number, to: number) => {
@@ -59,6 +62,7 @@ export function EffectList({
               total={effects.length}
               definition={definition}
               depth={depth}
+              inCost={inCost}
               ruleId={ruleId}
               onChange={(next) => onChange(effects.map((e, i) => (i === index ? next : e)))}
               onMove={move}
@@ -71,6 +75,7 @@ export function EffectList({
       <EffectPicker
         definition={definition}
         depth={depth}
+        inCost={inCost}
         ariaLabel={addLabel}
         onAdd={(effect) => onChange([...effects, effect])}
       />

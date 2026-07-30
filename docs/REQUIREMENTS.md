@@ -3,6 +3,7 @@
 - [**v1**](#requirements-cardboard-v1) — shipped. The baseline engine.
 - [**v2**](#v2--reference-games-magic-the-gathering-and-vampire-the-eternal-struggle) — what it would take to author Magic: The Gathering and Vampire: The Eternal Struggle.
 - [**v3**](#v3--importing-an-exported-game-into-the-editor) — importing an exported game into the editor.
+- [**v4**](#v4--closing-the-residual-magic-gaps) — closing the residual gaps that still block ordinary Magic cards.
 
 ---
 
@@ -670,6 +671,14 @@ Stated so v3's scope is only the delta.
 
 ## Concepts
 
+### Start from a template
+"New game" on the list opens a chooser: a blank definition, or one of the games bundled under
+`samples/` (`src/screens/templates.ts`). A template goes through the same four gates a picked file
+does — it is an import whose source happens to ship with the app — but always lands under a freshly
+minted id, since the same template can be started from any number of times. The created game keeps
+the sample's own name; it is a starting point to edit, not a linked copy, and nothing about it stays
+attached to the template afterwards.
+
 ### Import as a new game
 File → four gates → a new row in the game list. The file's own `id` is kept when free, so
 re-importing your own export in a second browser stays the same game; on collision a fresh id is
@@ -732,3 +741,227 @@ Either a stored game and a route change (import), or a rewritten stored game at 
 - **Does a drop mean the same thing everywhere?** No, it means what the screen's own import control
   means: new game on the list, replace in the editor, always confirmed there.
 - **Is there a migration path for older files?** No. Version equality, as before.
+
+---
+
+# v4 — Closing the residual Magic gaps
+
+## Why
+
+v2 named Magic: The Gathering as a reference game and built the hard machinery for it — the stack,
+priority windows, replacement effects, computed card values, cost-gated activation, sealed choice.
+That work shipped: all eleven [MTG acceptance criteria](#acceptance-criteria--magic-the-gathering)
+are proved, and `mtgish.ts` drives them.
+
+What v2 did *not* do is check the fidelity bar it set for itself — *"a designer can author roughly
+90% of printed cards and play a real, recognisable game"* — against the actual shape of ordinary
+card text. Doing that now turns up a short list of gaps that are not in the
+[v2 non-goals](#v2-non-goals), are not judge trivia, and block a large fraction of perfectly
+ordinary cards. Most of them are small. Two are already half-built.
+
+The evidence is not speculative. The engine documents these gaps against itself, in the two places
+someone tried to author a real game with it:
+
+- `src/samples/holdem.ts:9-43` — the shipped Texas Hold'em sample's header, which lists six things
+  it could not express. Two are general-purpose: *"no `ValueRef` folds a card index across a set of
+  cards"* and *"No arithmetic on `ValueRef`s"*. The first is why the sample's showdown is judged by
+  eye rather than by rule.
+- `src/test/fixtures/mtgish.ts:10-13` — *"TWO PLACES this fixture could not satisfy §9.3's prose
+  literally — both are gaps in the engine's addressing primitives, not shortcuts here."*
+- `src/engine/continuous.ts:50-64` — *"'Each creature with lethal damage dies' is therefore only
+  correct authored as a card-attached rule."*
+- `src/engine/dispatch.ts:1234` — *"Nothing in this wave RAISES a `chooseSeat` interaction."*
+- `src/engine/effects.ts:1171` — a `chooseMode` branch that needs a prompt *"fails `AWAITING_PROMPT`
+  rather than suspending re-entrantly."*
+
+v4 closes that list. It adds no new subsystem: every item is an arm on an existing union, or the
+missing producer for a consumer that already exists.
+
+## Fidelity bar
+
+**Unchanged from v2.** Roughly 90% of printed cards, a real and recognisable game, not rules
+compliance. v4 does not raise the bar; it removes the things standing between the current engine and
+the bar v2 already claimed.
+
+Where a rule is approximable by a general primitive plus authoring, the requirement stays the
+primitive. Cardboard still does not learn what a creature is.
+
+## Scope
+
+**In scope** — the eight gaps below, and one sample game that proves them.
+
+**Out of scope** — every [v2 non-goal](#v2-non-goals), restated as still closed: the full layer
+system, combat as engine machinery, zone-change object identity, the legend rule, copy effects,
+deck-construction legality, real-time limits, hard-coded reference-game rules, networking and bots.
+Added to that list in v4:
+
+- **Simultaneous-trigger ordering by player choice.** Triggers stay auto-ordered by v2 §5.1's fixed
+  total order. No APNAP, no controller-chooses-the-order.
+- **Resolution-time target legality.** Targets stay frozen at announce and are never rechecked, so
+  there is no fizzling and no hexproof/protection hook.
+- **Effect duration as a primitive** — see [G7](#g7-no-effect-duration) below, which is named as a
+  gap and then deliberately deferred rather than solved.
+
+## What is already sufficient
+
+Recorded so v4 does not re-litigate it, and so the gap list below is read as short *because it is*,
+not because it is incomplete.
+
+| Magic concept | Expressed today as |
+|---|---|
+| The stack, LIFO and addressable | `PlayState.actionStack` + `announceAction` + `Frame{kind:'resolve'}` |
+| Priority, instant speed, sorcery speed | `PriorityWindow`; `activation.window: null` is sorcery speed |
+| Counterspells | `counterAction` + `PendingAction.countered` |
+| Replacement effects | `RuleSet.replaces` |
+| Static buffs ("creatures you control get +1/+1") | `RuleSet.modifier`, derived on every read |
+| Auras and Equipment | `CardInstance.attachedTo` + `attach`/`detach` + `attachedTo`/`hostOf` |
+| Control ≠ ownership | `CardInstance.owner`/`.controller` + `setController` |
+| Activated abilities | `RuleSet.activation`, `perInstance` for a per-card button |
+| Tapping | `CardInstance.rotated` |
+| Counters of every kind | `CardIndex` integers |
+| Card types, subtypes, keyword *names* | per-instance `tags` |
+| Keyword *behaviour* | one shared `RuleSet`, referenced by id from many templates |
+| Zones | authored `PlayZone`s — none are hard-coded |
+| Mana | one integer `PointPool` per colour; costs are `changePool` effects |
+| Turn structure | `StateMachine` + the reserved `activePlayer` pool |
+
+Three things that look like gaps and are not:
+
+- **Negation in criteria.** There is no `not` node, but every `ComparisonOp` has its inverse in the
+  set, so De Morgan pushes any negation down to negated leaves. An ergonomics cost, not an
+  expressiveness one.
+- **Keyword abilities.** Rule sets are top-level and shared by id, so "flying" is authored once.
+- **A turn/phase entity.** The state machine plus `activePlayer` is the documented way, and Hold'em's
+  nine states demonstrate it at scale.
+
+## New core concepts
+
+### Derived Value
+
+A `ValueRef` may be **computed from other `ValueRef`s** rather than read from exactly one place.
+Two forms: arithmetic over two values, and a fold over a set of cards.
+
+Today the value language is nine leaves and no combinators, so *"deals damage equal to the number of
+creatures you control"*, *"gets +1/+0 for each Mountain"*, and *"X plus one"* have no expression at
+all. This is the single most-cited gap in the codebase and the one that blocks the largest number of
+ordinary cards.
+
+A derived value is **read-only and total**: it never asks a question, never mutates, and answers
+with a degraded value rather than recursing if it is asked about itself — the discipline
+`modifiers.ts` already established for computed card values.
+
+### Self Reference
+
+A rule may refer to **the card carrying it**. Today it can refer to the card an event was about
+(`triggering`), the card it is attached to (`host`), and the card under test in a predicate
+(`candidate`) — but not to itself, which is what almost all printed rules text means by "this
+creature". The value already exists in the engine as `TriggerContext.sourceCardId`; nothing exposes
+it to authors.
+
+### Player as a Target
+
+A player may be **chosen** rather than derived from a fixed relationship. Today `SeatRef` offers only
+structural positions — active, next, previous, the owner or controller of a card — so *"target
+player"* and *"target opponent"* cannot be authored at all. The interaction that asks the question
+already exists and is fully validated; no effect raises it.
+
+### Per-object Continuous Condition
+
+A continuous rule may arm **once per card** rather than once per source. v2's continuous rules fire
+on a false→true transition keyed by the source card, which means a game-level rule with no source
+fires once for the whole session. Magic's state-based actions are per-object and repeating —
+*"each creature with lethal damage is destroyed"* is checked against every creature, every time.
+
+### Interactive Cost
+
+An activation cost may **ask a question**. Costs today are forbidden from prompting, because a
+suspension commits the transaction and would publish a half-paid cost. That closes off *"sacrifice a
+creature"*, *"discard a card"*, *"tap an untapped creature you control"*, and every {X} cost —
+between them a large share of Magic's cost lines. The engine already solves this exact shape
+elsewhere: `announceAction` freezes prompted targets across suspensions and commits only on the
+final non-suspending pass.
+
+### Suspendable Branch
+
+A chosen mode's effects may **pause**. A `chooseMode` branch runs inline today, so a branch that
+targets fails rather than prompting. Modal cards are common and most modes target, so in practice
+modal-plus-targeting is unauthorable.
+
+## The gaps, named
+
+| Id | Gap | Evidence |
+|---|---|---|
+| G1 | No arithmetic in `ValueRef` | `holdem.ts:20`, `types.ts:142-178` |
+| G2 | No fold of a card index across a card set | `holdem.ts:15` |
+| G3 | `chooseSeat` interaction has no producer | `dispatch.ts:1234` |
+| G4 | No `CardRef` for "the card carrying this rule" | `mtgish.ts:282` |
+| G5 | Activation costs may not prompt | `schema.ts:503`, `activation.ts` |
+| G6 | Game-level continuous rules fire once, ever | `continuous.ts:50-64` |
+| G7 | No effect duration ("until end of turn") | — *deferred, see below* |
+| G8 | `chooseMode` branches cannot suspend | `effects.ts:1171` |
+| G9 | `CardRef{self}` can be read but **never targeted** — no `TargetSelector` consumes a `CardRef` | found by authoring `src/samples/mtg.ts`; see TECHNICAL_DESIGN_V4 §8.1 |
+
+**G9 was discovered after this section was written**, by authoring the sample game rather than by
+reading the engine — which is why it is listed here but has no v4 acceptance criterion. It is the
+single largest remaining gap for Magic: "{T}: add {G}", "Sacrifice this creature:", and "this creature
+gets +1/+1" are all unauthorable without it. The fix is one `TargetSelector` arm
+(`{kind:'card'; card: CardRef}`) and it should lead any v5.
+
+<a id="g7-no-effect-duration"></a>
+### G7, and why it is deferred rather than solved
+
+*"Until end of turn"* has no expression. A `modifier` lasts exactly as long as its source card sits
+in an active zone; a one-shot `setCardIndex` never expires. Every combat trick lands here.
+
+It is authorable, badly: tag the affected cards, then run a cleanup rule in an end-of-turn state that
+reverses the change and clears the tag — one rule per magnitude, which does not scale.
+
+It is not solved in v4 because both clean fixes are expensive in a way the others are not. A
+duration field needs an engine concept of a turn, which deliberately does not exist. A floating
+modifier list materialized into `PlayState` contradicts TECHNICAL_DESIGN_V2 §5.4's central decision
+that modifiers are *derived, never materialized* — the decision that removed a whole class of
+forgotten-teardown bugs. Reopening it is a design question, not an implementation task, and it is
+recorded here as an open question rather than a requirement.
+
+## Acceptance criteria
+
+Ids continue the existing series and are traced by `src/test/traceability.test.ts` like every other
+criterion.
+
+| Id | Criterion |
+|---|---|
+| **SP13** | **Given** a criterion comparing a nested arithmetic value against a literal, **when** it is evaluated, **then** it resolves the whole expression to one number; and **given** either operand is a boolean, **then** it is rejected as `TYPE_MISMATCH` rather than coerced. |
+| **SP14** | **Given** a board of five cards of which three match a predicate, **when** a `countMatching` value is read, **then** it resolves to 3; and **when** a `sumIndex` value over the same set is read, **then** the total includes every modifier currently applying, not the stored base values. |
+| **SP15** | **Given** a rule attached to a card, **when** it refers to itself, **then** the reference resolves to that card instance and not to the card an event was about; and **given** the same reference in a game-level rule, **then** it fails `UNBOUND_REF`. |
+| **SP16** | **Given** an effect that asks a player to choose a player, **when** it runs, **then** the session suspends on a seat choice; and **when** the choice is answered, **then** a later effect in the same rule resolves its seat reference to the chosen seat. |
+| **SP17** | **Given** one per-object continuous rule and two creatures, **when** the first meets the condition and is dealt with, and later the second meets it, **then** the rule fires again for the second — and **given** neither has changed, **then** it does not fire repeatedly for the same card. |
+| **SP18** | **Given** an activation whose cost requires choosing a card to discard, **when** it is activated, **then** the session suspends before anything is spent; **when** the choice is answered, **then** the whole cost applies in one transaction; and **when** the choice is cancelled, **then** nothing is spent and no card moved. |
+| **SP19** | **Given** a modal effect one of whose modes targets, **when** that mode is chosen, **then** the session suspends for the target choice and resumes into the rest of that mode's effects in order, rather than failing. |
+| **MTG12** | **Given** the shipped Magic sample, **when** it is imported and played, **then** a turn completes: a land is played under a once-per-turn limit, a creature is cast through the stack, a burn spell targets a chosen player, and a "for each" spell reads a count off the board. |
+
+## Constraints & dependencies
+
+- **No `SCHEMA_VERSION` bump.** Every v4 change is an added union arm or an added optional field.
+  Existing v2 files keep parsing unchanged, and `src/test/fixtures/parity-baseline.v1.json` keeps
+  round-tripping byte-identically. A file that *uses* a v4 arm is simply not readable by a v2 build,
+  which is the same one-way situation every prior version had and needs no new machinery.
+- **The zod mirror is the export format.** Declaration order in `schema.ts` is key order in the
+  exported file, so new fields append rather than insert.
+- **Determinism is untouched.** Nothing in v4 introduces a new ordering. The one new fold
+  (`sumIndex`) sums over a selector result that is already resolved in a defined order.
+- **No new dependencies.**
+- **Every new arm must render.** `prose.ts` has an arm per kind and an exhaustiveness test; a missing
+  arm renders a card face blank rather than failing loudly, which is why the test exists.
+- **Reference-walking must keep up.** `definitionStore.ts`'s `walkRefs`/`findReferrers` must learn
+  every new reference kind, or deleting a pool or index stops being safe.
+
+## Open questions — v4
+
+- **Does G7 (effect duration) justify materializing modifiers?** Recorded above as deferred. It is
+  the one v4 gap with no cheap answer, and the answer changes TECHNICAL_DESIGN_V2 §5.4 rather than
+  extending it.
+- **Does the reduced modifier model survive a static-heavy board?** Inherited unresolved from v2, and
+  the Magic sample in MTG12 is the first board with enough static effects on it to find out.
+- **Is per-object continuous scanning affordable at real board sizes?** v2 left the cost of derived
+  modifiers explicitly unmeasured. G6 multiplies the settle-time scan by the number of candidate
+  cards, which is the first change in this engine with a plausible performance ceiling.

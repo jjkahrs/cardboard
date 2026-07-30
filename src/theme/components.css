@@ -338,6 +338,63 @@
   pointer-events: none;
 }
 
+/* ── Dialog — the "New game" chooser, the one modal in the app ───────────────────────────────── */
+
+.cb-dialog {
+  margin: auto; /* centred by the UA once `showModal` puts it in the top layer */
+  max-inline-size: min(32rem, 90vw);
+  max-block-size: 80vh;
+  overflow-y: auto;
+  padding: var(--cb-s4);
+  background: var(--cb-kraft-50);
+  color: var(--cb-fg);
+  border: 3px solid var(--cb-ink-900);
+  box-shadow: 4px 5px 0 var(--cb-ink-700);
+  z-index: var(--cb-z-modal);
+}
+
+.cb-dialog::backdrop {
+  background: color-mix(in srgb, var(--cb-ink-900) 45%, transparent);
+}
+
+.cb-dialog > h2 {
+  margin-block-end: var(--cb-s3);
+}
+
+.cb-dialog .cb-list {
+  margin-block-end: var(--cb-s3);
+}
+
+/* The whole row is the button, so the name, the blurb and the counts stack inside it. */
+.cb-dialog__option {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--cb-s1);
+  padding: var(--cb-s2);
+  text-align: start;
+  background: none;
+  border: 2px dashed transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.cb-dialog__option:hover,
+.cb-dialog__option:focus-visible {
+  border-color: var(--cb-ink-900);
+  background: var(--cb-kraft-100);
+}
+
+.cb-dialog__option-name {
+  font-weight: 700;
+}
+
+.cb-dialog__option-blurb {
+  color: var(--cb-ink-700);
+  font-size: 0.9em;
+}
+
 /* ── Popover (§6.6 / §6.8 — never a modal) ───────────────────────────────────────────────────── */
 
 .cb-popover {

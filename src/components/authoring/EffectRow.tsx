@@ -51,6 +51,8 @@ export interface EffectRowProps {
   onRemove: () => void;
   /** §6.11 — how many effect lists deep this row sits; `chooseMode` is refused at depth 1. */
   depth?: number;
+  /** v4 §4.5 — this row is in an `activation.cost` list, which still refuses three kinds. */
+  inCost?: boolean;
   /** The rule this list belongs to, so an `announceAction` naming it can warn (§6.10). */
   ruleId?: Id;
 }
@@ -123,6 +125,7 @@ export function EffectRow({
   onMove,
   onRemove,
   depth = 0,
+  inCost = false,
   ruleId,
 }: EffectRowProps) {
   const stops = pauses(effect);
@@ -136,11 +139,11 @@ export function EffectRow({
           label={`Effect ${index + 1} kind`}
           value={effect.kind}
           options={EFFECT_KINDS.map(({ kind, label }) => {
-            const missing = missingFor(kind, definition, depth);
+            const missing = missingFor(kind, definition, depth, inCost);
             return { value: kind, label: missing === '' ? label : `${label} (${missing})` };
           })}
           onChange={(kind) => {
-            if (missingFor(kind as Effect['kind'], definition, depth) !== '') return;
+            if (missingFor(kind as Effect['kind'], definition, depth, inCost) !== '') return;
             const next = defaultEffect(kind as Effect['kind'], definition, effect);
             if (next) onChange(next);
           }}
@@ -708,6 +711,34 @@ function EffectSentence({
             onChange={(max) => onChange({ ...effect, max })}
           />
           {', remembered as '}
+          <input
+            className="cb-inline-input"
+            aria-label="Answer key"
+            value={effect.key}
+            onChange={(e) => onChange({ ...effect, key: e.target.value })}
+          />
+          {effect.key.trim() === '' && <span className="cb-error">name the key</span>}
+        </>
+      );
+
+    // v4 §4.3 — `chooseNumber` without the bounds: who is asked, what they are asked, and the key a
+    // later `SeatRef{kind:'promptSeat'}` reads the answer back under.
+    case 'chooseSeat':
+      return (
+        <>
+          <SeatRefChip
+            seat={effect.seat}
+            definition={definition}
+            ariaLabel="Who chooses"
+            onChange={(seat) => onChange({ ...effect, seat })}
+          />
+          <input
+            className="cb-inline-input"
+            aria-label="Prompt text"
+            value={effect.promptText}
+            onChange={(e) => onChange({ ...effect, promptText: e.target.value })}
+          />
+          {' — remembered as '}
           <input
             className="cb-inline-input"
             aria-label="Answer key"

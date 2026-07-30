@@ -94,7 +94,14 @@ export type SeatRef =
    */
   | { kind: 'owner'; card: CardRef }
   | { kind: 'controller'; card: CardRef }
-  | { kind: 'all'; quantifier?: SeatQuantifier }; // default 'every' — §5.7
+  | { kind: 'all'; quantifier?: SeatQuantifier } // default 'every' — §5.7
+  /**
+   * v4 §4.3 (G3) — "target player", the seat half of the `chooseNumber`/`promptNumber` pair. `key`
+   * is `chooseSeat.key` verbatim: the effect asks the question and persists the answer under that
+   * key, and this reads it back, so a LATER effect in the same rule aims at the chosen seat.
+   * `UNBOUND_REF` when nothing has answered yet, the same discipline `promptNumber` uses.
+   */
+  | { kind: 'promptSeat'; key: string };
 
 /** seat is null iff the referenced zone/pool is Game/Shared scoped. */
 export interface ZoneRef {
@@ -126,7 +133,19 @@ export type CardRef =
    * INTERCEPTED effect was about to touch. Unbound everywhere else, for the same reason
    * `candidate` is: a criterion that reads it outside a replacement has no card to mean.
    */
-  | { kind: 'replacedTarget' };
+  | { kind: 'replacedTarget' }
+  /**
+   * v4 §4.2 (G4) — the card CARRYING this rule, i.e. `TriggerContext.sourceCardId` itself. What
+   * almost all printed rules text means by "this creature", and the one addressing primitive the
+   * engine had the value for but never exposed.
+   *
+   * Deliberately not `triggering`: an equipment's or a lord's rule fires on events about OTHER
+   * cards, and `triggering` is whichever card set the event off. Deliberately not `host` either —
+   * that is one hop further out, the card this one is attached TO. `UNBOUND_REF` when there is no
+   * source card, which is the honest answer for a game-level rule with no card to mean, and the
+   * same discipline `candidate`/`replacedTarget` already use.
+   */
+  | { kind: 'self' };
 
 /**
  * v2 §4.2 — addresses a pending action (§4.8) the way `CardRef` addresses a card. `{kind:'action'}`
@@ -175,7 +194,32 @@ export type ValueRef =
    * (§5.9's `UNBOUND_REF` when nothing has answered it yet, the same discipline `replacedAmount` and
    * `replacedTarget` already use for "bound nowhere else").
    */
-  | { kind: 'promptNumber'; key: string };
+  | { kind: 'promptNumber'; key: string }
+  /**
+   * v4 §4.1 (G1) — the only COMBINATOR in the value language: every arm above reads exactly one
+   * place, this one computes. Integers only; a boolean on either side is `TYPE_MISMATCH` rather
+   * than a coercion, the same refusal `modifiers.ts` makes rather than adding a boolean into an
+   * `adjust`. `min`/`max` are here because a cost clamp ("pay up to X") needs them and they cost
+   * nothing alongside. Nests without bound in authored JSON, so `resolveValueRef` counts the
+   * nesting against `limits.maxDepth` like every other recursion in the engine.
+   */
+  | { kind: 'arith'; op: 'add' | 'subtract' | 'multiply' | 'min' | 'max'; left: ValueRef; right: ValueRef }
+  /**
+   * v4 §4.1 (G2) — the two folds over a card set, and the first `ValueRef`s that hold a
+   * `TargetSelector`. "Damage equal to the number of creatures you control" is `countMatching`;
+   * "total power of your creatures" is `sumIndex`.
+   *
+   * A read never asks a question (v4 §3 decision 4): a `prompt` anywhere inside `from` resolves to
+   * candidates rather than a selection, and both folds treat that as folding over nothing —
+   * `modifiers.ts`'s handling of a `prompt` scope during a modifier read is the precedent.
+   */
+  | { kind: 'countMatching'; from: TargetSelector }
+  /**
+   * `sumIndex` reads every card through `effectiveIndex`, never `card.indexValues`: a total that
+   * used the stored base would be blind to every anthem on the board, which is the exact bug MTG6
+   * exists to prevent for a single card.
+   */
+  | { kind: 'sumIndex'; from: TargetSelector; indexId: Id };
 
 // ---------------------------------------------------------------------------
 // §4.3 Criteria
@@ -438,7 +482,13 @@ export type Effect =
       max: ValueRef;
       /** The answer is readable elsewhere as `ValueRef{kind:'promptNumber'}` keyed by this. */
       key: string;
-    };
+    }
+  /**
+   * v4 §4.3 (G3) — "target player". Mirrors `chooseNumber` exactly: `seat` is WHO is asked, `key` is
+   * how a later effect reads the answer back (as `SeatRef{kind:'promptSeat'}`). Candidates are the
+   * live `seatOrder`, so an eliminated seat is never offered.
+   */
+  | { kind: 'chooseSeat'; promptText: string; seat: SeatRef; key: string };
 
 export interface RuleSet {
   id: Id;
@@ -482,9 +532,20 @@ export interface RuleSet {
    *
    * Mutually exclusive with `modifier`/`replaces`/`activation` — a zod refinement enforces it,
    * because a rule that is simultaneously a trigger, a modifier and a replacement has no defensible
-   * evaluation order (§4.5).
+   * evaluation order (§4.5). `false` is the "not continuous" value; every truthy shape below is a
+   * mode, which is why the refinement can count this field as one entry with no special case.
+   *
+   * v4 §4.4 (G6) — the OBJECT form makes the rule PER-OBJECT: `over` is resolved at every settle
+   * scan and the rule gets one arm — one `continuousFired` key, one false→true edge — per resolved
+   * card, with `CardRef{kind:'candidate'}` bound to that card inside `condition`. That is what
+   * "each creature with lethal damage is destroyed" needs and what the boolean form cannot express:
+   * a game-level boolean-form rule has ONE key for the whole session (`continuous.ts`'s header).
+   *
+   * `over` may not contain a `prompt` at any depth — the settle scan is a read and a read never
+   * asks a question (v4 §3 decision 4). Enforced by a zod refinement and re-checked at runtime,
+   * where a prompt result simply produces no arms.
    */
-  continuous: boolean;
+  continuous: boolean | { over: TargetSelector };
 
   /**
    * v2 §4.5, §5.7 — registers this rule against an effect about to apply, ahead of the mutation.
@@ -640,11 +701,15 @@ export interface TriggerContext {
   sourceCardId: Id | null;
   /**
    * §4.4 — the card `CardRef{kind:'candidate'}` names, set only while a `matching` selector is
-   * testing that card. OPTIONAL because it is never authored, never stamped onto a frame and never
-   * persisted: `targets.ts` derives `{...ctx, candidateCardId: id}` per candidate and hands the
-   * copy to `evalCriteria`, so the binding lives exactly as long as the one predicate that needs
-   * it. Threading it through a derived context rather than through module state is what makes
-   * nested `matching` selectors re-entrant — each level reads its own object.
+   * testing that card. OPTIONAL because it is never authored: `targets.ts` derives
+   * `{...ctx, candidateCardId: id}` per candidate and hands the copy to `evalCriteria`, so the
+   * binding lives exactly as long as the one predicate that needs it. Threading it through a
+   * derived context rather than through module state is what makes nested `matching` selectors
+   * re-entrant — each level reads its own object.
+   *
+   * v4 §4.4 (G6) — ONE exception to "never stamped onto a frame": a per-object continuous arm
+   * stamps it on the `rule` frame's ctx, because the arm IS "this rule, about that card" and
+   * `dispatch.ts`'s condition re-check has to see the same binding the scan did.
    */
   candidateCardId?: Id | null;
 }
@@ -701,6 +766,25 @@ export type Frame =
        * call site (dispatch.ts) stays valid unchanged.
        */
       replacedBy?: Record<Id, true>;
+      /**
+       * v4 §4.6 (G8) — the chosen `chooseMode` branch(es) currently mid-flight, innermost last.
+       *
+       * A modal branch used to run as a synchronous `for` loop inside `effects.ts`'s `chooseMode`
+       * arm, which is why a branch effect that needed a FRESH interaction failed AWAITING_PROMPT:
+       * there was no frame slot recording *which branch effect was mid-flight*. This is that slot —
+       * "a frame-level effects queue on `RuleFrame`", in the words of the comment it replaces.
+       *
+       * A PATH, not a copy of the effects: `mode` indexes `rule.effects[cursor].modes` and `cursor`
+       * indexes that mode's own `effects`, so `dispatch.ts`'s `slotOf` re-derives the live effect
+       * list from the (immutable) `GameDefinition` on every `step()`. Two integers per level rather
+       * than a duplicated `Effect[]` inside `PlayState`, which keeps the rewound domain (§4.10) free
+       * of authored data and each level's advance a scalar patch.
+       *
+       * An ARRAY because a branch effect may itself be a `chooseMode`, to arbitrary depth. Absent on
+       * every frame that has never entered a branch, so every existing `push(state, {kind:'rule',
+       * ...})` call site stays valid unchanged — same discipline as `replacedBy` above.
+       */
+      branch?: { mode: number; cursor: number }[];
     })
   | (FrameBase & { kind: 'settle'; iteration: number })
   /** v2 §4.7, §4.8 — pops the top of `actionStack` and runs its rule's effects. Step 22. */
@@ -719,7 +803,30 @@ export type Frame =
       consecutivePasses: number;
     })
   /** v2 §4.7, §5.11 — one open `sealedChoice`, keyed by its authored `choiceId`. Step 29. */
-  | (FrameBase & { kind: 'sealed'; choiceId: string });
+  | (FrameBase & { kind: 'sealed'; choiceId: string })
+  /**
+   * v4 §4.5, §4.5.0(a) — an activation whose COST is mid-payment. Appended last, never inserted.
+   *
+   * The frame exists for exactly one reason: a cost that asks a question suspends, suspending commits
+   * the transaction, and there has to be somewhere for the answer to land and for the cost to resume
+   * from. `activateRule` is single-shot — it pushes a `rule` frame for the ability's *effects* only —
+   * so before v4 a suspended cost had no frame to resume into and the whole class of effect was
+   * banned outright (§5.8).
+   *
+   * Pushed LAZILY, at the moment a cost effect actually raises an interaction: a cost that needs no
+   * question is paid inside `applyAction` and never creates one of these (see `activation.ts`).
+   * `windowId` is the priority window this activation is responding to, or `null` for a
+   * sorcery-speed one — it is what tells the completion path whether §5.5's response bookkeeping
+   * (passes reset, cursor advance) applies to the frame underneath.
+   */
+  | (FrameBase & {
+      kind: 'activation';
+      ruleId: Id;
+      sourceCardId: Id | null;
+      seat: SeatId;
+      ctx: TriggerContext;
+      windowId: Id | null;
+    });
 
 /** One matched rule inside an `event` frame's `bindings`, in §5.1 order. */
 export interface RuleBinding {

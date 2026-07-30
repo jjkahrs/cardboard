@@ -1,10 +1,17 @@
 /**
  * The continuous-condition fixpoint scan. TECHNICAL_DESIGN_V2.md §4.5, §5.1, §5.3, §5.6.
  *
- * A `RuleSet` with `continuous: true` ignores `trigger` entirely; instead its `condition` is
+ * A `RuleSet` with a truthy `continuous` ignores `trigger` entirely; instead its `condition` is
  * scanned here, at slot 1 of every `settle` frame (§5.3), ahead of the auto-transition scan v1
  * built (slot 2) — "a creature with lethal damage dies" and "a player at zero pool is ousted" must
  * both land before the state machine decides whether the phase is over.
+ *
+ * **v4 §4.4 (G6) — `continuous` is `boolean | { over: TargetSelector }`.** The boolean form is
+ * unchanged in every respect. The object form resolves `over` at each scan and produces ONE ARM PER
+ * RESOLVED CARD, each with its own `continuousFired` key and its own false→true edge, with
+ * `CardRef{kind:'candidate'}` bound to that card — exactly the two mechanisms `targets.ts`'s
+ * `matching` and a card-attached continuous rule already provide, put together. That is what closes
+ * the gap the `continuousKey` note below spent v2 documenting.
  *
  * **Fires on the false→true transition, not while true.** `PlayState.continuousFired` records that
  * a binding has fired; the key is deleted the moment its condition next evaluates false. Without
@@ -20,6 +27,8 @@
 import { evalCriteriaBool } from './criteria';
 import { push } from './frames';
 import { zoneKey } from './seats';
+// v4 §4.4 — `continuous.over` is an ordinary TargetSelector, resolved by the ordinary resolver.
+import { resolveTargets } from './targets';
 import {
   ACTIVE_PLAYER_POOL_ID,
   type GameDefinition,
@@ -62,9 +71,26 @@ import {
  * MTG9's own fixture hits the mirror image of this directly: "a player at zero life is eliminated"
  * has no card to attach to, so it is authored as one global rule PER SEAT (§9.5 edge case 10 is the
  * regression guard that two such rules never collide on one key).
+ *
+ * ---------------------------------------------------------------------------
+ * **v4 §4.4 (G6) — the third key shape, and the paragraph above is now the WORKAROUND, not the
+ * ceiling.** `continuous: { over }` produces one arm per card `over` resolves to, so the key needs
+ * the candidate card in it: `${ruleId}:${sourceCardId ?? ''}:${candidateCardId}`.
+ *
+ * The design doc writes that key as `${ruleId}:${candidateCardId}`. Deliberate deviation: a
+ * per-object rule may itself be CARD-ATTACHED (one enchantment sweeping the board), and two copies
+ * of that enchantment would then share one key per candidate — the second copy would never fire.
+ * Keeping `sourceCardId` in the key costs one empty segment for the game-level case (`rs::c3`) and
+ * keeps every arm distinct. The boolean form still produces the exact v2 string, byte for byte,
+ * because the candidate segment is omitted rather than left empty.
  */
-export function continuousKey(ruleId: Id, sourceCardId: Id | null): string {
-  return `${ruleId}:${sourceCardId ?? ''}`;
+export function continuousKey(
+  ruleId: Id,
+  sourceCardId: Id | null,
+  /** v4 §4.4 — null for the boolean form, which must keep producing the v2 key unchanged. */
+  candidateCardId: Id | null = null
+): string {
+  return `${ruleId}:${sourceCardId ?? ''}${candidateCardId === null ? '' : `:${candidateCardId}`}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,7 +106,12 @@ interface ContinuousBinding {
   zoneOrder: number;
   position: number;
   seat: number;
+  /** v4 §4.4 — the card this ARM is about, `null` for the boolean form. §5.1's final tiebreak. */
+  candidateCardId: Id | null;
 }
+
+/** Everything §5.1 orders by, before `over` splits one host binding into its per-card arms. */
+type BindingHost = Omit<ContinuousBinding, 'candidateCardId'>;
 
 /**
  * Same total order as `dispatch.ts`'s `compareBindings` (§5.1) — deliberately NOT imported, because
@@ -98,11 +129,56 @@ function compareBindings(a: ContinuousBinding, b: ContinuousBinding): number {
     a.position - b.position ||
     a.seat - b.seat ||
     (a.rule.id < b.rule.id ? -1 : a.rule.id > b.rule.id ? 1 : 0) ||
-    String(a.sourceCardId).localeCompare(String(b.sourceCardId))
+    String(a.sourceCardId).localeCompare(String(b.sourceCardId)) ||
+    // v4 §4.4 — the final tiebreak, and the only one that separates two arms of ONE per-object
+    // rule: everything above is identical for every arm a single host binding expands into. Total
+    // and reproducible, which is what a replay of the same seed needs.
+    //
+    // It OVERRIDES the order `over` resolved in (zone order), by the same lexicographic-on-id choice
+    // and for the same reason `targets.ts`'s `attachedTo` makes it: `c10` before `c2` is stable
+    // across an export/import and across a rewind, and key insertion order is not.
+    String(a.candidateCardId).localeCompare(String(b.candidateCardId))
   );
 }
 
-/** Every `continuous: true` RuleSet currently live on the board, in §5.1 order. */
+/**
+ * v4 §4.4 — one host binding becomes its arms: exactly itself for the boolean form, or one arm per
+ * card `over` resolves to for the object form.
+ *
+ * `over` is resolved against the board as it stands right now, with the host's own context, so a
+ * card-attached per-object rule can scope `over` through `host`/`self` like any other selector.
+ *
+ * A resolution that is not a plain card list produces NO arms, and that is the runtime half of the
+ * "`over` may not prompt" rule (v4 §3 decision 4) — a `prompt` selector resolves to CANDIDATES, so
+ * the scan would otherwise have to ask a question mid-read. Same degradation `valueRef.ts`'s folds
+ * and `modifiers.ts`'s modifier scope already make, and it covers imported JSON that never passed
+ * `schema.ts`'s refinement. NO_TARGETS lands here too: nothing on the board to be per-object about
+ * is zero arms, not a failure.
+ *
+ * ponytail: `over` is re-resolved from scratch on EVERY settle pass, for every host binding — the
+ * whole scan is now O(hosts x candidates) per pass with no memoization. That is the performance
+ * ceiling v4 §8 names, and it is the first one in this engine. The upgrade path, when a real board
+ * measures badly: cache the resolution per (state, selector) for the duration of one scan, the way
+ * `modifiers.ts` caches `collectModifiers` per state. Not done now because there is nothing yet to
+ * measure it against, and a stale cache here would break the false→true edge silently.
+ */
+function pushArms(
+  out: ContinuousBinding[],
+  host: BindingHost,
+  state: PlayState,
+  def: GameDefinition
+): void {
+  const over = typeof host.rule.continuous === 'object' ? host.rule.continuous.over : null;
+  if (over === null) {
+    out.push({ ...host, candidateCardId: null });
+    return;
+  }
+  const res = resolveTargets(over, state, bindingCtx(state, host.sourceCardId, null), def);
+  if (!res.ok || res.kind !== 'cards') return;
+  for (const cardId of res.cardIds) out.push({ ...host, candidateCardId: cardId });
+}
+
+/** Every continuous RuleSet arm currently live on the board, in §5.1 order. */
 function collectBindings(state: PlayState, def: GameDefinition): ContinuousBinding[] {
   const rulesById = new Map(def.ruleSets.map((r) => [r.id, r] as const));
   const templatesById = new Map(def.templates.map((t) => [t.id, t] as const));
@@ -110,8 +186,9 @@ function collectBindings(state: PlayState, def: GameDefinition): ContinuousBindi
 
   for (const id of def.globalRuleSetIds) {
     const rule = rulesById.get(id);
+    // Truthy, not `=== true`: v4 §4.4's object form is a mode exactly like `true` is.
     if (rule?.continuous) {
-      out.push({ rule, sourceCardId: null, scope: 0, zoneOrder: 0, position: 0, seat: -1 });
+      pushArms(out, { rule, sourceCardId: null, scope: 0, zoneOrder: 0, position: 0, seat: -1 }, state, def);
     }
   }
 
@@ -130,14 +207,19 @@ function collectBindings(state: PlayState, def: GameDefinition): ContinuousBindi
         for (const ruleId of template.ruleSetIds) {
           const rule = rulesById.get(ruleId);
           if (rule?.continuous) {
-            out.push({
-              rule,
-              sourceCardId: cardId,
-              scope: 1,
-              zoneOrder,
-              position,
-              seat: zone.scope === 'shared' ? -1 : seat,
-            });
+            pushArms(
+              out,
+              {
+                rule,
+                sourceCardId: cardId,
+                scope: 1,
+                zoneOrder,
+                position,
+                seat: zone.scope === 'shared' ? -1 : seat,
+              },
+              state,
+              def
+            );
           }
         }
       });
@@ -150,7 +232,11 @@ function collectBindings(state: PlayState, def: GameDefinition): ContinuousBindi
 /** Mirrors `dispatch.ts`'s `activeSeat` — the only sane `triggeringSeat` for a scan nothing "triggered". */
 const activeSeat = (state: PlayState): number => Number(state.pools[ACTIVE_PLAYER_POOL_ID] ?? 0);
 
-function bindingCtx(state: PlayState, binding: ContinuousBinding): TriggerContext {
+function bindingCtx(
+  state: PlayState,
+  sourceCardId: Id | null,
+  candidateCardId: Id | null
+): TriggerContext {
   return {
     triggeringCardId: null,
     zoneKey: null,
@@ -158,7 +244,11 @@ function bindingCtx(state: PlayState, binding: ContinuousBinding): TriggerContex
     promptAnswers: {},
     // Mirrors `dispatch.ts`'s `advanceEvent`: this is the one place a continuous binding's source
     // card is stamped, so `CardRef{kind:'host'}` inside the rule's own condition/effects resolves.
-    sourceCardId: binding.sourceCardId,
+    sourceCardId,
+    // v4 §4.4 — the per-object arm's card, bound exactly as `targets.ts` binds it for a `matching`
+    // candidate. `undefined` rather than an explicit null for the boolean form, so the context an
+    // ordinary continuous rule sees is byte-identical to v2's and `candidate` stays UNBOUND_REF.
+    ...(candidateCardId === null ? {} : { candidateCardId }),
   };
 }
 
@@ -175,7 +265,8 @@ function bindingCtx(state: PlayState, binding: ContinuousBinding): TriggerContex
 const UNRESOLVED = -1;
 
 /**
- * One pass of slot 1 (§5.3, §5.6). For every live continuous binding, in §5.1 order:
+ * One pass of slot 1 (§5.3, §5.6). For every live continuous arm (v4 §4.4: one per binding for the
+ * boolean form, one per `over` card for the object form), in §5.1 order:
  *   - condition true, not yet fired → mark fired, schedule a `rule` frame.
  *   - condition false → clear the fired mark, so a later false→true is a real re-fire.
  *   - condition true, already fired → untouched (this is what stops the fixpoint looping forever
@@ -197,10 +288,15 @@ export function scanContinuous(state: PlayState, def: GameDefinition): boolean {
   const toFire: ContinuousBinding[] = [];
 
   for (const binding of bindings) {
-    const key = continuousKey(binding.rule.id, binding.sourceCardId);
+    const key = continuousKey(binding.rule.id, binding.sourceCardId, binding.candidateCardId);
     // null condition => always true (criteria.ts: "a null condition is the caller's problem").
     const value = binding.rule.condition
-      ? evalCriteriaBool(binding.rule.condition, state, bindingCtx(state, binding), def)
+      ? evalCriteriaBool(
+          binding.rule.condition,
+          state,
+          bindingCtx(state, binding.sourceCardId, binding.candidateCardId),
+          def
+        )
       : true;
 
     if (value) {
@@ -226,7 +322,10 @@ export function scanContinuous(state: PlayState, def: GameDefinition): boolean {
       kind: 'rule',
       ruleId: binding.rule.id,
       sourceCardId: binding.sourceCardId,
-      ctx: bindingCtx(state, binding),
+      // v4 §4.4 — the arm's candidate rides on the FRAME's ctx, not just the scan's: `advanceRule`
+      // re-checks `condition` before running the effects, and it must see the same binding this
+      // scan did or a per-object arm would fire and then immediately skip itself.
+      ctx: bindingCtx(state, binding.sourceCardId, binding.candidateCardId),
       cursor: UNRESOLVED,
       aborted: false,
       parentId: null,

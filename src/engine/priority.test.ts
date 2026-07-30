@@ -398,6 +398,108 @@ describe('AC: V4 — a block resets passes and continues forward, not re-offerin
 });
 
 // ---------------------------------------------------------------------------
+// v4 §4.5 (AC: SP18) — an INTERACTIVE cost inside an open priority window. The window is where the
+// two-pass cost has its sharpest interaction with §5.5, for two reasons this block pins:
+//
+//  - the cost's own prompt REPLACES the priority offer in `state.interaction` while it is open, so the
+//    seat is being asked about its cost, not about its options; and
+//  - §5.5's response bookkeeping (passes to 0, cursor forward) waits until the cost is actually PAID.
+//    Doing it when the offer was taken would leave a cancelled cost having silently advanced the round.
+//
+// §4.5.0(b) is confirmed here too, in passing: the legality probe still offers the rule at all, which
+// it only does because `passesActivationGates` evaluates `costCheck` as a CRITERION and never applies a
+// cost effect — an interactive cost does not make the probe start asking questions.
+// ---------------------------------------------------------------------------
+
+describe('v4 §4.5 — an interactive cost inside a priority window (AC: SP18)', () => {
+  /** Same per-seat gate as `costGated`, but the cost now ASKS: "pay how much?", then spends it. */
+  function costAsks(window: string): RuleSet {
+    return {
+      ...costGated(window),
+      activation: {
+        ...costGated(window).activation!,
+        cost: [
+          { kind: 'chooseNumber', promptText: 'Pay how much?', seat: triggeringSeat, min: lit(0), max: lit(2), key: 'x' },
+          { kind: 'changePool', poolId: HP, seat: triggeringSeat, op: 'subtract', amount: { kind: 'promptNumber', key: 'x' } },
+        ],
+      },
+    };
+  }
+
+  function askingDef(window: PriorityWindow): GameDefinition {
+    return def(2, [rsAnnounce(RS_ORIGINAL, window.id), rsOriginal, costAsks(window.id), rsResponse], [window]);
+  }
+
+  /** Fires the announce, walks to the priority offer, and activates — landing on the COST's prompt. */
+  function upToCostPrompt(): { d: GameDefinition; state: PlayState; lines: LogLine[] } {
+    const d = askingDef(winMtg());
+    const state = createPlayState(d, 'seed-sp18-window');
+    state.playerPools[CAN_RESPOND][0] = true;
+
+    const { lines } = drive(state, d, { kind: 'fireEvent', name: 'doAnnounce', seat: 0 });
+    expect(state.interaction).toMatchObject({ kind: 'priority', seat: 0 });
+
+    step(state, { kind: 'action', action: { kind: 'activate', ruleId: RS_RESPOND, cardId: null, seat: 0 }, override: false }, lines, d);
+    return { d, state, lines };
+  }
+
+  it('suspends on the COST prompt, leaving the window and the spend exactly as they were', () => {
+    const { state } = upToCostPrompt();
+
+    // The seat is now being asked about its cost, not about its options.
+    expect(state.interaction).toMatchObject({ kind: 'chooseNumber', seat: 0, min: 0, max: 2 });
+    expect(state.stack[state.stack.length - 1].kind).toBe('activation');
+    expect(state.playerPools[HP][0]).toBe(20); // nothing spent
+    // Untouched: no response has happened yet, so §5.5's reset has not either.
+    const frame = anyPriorityFrame(state);
+    expect(frame.consecutivePasses).toBe(0);
+    expect(frame.order[frame.cursor]).toBe(0);
+  });
+
+  it('answering pays the cost and only THEN resets passes and advances the cursor', () => {
+    const { d, state, lines } = upToCostPrompt();
+
+    // `answerNumber` is one unit of work — it files the answer and clears the suspension, and that is
+    // all. The cost is applied by the NEXT step, when `advance()` re-enters the `activation` frame.
+    step(state, { kind: 'action', action: { kind: 'answerNumber', value: 2 }, override: false }, lines, d);
+    expect(state.interaction).toBeNull();
+    expect(state.playerPools[HP][0]).toBe(20);
+
+    stepOnce(state, d, lines); // ...and here the cost lands, all of it, in one go
+    expect(state.playerPools[HP][0]).toBe(18); // the cost spent, X = 2
+    const frame = anyPriorityFrame(state);
+    expect(frame.consecutivePasses).toBe(0); // §5.5 — a response resets passes
+    expect(frame.order[frame.cursor]).toBe(1); // and the round continues at the next seat
+
+    // Driving on, the response lands on the action stack exactly as a free cost's would (MTG1's shape).
+    let result: StepResult = { done: false, suspended: false, haltedByLoopGuard: false };
+    let n = 0;
+    while (!result.done) {
+      if (++n > RUNAWAY) throw new Error('runaway');
+      result = stepOnce(state, d, lines);
+    }
+    expect(state.actionStack.map((id) => state.pendingActions[id].ruleId)).toContain(RS_RESPONSE);
+  });
+
+  it('cancelling the cost spends nothing and re-offers the SAME seat — declining to pay is not passing', () => {
+    const { d, state, lines } = upToCostPrompt();
+
+    step(state, { kind: 'action', action: { kind: 'cancelPrompt' }, override: false }, lines, d);
+
+    expect(state.playerPools[HP][0]).toBe(20); // nothing spent
+    expect(state.stack.some((f) => f.kind === 'activation')).toBe(false); // nothing half-activated
+    const frame = anyPriorityFrame(state);
+    expect(frame.consecutivePasses).toBe(0);
+    expect(frame.order[frame.cursor]).toBe(0); // the cursor never moved
+
+    // One more step and seat 0 is offered its options again, not skipped and not counted as a pass.
+    stepOnce(state, d, lines);
+    expect(state.interaction).toMatchObject({ kind: 'priority', seat: 0 });
+    expect(state.actionStack.map((id) => state.pendingActions[id].ruleId)).not.toContain(RS_RESPONSE);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // §9.5 edge case 1 — a seat eliminated while it holds the NEXT slot in `order` is skipped silently:
 // no log entry, no interaction, `consecutivePasses` untouched.
 // ---------------------------------------------------------------------------

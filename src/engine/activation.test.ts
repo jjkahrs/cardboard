@@ -296,13 +296,17 @@ describe('§9.4(e) — the cost transaction is all-or-nothing and discarded, not
 // itself — enforcement layer (i); this is layer (ii)).
 // ---------------------------------------------------------------------------
 
-describe('§9.5 edge case 12 — the runtime re-check rejects a suspending cost effect imported past the schema', () => {
+describe('§9.5 edge case 12 — the runtime re-check rejects an UNFREEZABLE cost effect imported past the schema', () => {
   it('rejects COST_UNPAYABLE naming the offending effect, rather than suspending mid-cost', () => {
     // Hand-built PAST the schema: a real editor / RuleSetSchema could never produce this — the zod
     // refinement (schema.test.ts) already blocks it. This is exactly what imported JSON bypassing
     // the editor looks like once it reaches the engine.
+    //
+    // v4 §4.5.0(c) — `chooseMode` rather than `chooseNumber`: the ban narrowed to the three kinds the
+    // two-pass cost genuinely cannot freeze, and `chooseNumber` in a cost is now supported (see the
+    // SP18 block below). This layer (ii) check has to name one that is still refused.
     const smuggledCost: Effect[] = [
-      { kind: 'chooseNumber', promptText: 'X', seat: triggeringSeat, min: lit(0), max: lit(1), key: 'x' },
+      { kind: 'chooseMode', promptText: 'X', seat: triggeringSeat, modes: [] },
     ];
     const gameDef = def([rsAbility({ costCheck: null, cost: smuggledCost })], 1);
     const state = board(gameDef, 0);
@@ -314,14 +318,15 @@ describe('§9.5 edge case 12 — the runtime re-check rejects a suspending cost 
     expect(state.interaction).toBeNull();
     const reject = lines.find((l) => l.message.startsWith('COST_UNPAYABLE'));
     expect(reject?.message).toContain('cost effect 0');
-    expect(reject?.message).toContain('chooseNumber');
+    expect(reject?.message).toContain('chooseMode');
     expect(JSON.stringify(state)).toBe(before);
   });
 
-  // The positive case: "sacrifice a card of your choice as a cost" authored the SUPPORTED way — a
-  // prompt in the rule's own `effects` (never in `activation.cost`, which cannot hold one), ahead of
-  // the effect the sacrifice pays for. `onRejection: 'abort'` is what makes the sacrifice a genuine
-  // precondition for the rest: no sacrifice, no follow-on effect.
+  // The v2 workaround, kept as a regression test: "sacrifice a card of your choice as a cost" written
+  // as a prompt in the rule's own `effects`, ahead of the effect the sacrifice pays for, with
+  // `onRejection: 'abort'` making the sacrifice a genuine precondition for the rest. v4 §4.5 makes the
+  // direct spelling work too (the SP18 block below) but does not break this one, and plenty of
+  // authored content is shaped this way — `holdem.ts`'s bet/call/raise among it.
   it('the supported pattern — a prompt in `effects`, ahead of the effect it gates — works end to end', () => {
     const rsSacrifice: RuleSet = {
       ...baseRule,
@@ -357,6 +362,280 @@ describe('§9.5 edge case 12 — the runtime re-check rejects a suspending cost 
     }
     expect(state.cards[TARGET_CARD]).toBeUndefined(); // sacrificed
     expect(state.playerPools[ATTACKERS][0]).toBe(1); // the gated effect ran, because the sacrifice landed
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC: SP18 — v4 §4.5 (G5), the two-pass interactive cost. Three separate criteria, three separate
+// tests, because the sharp edge of SP18 is (c) and a shared test would let (a) and (b) carry it.
+//
+// The fixture is deliberately ordered against itself: the pool spend is cost effect 0 and the
+// PROMPTING effect is cost effect 1. So "suspends before anything is spent" is not satisfied by
+// accident (a prompt in first position would suspend before effect 0 whatever the design) — pass 1
+// has to walk the whole list looking for questions before pass 2 applies any of it.
+// ---------------------------------------------------------------------------
+
+describe('AC: SP18 — an activation whose cost asks a question', () => {
+  const OTHER_CARD = 'hand2';
+
+  /** cost = [changePool POOL -2, moveCards(prompt over seat 0's hand) → Battlefield]. */
+  function rsDiscardCost(abilityEffects: Effect[]): RuleSet {
+    return {
+      ...baseRule,
+      id: RS_ABILITY,
+      name: 'Discard Ability',
+      trigger: 'never',
+      effects: abilityEffects,
+      activation: {
+        costCheck: costCheckPoolAtLeast2,
+        cost: [
+          { kind: 'changePool', poolId: POOL, seat: triggeringSeat, op: 'subtract', amount: lit(2) },
+          {
+            kind: 'moveCards',
+            target: {
+              kind: 'prompt',
+              from: { kind: 'allInZone', zone: { zoneId: HAND, seat: { kind: 'seat', index: 0 } } },
+              count: lit(1),
+              promptText: 'Discard a card',
+            },
+            to: { zoneId: BATTLEFIELD, seat: null },
+            position: 'top',
+          },
+        ],
+        window: null,
+        perInstance: false,
+        label: 'Ability',
+      },
+    };
+  }
+
+  const addAttacker: Effect[] = [
+    { kind: 'changePool', poolId: ATTACKERS, seat: triggeringSeat, op: 'add', amount: lit(1) },
+  ];
+
+  /** Two cards in seat 0's hand, so the discard is a genuine CHOICE and not a foregone one. */
+  function twoCardHand(gameDef: GameDefinition): PlayState {
+    const state = board(gameDef, 0);
+    place(state, gameDef, HAND0, BLANK, OTHER_CARD);
+    state.playerPools[POOL][0] = 2;
+    return state;
+  }
+
+  function answer(state: PlayState, gameDef: GameDefinition, chosen: string[]): LogLine[] {
+    const lines: LogLine[] = [];
+    let result = step(state, { kind: 'action', action: { kind: 'answerPrompt', chosen }, override: false }, lines, gameDef);
+    let n = 0;
+    while (!result.done) {
+      if (++n > 100_000) throw new Error('answer driver runaway');
+      result = step(state, CONTINUE, lines, gameDef);
+    }
+    return lines;
+  }
+
+  // AC: SP18
+  it('(a) suspends on the discard choice BEFORE anything is spent', () => {
+    const gameDef = def([rsDiscardCost(addAttacker)], null);
+    const state = twoCardHand(gameDef);
+
+    const { lines, result } = dispatchActivate(state, gameDef, 0);
+
+    expect(result.suspended).toBe(true);
+    const interaction = state.interaction;
+    if (interaction?.kind !== 'chooseCards') throw new Error('expected a chooseCards interaction');
+    expect(interaction.promptText).toBe('Discard a card');
+    expect(interaction.candidates).toEqual([TARGET_CARD, OTHER_CARD]);
+
+    // Nothing spent, nothing moved — even though the pool spend sits at cost index 0, AHEAD of the
+    // effect that asked. Pass 1 raised without applying a single effect.
+    expect(state.playerPools[POOL][0]).toBe(2);
+    expect(state.zones[HAND0].cardIds).toEqual([TARGET_CARD, OTHER_CARD]);
+    expect(state.zones[FIELD].cardIds).toEqual([]);
+    expect(state.playerPools[ATTACKERS][0]).toBe(0);
+    // Not one change line, and no "cost paid" line either — the transaction that suspends publishes
+    // the question and nothing else (§9.4(e)'s discipline, now across a suspension).
+    expect(lines.some((l) => l.change !== null)).toBe(false);
+    expect(lines.some((l) => l.message.includes('cost paid'))).toBe(false);
+    // The frame the answer will resume into.
+    expect(state.stack.map((f) => f.kind)).toEqual(['activation']);
+  });
+
+  // AC: SP18
+  it('(b) once answered, the WHOLE cost applies in one transaction, then the ability runs', () => {
+    const gameDef = def([rsDiscardCost(addAttacker)], null);
+    const state = twoCardHand(gameDef);
+    dispatchActivate(state, gameDef, 0);
+
+    const lines = answer(state, gameDef, [OTHER_CARD]);
+
+    expect(state.interaction).toBeNull();
+    expect(state.playerPools[POOL][0]).toBe(0); // cost effect 0 — the spend
+    expect(state.zones[FIELD].cardIds).toEqual([OTHER_CARD]); // cost effect 1 — the chosen card only
+    expect(state.zones[HAND0].cardIds).toEqual([TARGET_CARD]); // the card NOT chosen stayed put
+    expect(state.playerPools[ATTACKERS][0]).toBe(1); // and the ability's own effect ran
+    // One transaction: the spend, the discard and the ability's own write are all in the SAME `lines`
+    // array from the SAME answer dispatch (the store-level one-LogEntry proof is in sessionStore.test.ts).
+    expect(lines.filter((l) => l.effectKind === 'changePool').map((l) => l.change?.path)).toEqual([
+      `playerPools.${POOL}.0`,
+      `playerPools.${ATTACKERS}.0`,
+    ]);
+    expect(lines.some((l) => l.message.includes('cost paid'))).toBe(true);
+    expect(state.stack).toEqual([]);
+  });
+
+  // AC: SP18
+  it('(c) cancelled: nothing spent, no card moved, no ability effect', () => {
+    const gameDef = def([rsDiscardCost(addAttacker)], null);
+    const state = twoCardHand(gameDef);
+    dispatchActivate(state, gameDef, 0);
+    const suspendedSnapshot = JSON.stringify({ pools: state.playerPools, zones: state.zones, cards: state.cards });
+
+    const lines: LogLine[] = [];
+    let result = step(state, { kind: 'action', action: { kind: 'cancelPrompt' }, override: false }, lines, gameDef);
+    let n = 0;
+    while (!result.done) {
+      if (++n > 100_000) throw new Error('cancel driver runaway');
+      result = step(state, CONTINUE, lines, gameDef);
+    }
+
+    expect(state.interaction).toBeNull();
+    expect(state.playerPools[POOL][0]).toBe(2); // not spent
+    expect(state.zones[HAND0].cardIds).toEqual([TARGET_CARD, OTHER_CARD]); // no card moved
+    expect(state.zones[FIELD].cardIds).toEqual([]);
+    expect(state.playerPools[ATTACKERS][0]).toBe(0); // the ability itself never ran
+    // The whole board is byte-identical to the moment before the answer was declined: cancelling a
+    // cost is not a rollback, because there was nothing to roll back.
+    expect(JSON.stringify({ pools: state.playerPools, zones: state.zones, cards: state.cards })).toBe(suspendedSnapshot);
+    // The activation frame is gone — nothing is left half-activated on the stack.
+    expect(state.stack.some((f) => f.kind === 'activation')).toBe(false);
+    expect(lines.some((l) => l.message.includes('cost canceled — nothing spent'))).toBe(true);
+    expect(lines.some((l) => l.change !== null)).toBe(false);
+  });
+
+  // v4 §4.5.0(d) — the frozen-target channel. `activation.cost` and `rule.effects` are two lists both
+  // indexed from zero and the ability's `rule` frame inherits the very `ctx` the cost used, so a cost
+  // answer frozen under a key `rule.effects` also reads would silently re-aim the ability's OWN first
+  // effect at whatever the cost selected. This is the test that would catch it: the ability's effect 0
+  // tags "everything still in hand", which is the card NOT discarded. If the cost's selection leaked,
+  // the discarded card would be the tagged one and the kept card would be untouched — the exact
+  // inversion of what is asserted below.
+  it('(d) the cost\'s frozen selection does not leak into the ability\'s own first effect', () => {
+    const tagWhatIsLeft: Effect[] = [
+      {
+        kind: 'setTag',
+        target: { kind: 'allInZone', zone: { zoneId: HAND, seat: { kind: 'seat', index: 0 } } },
+        tag: 'kept',
+        on: true,
+      },
+    ];
+    const gameDef = def([rsDiscardCost(tagWhatIsLeft)], null);
+    const state = twoCardHand(gameDef);
+    dispatchActivate(state, gameDef, 0);
+
+    answer(state, gameDef, [OTHER_CARD]);
+
+    expect(state.cards[TARGET_CARD].tags).toContain('kept'); // the card still in hand
+    expect(state.cards[OTHER_CARD].tags).not.toContain('kept'); // the discarded one, NOT re-aimed at
+  });
+
+  // v4 §4.5, §4.1 — the {X} cost, the other half of what the narrowed ban admits. `chooseNumber` in a
+  // cost only means anything if the ANSWER is readable afterwards, which needs the authored `key` to
+  // be persisted on the activation's own ctx (not just the reserved resumption key) — so this drives
+  // the amount through the cost's own second effect AND through the ability's effect.
+  it('({X}) a chooseNumber cost persists its answer under the authored key, for cost and ability alike', () => {
+    const x = { kind: 'promptNumber' as const, key: 'x' };
+    const rsPayX: RuleSet = {
+      ...baseRule,
+      id: RS_ABILITY,
+      name: 'Pay X',
+      trigger: 'never',
+      effects: [{ kind: 'changePool', poolId: ATTACKERS, seat: triggeringSeat, op: 'add', amount: x }],
+      activation: {
+        costCheck: null,
+        cost: [
+          { kind: 'chooseNumber', promptText: 'Pay how much?', seat: triggeringSeat, min: lit(0), max: lit(3), key: 'x' },
+          { kind: 'changePool', poolId: POOL, seat: triggeringSeat, op: 'subtract', amount: x },
+        ],
+        window: null,
+        perInstance: false,
+        label: 'Pay X',
+      },
+    };
+    const gameDef = def([rsPayX], null);
+    const state = board(gameDef, 0);
+    state.playerPools[POOL][0] = 5;
+
+    const { result } = dispatchActivate(state, gameDef, 0);
+    expect(result.suspended).toBe(true);
+    const interaction = state.interaction;
+    if (interaction?.kind !== 'chooseNumber') throw new Error('expected a chooseNumber interaction');
+    expect([interaction.min, interaction.max]).toEqual([0, 3]);
+    expect(state.playerPools[POOL][0]).toBe(5); // nothing spent yet
+
+    const lines: LogLine[] = [];
+    let r = step(state, { kind: 'action', action: { kind: 'answerNumber', value: 3 }, override: false }, lines, gameDef);
+    let n = 0;
+    while (!r.done) {
+      if (++n > 100_000) throw new Error('runaway');
+      r = step(state, CONTINUE, lines, gameDef);
+    }
+
+    expect(state.playerPools[POOL][0]).toBe(2); // the cost's own second effect read X = 3
+    expect(state.playerPools[ATTACKERS][0]).toBe(3); // and so did the ability's effect
+  });
+
+  // v4 §4.5 — the backstop for a cost effect that suspends without being one of the three BANNED
+  // kinds. `announceAction` is the one live case: it raises its own target prompts from inside
+  // `applyEffect`, which pass 1 cannot see and cannot pre-freeze. The probe catches it (a faithful dry
+  // run that suspends IS an effect that would suspend the real transaction) and refuses the cost with
+  // nothing spent, rather than replaying it into a half-paid, suspended transaction.
+  it('refuses a cost whose announceAction would raise its own prompt, with nothing spent', () => {
+    const RS_ANNOUNCED = 'rs_announced';
+    const rsAnnounced: RuleSet = {
+      ...baseRule,
+      id: RS_ANNOUNCED,
+      name: 'Announced',
+      trigger: 'never',
+      effects: [
+        {
+          kind: 'destroyCards',
+          target: {
+            kind: 'prompt',
+            from: { kind: 'allInZone', zone: { zoneId: HAND, seat: { kind: 'seat', index: 0 } } },
+            count: lit(1),
+            promptText: 'Pick a victim',
+          },
+        },
+      ],
+    };
+    const rsAnnouncer: RuleSet = {
+      ...baseRule,
+      id: RS_ABILITY,
+      name: 'Announcer',
+      trigger: 'never',
+      effects: [{ kind: 'changePool', poolId: ATTACKERS, seat: triggeringSeat, op: 'add', amount: lit(1) }],
+      activation: {
+        costCheck: null,
+        cost: [
+          { kind: 'changePool', poolId: POOL, seat: triggeringSeat, op: 'subtract', amount: lit(2) },
+          { kind: 'announceAction', ruleId: RS_ANNOUNCED, window: null },
+        ],
+        window: null,
+        perInstance: false,
+        label: 'Announcer',
+      },
+    };
+    const gameDef = def([rsAnnouncer, rsAnnounced], null);
+    const state = twoCardHand(gameDef);
+    const before = JSON.stringify(state);
+
+    const { lines, result } = dispatchActivate(state, gameDef, 0);
+
+    expect(result.suspended).toBe(false);
+    expect(state.interaction).toBeNull();
+    const reject = lines.find((l) => l.message.startsWith('COST_UNPAYABLE'));
+    expect(reject?.message).toContain('cost effect 1 (announceAction)');
+    expect(reject?.message).toContain('raises an interaction of its own');
+    expect(JSON.stringify(state)).toBe(before); // not the pool spend at index 0, not the announce
   });
 });
 
@@ -447,5 +726,77 @@ describe('§9.5 edge case 9 — override × NOT_ACTIVATABLE / SEAT_ELIMINATED / 
     expect(lines.some((l) => l.message.startsWith('COST_UNPAYABLE'))).toBe(true);
     expect(lines.some((l) => l.level === 'override')).toBe(false); // never bypassed, never logged as one
     expect(JSON.stringify(state)).toBe(before); // nothing ran, override or not
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v4 §4.5 — a non-empty cost paid as a RESPONSE, inside an open priority window.
+//
+// `applyCost`'s probe refuses a cost effect that raises an interaction of its own (an
+// `announceAction` whose announced rule prompts is the live case). The probe is a deep copy of the
+// real state, so it inherits whatever interaction is already open — and for a response that is the
+// `priority` offer of this very ability, which `payCost` deliberately does not clear until the cost
+// is paid (SP18(c)). Every non-empty cost activated inside a window therefore refused itself.
+//
+// Nothing caught it because every window-gated activation in the repo before the Magic sample had
+// `cost: []`, and a zero-length cost never enters the probe loop at all.
+// ---------------------------------------------------------------------------
+
+describe('v4 §4.5 — a cost paid as a response inside a priority window', () => {
+  const WINDOW = 'w_responses';
+  const RS_OPEN = 'rs_open';
+  const RS_RESPOND = 'rs_respond';
+
+  function windowedDef(): GameDefinition {
+    const opener: RuleSet = {
+      ...baseRule,
+      id: RS_OPEN,
+      name: 'Open the Window',
+      trigger: 'e',
+      effects: [{ kind: 'openPriority', window: WINDOW }],
+    };
+    const responder: RuleSet = {
+      ...baseRule,
+      id: RS_RESPOND,
+      name: 'Respond',
+      trigger: 'never',
+      effects: [{ kind: 'changePool', poolId: ATTACKERS, seat: triggeringSeat, op: 'add', amount: lit(1) }],
+      // A cost that asks NOTHING: the case that goes straight from `activateRule` to the probe with
+      // the priority interaction still open.
+      activation: {
+        costCheck: costCheckPoolAtLeast2,
+        cost: [{ kind: 'changePool', poolId: POOL, seat: triggeringSeat, op: 'subtract', amount: lit(2) }],
+        window: WINDOW,
+        perInstance: false,
+        label: 'Respond',
+      },
+    };
+    return {
+      ...def([opener, responder], null),
+      customEvents: ['e'],
+      globalRuleSetIds: [RS_OPEN],
+      priorityWindows: [
+        { id: WINDOW, name: 'Responses', start: 'active', direction: 'forward', includeStart: true, passesToClose: null, collapseEmptyOffers: true },
+      ],
+    };
+  }
+
+  it('pays the cost and runs the ability, instead of refusing itself', () => {
+    const gameDef = windowedDef();
+    const state = board(gameDef, 0);
+    const lines: LogLine[] = [];
+    let result = step(state, { kind: 'action', action: { kind: 'fireEvent', name: 'e', seat: 0 }, override: false }, lines, gameDef);
+    let n = 0;
+    while (!result.done) {
+      if (++n > 100_000) throw new Error('driver runaway');
+      result = step(state, CONTINUE, lines, gameDef);
+    }
+    expect(state.interaction?.kind).toBe('priority');
+
+    const taken = dispatchActivate(state, gameDef, 0, null, false, RS_RESPOND);
+
+    expect(taken.lines.some((l) => l.message.startsWith('COST_UNPAYABLE'))).toBe(false);
+    expect(state.playerPools[POOL][0]).toBe(3); // 5 − 2: the cost was paid
+    expect(state.playerPools[ATTACKERS][0]).toBe(1); // and the ability ran
   });
 });

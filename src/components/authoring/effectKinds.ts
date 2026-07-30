@@ -29,6 +29,8 @@ export const EFFECT_KINDS: { kind: Effect['kind']; label: string }[] = [
   { kind: 'chooseMode', label: 'Choose a mode' },
   { kind: 'chooseNumber', label: 'Choose a number' },
   { kind: 'sealedChoice', label: 'Sealed choice' },
+  // v4 §4.3, §4.7 — "target player". An arm with no row here is authorable only by hand-editing JSON.
+  { kind: 'chooseSeat', label: 'Choose a player' },
 ];
 
 export const effectLabel = (kind: Effect['kind']): string =>
@@ -128,20 +130,38 @@ export function defaultEffect(
       return { kind, promptText: '', seat: { kind: 'active' }, modes: [] };
     case 'chooseNumber':
       return { kind, promptText: '', seat: { kind: 'active' }, min: one, max: one, key: '' };
+    // v4 §4.3 — never null: like its `chooseMode`/`chooseNumber` siblings it points at a seat, and
+    // seats always exist (`playerCount` has a floor, and a one-seat game asking "choose a player" is
+    // degenerate rather than dangling). The `key` is the only thing left blank, and `missingFor`
+    // cannot say "name the key" — that is per-effect state, so `EffectRow` flags it inline instead.
+    case 'chooseSeat':
+      return { kind, promptText: '', seat: { kind: 'active' }, key: '' };
   }
 }
+
+/**
+ * v4 §4.5.0(c) — the three kinds a `RuleSet.activation.cost` may still not contain, mirroring
+ * `schema.ts`'s (private) `costEffectSuspends`. A cost CAN now ask for a target, a number or a player;
+ * it cannot branch, poll the table, or open a window, because none of those can be frozen ahead of the
+ * cost applying. Narrower than `pauses` below on purpose: pausing is fine in a cost now, and only
+ * these three are unfreezable.
+ */
+const UNFREEZABLE_IN_COST = new Set<Effect['kind']>(['chooseMode', 'sealedChoice', 'openPriority']);
 
 /**
  * Why an effect kind is unavailable, for the disabled option's own explanation.
  *
  * `depth` is how many effect lists deep this picker sits (§6.11): 0 in a rule's THEN band, 1 inside
- * a `chooseMode` mode.
+ * a `chooseMode` mode. `inCost` marks the activation panel's cost list, whose own three refusals the
+ * store's refinement would otherwise report only after the click (v4 §4.5).
  */
 export function missingFor(
   kind: Effect['kind'],
   definition: GameDefinition,
-  depth = 0
+  depth = 0,
+  inCost = false
 ): string {
+  if (inCost && UNFREEZABLE_IN_COST.has(kind)) return 'a cost cannot pause here';
   const needsZone = definition.zones.length === 0;
   switch (kind) {
     case 'moveCards':
@@ -162,6 +182,10 @@ export function missingFor(
     // and are unreadable inline.
     case 'chooseMode':
       return depth > 0 ? 'author it as a second rule instead' : '';
+    // v4 §4.3 — nothing declared to need, so the only explanation worth giving is the one that stops
+    // an author picking it in a solitaire game and wondering what the single button is for.
+    case 'chooseSeat':
+      return definition.playerCount < 2 ? 'only one seat to choose from' : '';
     default:
       return '';
   }
@@ -178,14 +202,20 @@ const promptsDeep = (selector: TargetSelector): boolean =>
 /**
  * §6.11 — does running this effect raise an `Interaction`, i.e. does the rule stop here?
  *
- * The same four kinds `schema.ts`'s `costEffectSuspends` names, plus any prompting target. Exported
- * rather than inlined in `EffectRow` because it is the predicate behind the `⏸` note, and every
- * future caller that needs to say "this pauses" needs the same answer.
+ * Five kinds, plus any prompting target. Deliberately WIDER than `UNFREEZABLE_IN_COST` above since
+ * v4 §4.5: pausing is no longer disqualifying in a cost, so "does this pause" (the `⏸` note) and "may
+ * a cost hold this" are now two different questions with two different answers. Exported rather than
+ * inlined in `EffectRow` because every future caller that needs to say "this pauses" needs the same
+ * answer.
+ *
+ * `chooseSeat` is in the list on the same footing as the rest (v4 §4.3): it suspends by construction,
+ * so the marker has to show on it too.
  */
 export function pauses(effect: Effect): boolean {
   switch (effect.kind) {
     case 'chooseMode':
     case 'chooseNumber':
+    case 'chooseSeat':
     case 'sealedChoice':
     case 'openPriority':
       return true;

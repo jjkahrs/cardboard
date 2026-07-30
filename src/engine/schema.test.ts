@@ -351,6 +351,9 @@ describe('gate 4: referential integrity', () => {
     ['modifier scope zone', withRule({ modifier: { scope: { kind: 'allInZone', zone: { zoneId: 'nope', seat: null } }, indexId: 'power', op: 'set', amount: { kind: 'literal', value: 1 }, activeZones: [] } }), 'ruleSets.0.modifier.scope.zone.zoneId: Unknown zone id "nope"'],
     ['modifier indexId', withRule({ modifier: { scope: { kind: 'triggeringCard' }, indexId: 'nope', op: 'set', amount: { kind: 'literal', value: 1 }, activeZones: [] } }), 'ruleSets.0.modifier.indexId: Unknown card index id "nope"'],
     ['modifier activeZones entry', withRule({ modifier: { scope: { kind: 'triggeringCard' }, indexId: 'power', op: 'set', amount: { kind: 'literal', value: 1 }, activeZones: ['nope'] } }), 'ruleSets.0.modifier.activeZones.0: Unknown zone id "nope"'],
+    // v4 §4.4 — `continuous`'s object form is the fifth RuleSet sub-tree holding ids of its own.
+    ['continuous.over zone', withRule({ continuous: { over: { kind: 'allInZone', zone: { zoneId: 'nope', seat: null } } } }), 'ruleSets.0.continuous.over.zone.zoneId: Unknown zone id "nope"'],
+    ['continuous.over nested index', withRule({ continuous: { over: { kind: 'matching', from: { kind: 'allInZone', zone: { zoneId: 'field', seat: null } }, where: { kind: 'criteria', left: { kind: 'cardIndex', card: { kind: 'candidate' }, indexId: 'nope' }, op: '>', right: { kind: 'literal', value: 0 } } } } }), 'ruleSets.0.continuous.over.where.left.indexId: Unknown card index id "nope"'],
     ['replaces.match pool', withRule({ replaces: { effectKind: 'drawCards', match: { kind: 'criteria', left: { kind: 'pool', poolId: 'nope', seat: null }, op: '=', right: { kind: 'literal', value: 1 } } } }), 'ruleSets.0.replaces.match.left.poolId: Unknown pool id "nope"'],
     ['activation.costCheck pool', withRule({ activation: activationOf({ costCheck: { kind: 'criteria', left: { kind: 'pool', poolId: 'nope', seat: null }, op: '>=', right: { kind: 'literal', value: 2 } } }) }), 'ruleSets.0.activation.costCheck.left.poolId: Unknown pool id "nope"'],
     ['activation.cost effect zone', withRule({ activation: activationOf({ cost: [{ kind: 'shuffleZone', zone: { zoneId: 'nope', seat: null } }] }) }), 'ruleSets.0.activation.cost.0.zone.zoneId: Unknown zone id "nope"'],
@@ -362,6 +365,8 @@ describe('gate 4: referential integrity', () => {
     ['chooseNumber bounds', withEffect({ kind: 'chooseNumber', promptText: 'How many', seat: { kind: 'active' }, min: { kind: 'literal', value: 0 }, max: { kind: 'pool', poolId: 'nope', seat: null }, key: 'x' }), 'ruleSets.0.effects.0.max.poolId: Unknown pool id "nope"'],
     ['chooseMode nested effect', withEffect({ kind: 'chooseMode', promptText: 'Pick', seat: { kind: 'active' }, modes: [{ label: 'A', effects: [{ kind: 'shuffleZone', zone: { zoneId: 'nope', seat: null } }] }] }), 'ruleSets.0.effects.0.modes.0.effects.0.zone.zoneId: Unknown zone id "nope"'],
     ['sealedChoice seat ref', withEffect({ kind: 'sealedChoice', choiceId: 'strike', seats: { kind: 'owner', card: { kind: 'zoneTop', zone: { zoneId: 'nope', seat: null } } }, options: [] }), 'ruleSets.0.effects.0.seats.card.zone.zoneId: Unknown zone id "nope"'],
+    // v4 §4.3 — `chooseSeat`'s only danglable field is who is asked, so that is the descent to prove.
+    ['chooseSeat seat ref', withEffect({ kind: 'chooseSeat', promptText: 'Who', seat: { kind: 'controller', card: { kind: 'zoneTop', zone: { zoneId: 'nope', seat: null } } }, key: 'v' }), 'ruleSets.0.effects.0.seat.card.zone.zoneId: Unknown zone id "nope"'],
   ])('rejects a dangling %s', (_name, mutate, expected) => {
     const d = clone();
     mutate(d);
@@ -501,6 +506,146 @@ describe('the recursive relative SeatRef', () => {
 });
 
 // ---------------------------------------------------------------------------
+// v4 §4.1 — the derived ValueRefs. `arith` makes `ValueRef` self-recursive and the two folds make it
+// mutually recursive with `TargetSelector`, so both `z.lazy` directions and gate 4's new descent need
+// the same proof the SeatRef cycle above gets: a shape that parses, a round trip that is byte
+// identical, and a dangling id buried in the new sub-tree that gate 4 actually reports.
+// ---------------------------------------------------------------------------
+
+describe('v4 §4.1: derived value refs', () => {
+  /** Puts `left` on the End state's entryCriteria, the same seam the SeatRef tests above use. */
+  const withLeft = (left: unknown): string => {
+    const d = clone();
+    d.machine.states[2].entryCriteria.left = left;
+    return JSON.stringify(d);
+  };
+
+  /** "all cards in their Deck where Power is above 2" — a fold over a predicate over a zone. */
+  const bigOnesInDeck = (indexId = 'power') => ({
+    kind: 'matching',
+    from: { kind: 'allInZone', zone: { zoneId: 'deck', seat: { kind: 'active' } } },
+    where: {
+      kind: 'criteria',
+      left: { kind: 'cardIndex', card: { kind: 'candidate' }, indexId },
+      op: '>',
+      right: { kind: 'literal', value: 2 },
+    },
+  });
+
+  it('parses arith at nesting depth and survives the round trip', () => {
+    const nested = {
+      kind: 'arith',
+      op: 'multiply',
+      left: { kind: 'arith', op: 'add', left: { kind: 'literal', value: 1 }, right: { kind: 'activeSeatCount' } },
+      right: { kind: 'literal', value: 3 },
+    };
+    const def = imported(withLeft(nested));
+    expect(def.machine.states[2].entryCriteria).toMatchObject({ left: nested });
+    expect(exportJson(imported(exportJson(def)))).toBe(exportJson(def));
+  });
+
+  it('parses both folds, which makes ValueRef and TargetSelector mutually recursive', () => {
+    const count = { kind: 'countMatching', from: bigOnesInDeck() };
+    const sum = { kind: 'sumIndex', from: bigOnesInDeck(), indexId: 'power' };
+    for (const fold of [count, sum]) {
+      const def = imported(withLeft(fold));
+      expect(def.machine.states[2].entryCriteria).toMatchObject({ left: fold });
+      expect(exportJson(imported(exportJson(def)))).toBe(exportJson(def));
+    }
+  });
+
+  // The fold's `from` holds a selector holding a criteria holding a ValueRef — four levels of
+  // descent that did not exist before v4. A hole anywhere in it imports clean and dies at runtime.
+  it('catches a dangling card index inside a fold\'s selector', () => {
+    expect(failed(withLeft({ kind: 'countMatching', from: bigOnesInDeck('nope') }))).toEqual([
+      'machine.states.2.entryCriteria.left.from.where.left.indexId: Unknown card index id "nope"',
+    ]);
+  });
+
+  it('catches sumIndex\'s own dangling indexId', () => {
+    expect(failed(withLeft({ kind: 'sumIndex', from: bigOnesInDeck(), indexId: 'nope' }))).toEqual([
+      'machine.states.2.entryCriteria.left.indexId: Unknown card index id "nope"',
+    ]);
+  });
+
+  it('catches a dangling pool buried in an arith operand', () => {
+    const ref = {
+      kind: 'arith',
+      op: 'add',
+      left: { kind: 'literal', value: 1 },
+      right: { kind: 'pool', poolId: 'nope', seat: null },
+    };
+    expect(failed(withLeft(ref))).toEqual([
+      'machine.states.2.entryCriteria.left.right.poolId: Unknown pool id "nope"',
+    ]);
+  });
+
+  it('rejects an op that is not one of the five', () => {
+    const ref = { kind: 'arith', op: 'divide', left: { kind: 'literal', value: 1 }, right: { kind: 'literal', value: 1 } };
+    expect(failed(withLeft(ref))).not.toEqual([]);
+  });
+
+  // A boolean operand is admitted by SHAPE and refused by the resolver (`valueRef.test.ts`), the
+  // same split §4.1's `sum` uses: only the runtime knows what a `cardIndex` operand reads as.
+  it('admits a boolean literal operand — the TYPE_MISMATCH is the resolver\'s', () => {
+    const ref = { kind: 'arith', op: 'add', left: { kind: 'literal', value: true }, right: { kind: 'literal', value: 1 } };
+    expect(validateDefinition(JSON.parse(withLeft(ref)))).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v4 §4.2, §4.3 — `CardRef{self}` and the `chooseSeat`/`promptSeat` pair. Both are additive arms, so
+// what needs proving is that they parse where their siblings do and round-trip byte-identically
+// (§3 decision 1's no-version-bump claim); the dangling descent for `chooseSeat.seat` is in gate 4's
+// table above.
+// ---------------------------------------------------------------------------
+
+describe('v4 §4.2, §4.3: self and the chooseSeat/promptSeat pair', () => {
+  const withLeft = (left: unknown): string => {
+    const d = clone();
+    d.machine.states[2].entryCriteria.left = left;
+    return JSON.stringify(d);
+  };
+
+  it('parses `self` anywhere a CardRef is legal, and survives the round trip', () => {
+    const ref = { kind: 'cardIndex', card: { kind: 'self' }, indexId: 'power' };
+    const def = imported(withLeft(ref));
+    expect(def.machine.states[2].entryCriteria).toMatchObject({ left: ref });
+    expect(exportJson(imported(exportJson(def)))).toBe(exportJson(def));
+  });
+
+  it('parses `promptSeat` anywhere a SeatRef is legal, and survives the round trip', () => {
+    const ref = { kind: 'pool', poolId: 'hp', seat: { kind: 'promptSeat', key: 'victim' } };
+    const def = imported(withLeft(ref));
+    expect(def.machine.states[2].entryCriteria).toMatchObject({ left: ref });
+    expect(exportJson(imported(exportJson(def)))).toBe(exportJson(def));
+  });
+
+  it('parses the chooseSeat effect and round-trips it with its keys in declaration order', () => {
+    const d = clone();
+    // Scrambled on the way in — canonical export is what pins the order, not the input.
+    d.ruleSets[0].effects = [{ key: 'victim', seat: { kind: 'active' }, kind: 'chooseSeat', promptText: 'Who' }];
+    const def = imported(JSON.stringify(d));
+    expect(def.ruleSets[0].effects[0]).toEqual({
+      kind: 'chooseSeat',
+      promptText: 'Who',
+      seat: { kind: 'active' },
+      key: 'victim',
+    });
+    expect(exportJson(imported(exportJson(def)))).toBe(exportJson(def));
+    // `exportJson` pretty-prints (2-space), so the order claim is made against the re-parsed keys
+    // rather than a compact substring: JSON.parse preserves insertion order for non-numeric keys,
+    // and insertion order IS zod's declaration order (§7.1) — which is what pins the export bytes.
+    expect(Object.keys(JSON.parse(exportJson(def)).ruleSets[0].effects[0])).toEqual([
+      'kind',
+      'promptText',
+      'seat',
+      'key',
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // §4.1's `sum` refinement. The fixture's End-state entryCriteria is `hp(all) <= 0` — the one
 // authored ValueRef with a seat on it — so `sum` goes there, over `hp` (integer) or `firstBlood`
 // (boolean) by turn.
@@ -590,6 +735,45 @@ describe('v2 §4.5: continuous / modifier / replaces / activation are mutually e
     expect(validateDefinition(imported(JSON.stringify(d)))).toEqual([]);
   });
 
+  // v4 §4.4 — the object form is the same mode as `true`, so the count needs no widening: `{ over }`
+  // is truthy and `false` is the only not-continuous value.
+  it('admits the per-object form alone, and rejects it beside a modifier like `true` is rejected', () => {
+    const perObject = { over: { kind: 'allInZone', zone: { zoneId: 'field', seat: null } } };
+    const alone = clone();
+    alone.ruleSets[0].continuous = perObject;
+    expect(validateDefinition(imported(JSON.stringify(alone)))).toEqual([]);
+
+    const both = clone();
+    both.ruleSets[0].continuous = perObject;
+    both.ruleSets[0].modifier = modifier;
+    expect(failed(JSON.stringify(both))).toEqual([
+      'ruleSets.0.continuous: A RuleSet may be at most one of: continuous, modifier, replaces, activation — pick one.',
+    ]);
+  });
+
+  // v4 §4.4, §3 decision 4 — the settle scan is a READ. Dual-checked: `continuous.ts` degrades an
+  // imported file that gets past this to zero arms rather than asking a question mid-scan.
+  it('rejects a prompt inside `over`, at the top level and nested inside a `matching`', () => {
+    const promptOver = {
+      kind: 'prompt',
+      from: { kind: 'allInZone', zone: { zoneId: 'field', seat: null } },
+      count: { kind: 'literal', value: 1 },
+      promptText: 'Pick',
+    };
+    const message =
+      'ruleSets.0.continuous.over: A per-object continuous rule\'s "over" selector may not contain a prompt at any depth — the settle scan is a read and cannot ask a question (v4 §4.4).';
+
+    const top = clone();
+    top.ruleSets[0].continuous = { over: promptOver };
+    expect(failed(JSON.stringify(top))).toEqual([message]);
+
+    const nested = clone();
+    nested.ruleSets[0].continuous = {
+      over: { kind: 'matching', from: promptOver, where: { kind: 'group', combinator: 'and', children: [] } },
+    };
+    expect(failed(JSON.stringify(nested))).toEqual([message]);
+  });
+
   it('admits replaces alone', () => {
     const d = clone();
     d.ruleSets[0].replaces = replaces;
@@ -607,7 +791,7 @@ describe('v2 §4.5: continuous / modifier / replaces / activation are mutually e
 // v2 §5.8 — a cost effect may not suspend
 // ---------------------------------------------------------------------------
 
-describe('v2 §5.8: activation.cost may not suspend', () => {
+describe('v4 §4.5: activation.cost may ask a question, but only a freezable one', () => {
   const withCost = (costEffect: unknown): string => {
     const d = clone();
     d.ruleSets[0].activation = {
@@ -620,49 +804,59 @@ describe('v2 §5.8: activation.cost may not suspend', () => {
     return JSON.stringify(d);
   };
 
+  const unfreezable = (kind: string) =>
+    `ruleSets.0.activation.cost.0: Cost effect 0 (${kind}) cannot be frozen ahead of the cost (it is a "${kind}" effect) — a cost may ask for a target, a number or a player, but not this (v4 §4.5).`;
+
+  // The three that stayed banned (v4 §4.5.0(c)). `chooseMode` is the interesting one: which branch is
+  // chosen decides which sub-effects exist, so freezing it means freezing a tree of unknown shape.
   it('rejects chooseMode', () => {
     expect(
       failed(withCost({ kind: 'chooseMode', promptText: 'Pick', seat: { kind: 'active' }, modes: [] }))
-    ).toEqual([
-      'ruleSets.0.activation.cost.0: Cost effect 0 (chooseMode) may suspend (it is a "chooseMode" effect) — a cost effect must not raise an Interaction (§5.8).',
-    ]);
-  });
-
-  it('rejects chooseNumber', () => {
-    expect(
-      failed(
-        withCost({
-          kind: 'chooseNumber',
-          promptText: 'Pick',
-          seat: { kind: 'active' },
-          min: { kind: 'literal', value: 0 },
-          max: { kind: 'literal', value: 1 },
-          key: 'k',
-        })
-      )
-    ).toEqual([
-      'ruleSets.0.activation.cost.0: Cost effect 0 (chooseNumber) may suspend (it is a "chooseNumber" effect) — a cost effect must not raise an Interaction (§5.8).',
-    ]);
+    ).toEqual([unfreezable('chooseMode')]);
   });
 
   it('rejects sealedChoice', () => {
     expect(
       failed(withCost({ kind: 'sealedChoice', choiceId: 'c', seats: { kind: 'all' }, options: [] }))
-    ).toEqual([
-      'ruleSets.0.activation.cost.0: Cost effect 0 (sealedChoice) may suspend (it is a "sealedChoice" effect) — a cost effect must not raise an Interaction (§5.8).',
-    ]);
+    ).toEqual([unfreezable('sealedChoice')]);
   });
 
   it('rejects openPriority', () => {
-    // Two independent failures, both genuine: the §5.8 suspend rule, and — since gate 4 now
+    // Two independent failures, both genuine: the freezability rule, and — since gate 4 now
     // descends into `activation.cost` — the window id, which this fixture never declared.
     expect(failed(withCost({ kind: 'openPriority', window: 'w1' }))).toEqual([
-      'ruleSets.0.activation.cost.0: Cost effect 0 (openPriority) may suspend (it is a "openPriority" effect) — a cost effect must not raise an Interaction (§5.8).',
+      unfreezable('openPriority'),
       'ruleSets.0.activation.cost.0.window: Unknown priority window id "w1"',
     ]);
   });
 
-  it('rejects a `prompt` TargetSelector at the top level', () => {
+  // v4 §4.5 (G5) — the three the two-pass cost lifted. Each of these used to be a hard refusal here.
+  it('admits chooseNumber — an {X} cost is the case G5 was raised for', () => {
+    expect(
+      validateDefinition(
+        imported(
+          withCost({
+            kind: 'chooseNumber',
+            promptText: 'Pick',
+            seat: { kind: 'active' },
+            min: { kind: 'literal', value: 0 },
+            max: { kind: 'literal', value: 1 },
+            key: 'k',
+          })
+        )
+      )
+    ).toEqual([]);
+  });
+
+  it('admits chooseSeat', () => {
+    expect(
+      validateDefinition(
+        imported(withCost({ kind: 'chooseSeat', promptText: 'Pick a player', seat: { kind: 'active' }, key: 'v' }))
+      )
+    ).toEqual([]);
+  });
+
+  it('admits a `prompt` TargetSelector — "sacrifice a creature" at last', () => {
     const prompted = {
       kind: 'destroyCards',
       target: {
@@ -672,12 +866,10 @@ describe('v2 §5.8: activation.cost may not suspend', () => {
         promptText: 'Choose',
       },
     };
-    expect(failed(withCost(prompted))).toEqual([
-      'ruleSets.0.activation.cost.0: Cost effect 0 (destroyCards) may suspend (its target selector contains a prompt) — a cost effect must not raise an Interaction (§5.8).',
-    ]);
+    expect(validateDefinition(imported(withCost(prompted)))).toEqual([]);
   });
 
-  it('rejects a `prompt` nested inside a `matching`\'s `from` — depth does not shield it', () => {
+  it('admits a `prompt` nested inside a `matching`\'s `from` — depth never shielded it either way', () => {
     const nested = {
       kind: 'destroyCards',
       target: {
@@ -691,14 +883,52 @@ describe('v2 §5.8: activation.cost may not suspend', () => {
         where: { kind: 'criteria', left: { kind: 'literal', value: 1 }, op: '=', right: { kind: 'literal', value: 1 } },
       },
     };
-    expect(failed(withCost(nested))).toEqual([
-      'ruleSets.0.activation.cost.0: Cost effect 0 (destroyCards) may suspend (its target selector contains a prompt) — a cost effect must not raise an Interaction (§5.8).',
-    ]);
+    expect(validateDefinition(imported(withCost(nested)))).toEqual([]);
   });
 
   it('admits an ordinary cost effect with no prompt', () => {
     const plain = { kind: 'changePool', poolId: 'hp', seat: null, op: 'subtract', amount: { kind: 'literal', value: 1 } };
     expect(validateDefinition(imported(withCost(plain)))).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v4 §4.6 (G8) — the schema half of SP19. The row needed no schema change at all, and this is the
+// assertion that says so on purpose rather than by omission: nothing here ever banned a prompting
+// target selector inside a `chooseMode` branch, so the shape was always *importable* — it merely
+// failed AWAITING_PROMPT at runtime. Now that it runs, a future refinement that bans it (by analogy
+// with the cost rule directly above, which is a different rule for a different reason) would make
+// the one card shape G8 exists for unauthorable again, and would fail here.
+// ---------------------------------------------------------------------------
+
+describe('a modal branch that targets — importable and valid (v4 §4.6)', () => {
+  it('admits a `prompt` target selector inside a chooseMode mode', () => {
+    const d = clone();
+    d.ruleSets[0].effects = [
+      {
+        kind: 'chooseMode',
+        promptText: 'Choose one',
+        seat: { kind: 'active' },
+        modes: [
+          { label: 'Draw', effects: [{ kind: 'drawCards', from: { zoneId: 'deck', seat: { kind: 'active' } }, to: { zoneId: 'hand', seat: { kind: 'active' } }, count: { kind: 'literal', value: 1 } }] },
+          {
+            label: 'Destroy target creature',
+            effects: [
+              {
+                kind: 'destroyCards',
+                target: {
+                  kind: 'prompt',
+                  from: { kind: 'allInZone', zone: { zoneId: 'field', seat: null } },
+                  count: { kind: 'literal', value: 1 },
+                  promptText: 'Choose a creature',
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    expect(validateDefinition(imported(JSON.stringify(d)))).toEqual([]);
   });
 });
 

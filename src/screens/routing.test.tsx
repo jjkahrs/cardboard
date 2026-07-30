@@ -17,6 +17,7 @@ import { deleteGame, exportJson, getAllGames, getGame, putGame } from '../stores
 import { routes } from '../routes';
 import { Rail } from './AuthoringLayout';
 import { GAME_LEVEL, SURFACES, bucketErrors } from './surfaces';
+import { TEMPLATES } from './templates';
 
 const at = (path: string) => {
   const router = createMemoryRouter(routes, { initialEntries: [path] });
@@ -50,15 +51,86 @@ describe('the game list (/)', () => {
     expect(screen.getByRole('link', { name: 'Skirmish' })).toBeInTheDocument();
   });
 
-  it('creates a game and opens it', async () => {
+  it('creates a blank game and opens it', async () => {
     const user = userEvent.setup();
     const { router } = at('/');
     await screen.findByText(/no games yet/i);
 
     await user.click(screen.getByRole('button', { name: /new game/i }));
+    await user.click(await screen.findByRole('button', { name: /blank game/i }));
 
     await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/game\/game_.+\/pools$/));
     expect(await getAllGames()).toHaveLength(1);
+  });
+
+  describe('starting from a template', () => {
+    /** Opens the chooser and hands back its scope. */
+    const openChooser = async (user: ReturnType<typeof userEvent.setup>) => {
+      await user.click(await screen.findByRole('button', { name: /new game/i }));
+      return within(await screen.findByRole('dialog'));
+    };
+
+    it('offers a blank game and every bundled template', async () => {
+      const user = userEvent.setup();
+      at('/');
+
+      const chooser = await openChooser(user);
+      expect(chooser.getByRole('button', { name: /blank game/i })).toBeInTheDocument();
+      for (const template of TEMPLATES) {
+        expect(chooser.getByRole('button', { name: new RegExp(template.name, 'i') })).toBeInTheDocument();
+      }
+    });
+
+    it('creates the sample under a fresh id and opens it', async () => {
+      const user = userEvent.setup();
+      const { router } = at('/');
+
+      const chooser = await openChooser(user);
+      await user.click(chooser.getByRole('button', { name: /sparkbloom duel/i }));
+
+      await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/game\/game_.+\/pools$/));
+      const games = await getAllGames();
+      expect(games).toHaveLength(1);
+      expect(games[0].name).toBe('Sparkbloom Duel');
+      expect(games[0].templates).toHaveLength(12);
+      // The sample's own id would collide with itself on the second start; see `createGame`.
+      expect(games[0].id).not.toBe('game_sparkbloomDuel');
+      expect(games[0].id).toMatch(/^game_/);
+    });
+
+    it('starting from the same template twice gives two independent games', async () => {
+      const user = userEvent.setup();
+      const { router } = at('/');
+
+      await user.click((await openChooser(user)).getByRole('button', { name: /sparkbloom duel/i }));
+      await waitFor(() => expect(router.state.location.pathname).toMatch(/\/pools$/));
+      act(() => void router.navigate('/'));
+      await user.click((await openChooser(user)).getByRole('button', { name: /sparkbloom duel/i }));
+
+      await waitFor(async () => expect(await getAllGames()).toHaveLength(2));
+      expect(new Set((await getAllGames()).map((g) => g.id)).size).toBe(2);
+    });
+
+    it('cancelling writes nothing', async () => {
+      const user = userEvent.setup();
+      at('/');
+
+      await user.click((await openChooser(user)).getByRole('button', { name: /cancel/i }));
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(await getAllGames()).toHaveLength(0);
+    });
+
+    it('Escape closes the chooser and writes nothing', async () => {
+      const user = userEvent.setup();
+      at('/');
+
+      await openChooser(user);
+      await user.keyboard('{Escape}');
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(await getAllGames()).toHaveLength(0);
+    });
   });
 
   it('duplicates a game under a new id, leaving the original alone', async () => {

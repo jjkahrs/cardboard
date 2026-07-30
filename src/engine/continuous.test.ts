@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
+import { emptyBoard, place } from '../test/board';
 import { continuousKey, scanContinuous } from './continuous';
 import { step } from './dispatch';
+import { invalidateEffective } from './modifiers';
+import { zoneKey } from './seats';
 import { createPlayState } from './setup';
 import {
   CONTINUE,
@@ -12,22 +15,29 @@ import {
   END_STATE_ID,
   SCHEMA_VERSION,
   START_STATE_ID,
+  type CardTemplate,
+  type CriteriaNode,
   type EngineInput,
   type GameDefinition,
   type LogLine,
   type PlayAction,
   type PlayState,
+  type PlayZone,
   type PointPool,
   type RuleSet,
   type StepResult,
+  type TargetSelector,
 } from './types';
 
 /**
- * All fixtures here are card-less and rule-bound only through `globalRuleSetIds` — §5.6's fixpoint
- * does not need a card to exercise, and every ACTUAL card-attachment behaviour it inherits (one arm
- * per card instance) is a direct, un-special-cased consequence of `collectBindings` walking zones
- * exactly like `dispatch.ts`'s `resolveBindings` does — proven for the event path already in
- * `dispatch.test.ts` and not re-proven here.
+ * Every fixture down to the SP17 block is card-less and rule-bound only through `globalRuleSetIds` —
+ * §5.6's fixpoint does not need a card to exercise, and every ACTUAL card-attachment behaviour it
+ * inherits (one arm per card instance) is a direct, un-special-cased consequence of
+ * `collectBindings` walking zones exactly like `dispatch.ts`'s `resolveBindings` does — proven for
+ * the event path already in `dispatch.test.ts` and not re-proven here.
+ *
+ * v4 §4.4's per-object form is the one thing here that NEEDS a board, because its arms come from a
+ * TargetSelector over real cards rather than from the zone walk — so that block builds one.
  *
  * Every continuous rule below sets `trigger: 'unused'` — a name nothing ever fires — precisely so a
  * driver action (`start`, a harmless `fireEvent`) reaches settle without ALSO binding the rule
@@ -99,6 +109,16 @@ describe('continuousKey — §10.2 decision', () => {
     expect(continuousKey('rs_x', 'c0')).toBe('rs_x:c0');
     expect(continuousKey('rs_x', 'c1')).toBe('rs_x:c1');
     expect(continuousKey('rs_x', 'c0')).not.toBe(continuousKey('rs_x', 'c1'));
+  });
+
+  // v4 §4.4 — the third shape. The boolean form's key must not move a byte, or every session in
+  // flight (and every existing test above) is keyed differently than it was.
+  it('v4 §4.4 — appends the candidate card, and leaves the boolean form\'s key untouched', () => {
+    expect(continuousKey('rs_x', null, null)).toBe('rs_x:');
+    expect(continuousKey('rs_x', null, 'c3')).toBe('rs_x::c3');
+    expect(continuousKey('rs_x', null, 'c4')).not.toBe(continuousKey('rs_x', null, 'c3'));
+    // A per-object rule that is itself CARD-ATTACHED: two copies of the sweeper, one candidate.
+    expect(continuousKey('rs_x', 'c0', 'c3')).not.toBe(continuousKey('rs_x', 'c1', 'c3'));
   });
 });
 
@@ -464,5 +484,267 @@ describe('scanContinuous — direct', () => {
     // A second pass: still true, already fired — no second frame pushed.
     expect(scanContinuous(state, def)).toBe(false);
     expect(state.stack).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC: SP17 — v4 §4.4 (G6): per-object continuous rules.
+//
+// Everything above is the boolean form, and every fixture in it is card-less on purpose. This block
+// is the opposite: a real board, ONE authored game-level rule, and one arm per card on it.
+// ---------------------------------------------------------------------------
+
+describe('AC: SP17 — a per-object continuous rule arms once per card, not once per session', () => {
+  const BF = 'zone_bf';
+  const DAMAGE = 'idx_damage';
+  const TPL = 'tpl_creature';
+  const DEATHS = 'pool_deaths';
+  const BF_KEY = zoneKey(BF, null);
+
+  const battlefield: PlayZone = {
+    id: BF,
+    name: 'Battlefield',
+    scope: 'shared',
+    visibility: 'faceUp',
+    layout: 'row',
+    ordered: true,
+    maxCapacity: null,
+  };
+
+  const creature: CardTemplate = {
+    id: TPL,
+    name: 'Creature',
+    marquee: 'Creature',
+    faceIcon: 'gi-x',
+    borderColor: '#000000',
+    tags: [],
+    indexes: [
+      {
+        id: DAMAGE,
+        value: { type: 'integer', name: 'Damage', defaultValue: 0, min: null, max: null },
+        icon: 'gi-x',
+        position: 'topLeft',
+      },
+    ],
+    ruleSetIds: [],
+    rulesTextOverride: null,
+  };
+
+  const everything: TargetSelector = { kind: 'allInZone', zone: { zoneId: BF, seat: null } };
+
+  /** "this creature has lethal damage" — read off whatever card the enclosing binding is about. */
+  const lethal: CriteriaNode = {
+    kind: 'criteria',
+    left: { kind: 'cardIndex', card: { kind: 'candidate' }, indexId: DAMAGE },
+    op: '>=',
+    right: { kind: 'literal', value: 2 },
+  };
+
+  const perObject = { over: everything } as const;
+
+  const rule = (id: string, continuous: RuleSet['continuous'], effects: RuleSet['effects']): RuleSet => ({
+    id,
+    name: id,
+    trigger: UNUSED_TRIGGER,
+    stateFilter: null,
+    condition: lethal,
+    effects,
+    priority: 0,
+    onRejection: 'continue',
+    modifier: null,
+    continuous,
+    replaces: null,
+    activation: null,
+  });
+
+  /**
+   * "Each creature with lethal damage is destroyed" — authored ONCE, game-level, which is exactly the
+   * shape v2 could not make work (`continuousKey`'s note: one key for the whole session).
+   *
+   * The EFFECT still sweeps the board through `matching`, not through the arm's own card: no
+   * `TargetSelector` names a `CardRef`, so an arm can TEST its card but cannot TARGET it. G6 is about
+   * `condition` and the false→true edge; `mtgish.ts`'s `lethalDamageRule` already uses this same
+   * effect-side sweep, and this rule differs from it only in not needing to be card-attached.
+   */
+  const destroyLethal = rule('rs_destroy_lethal', perObject, [
+    { kind: 'destroyCards', target: { kind: 'matching', from: everything, where: lethal } },
+  ]);
+
+  /** Counts firings instead of removing its own cause — the shape that would re-fire forever without
+   *  `continuousFired`, and the one that shows an arm firing exactly once per card. */
+  const countDeaths = rule('rs_count_deaths', perObject, [
+    { kind: 'changePool', poolId: DEATHS, seat: null, op: 'add', amount: { kind: 'literal', value: 1 } },
+  ]);
+
+  const defWith = (...ruleSets: RuleSet[]): GameDefinition =>
+    base({
+      zones: [battlefield],
+      templates: [creature],
+      pools: [
+        { id: DEATHS, scope: 'game', value: { type: 'integer', name: 'Deaths', defaultValue: 0, min: 0, max: null } },
+      ],
+      ruleSets,
+      globalRuleSetIds: ruleSets.map((r) => r.id),
+    });
+
+  /**
+   * Damage dealt the way `MTG9` above pokes a pool — directly, no effect involved — plus the memo
+   * drop `applyEffect` would have done for us.
+   *
+   * §5.4's `effectiveIndex` memo is keyed on PlayState IDENTITY, on the premise that immer hands
+   * back a fresh object per transaction (which is true of `sessionStore`, and why nothing in the app
+   * needs this). These tests drive `step` against ONE state object across several transactions and
+   * change an index between them without running an effect, so the memo from the previous
+   * transaction would otherwise answer the next scan with the old damage.
+   */
+  function deal(state: PlayState, cardId: string, damage: number): void {
+    state.cards[cardId].indexValues[DAMAGE] = damage;
+    invalidateEffective(state);
+  }
+
+  /** Two creatures on a shared battlefield, both undamaged. */
+  function twoCreatures(def: GameDefinition): { state: PlayState; a: string; b: string } {
+    const state = emptyBoard(def);
+    return {
+      state,
+      a: place(state, def, BF_KEY, TPL, 'c1'),
+      b: place(state, def, BF_KEY, TPL, 'c2'),
+    };
+  }
+
+  const tick = (state: PlayState, def: GameDefinition) =>
+    drive(state, def, { kind: 'fireEvent', name: 'tick', seat: 0 });
+
+  // AC: SP17
+  it('fires for the first creature, and fires AGAIN for the second one that qualifies later', () => {
+    const def = defWith(destroyLethal);
+    const { state, a, b } = twoCreatures(def);
+
+    // Nothing lethal yet: no arm has fired, and both arms exist without doing anything.
+    expect(tick(state, def).result.haltedByLoopGuard).toBe(false);
+    expect(Object.keys(state.continuousFired)).toEqual([]);
+
+    deal(state, a, 2);
+    const first = tick(state, def);
+    expect(ruleLines(first.lines, destroyLethal.id)).toHaveLength(1);
+    expect(state.cards[a]).toBeUndefined(); // dealt with
+    expect(state.cards[b]).toBeDefined();
+    expect(state.continuousFired[continuousKey(destroyLethal.id, null, a)]).toBe(true);
+    expect(state.continuousFired[continuousKey(destroyLethal.id, null, b)]).toBeUndefined();
+
+    // The second creature takes lethal damage LATER — a different arm, a different key, a real
+    // second firing. This is the half a v2 game-level continuous rule could never reach.
+    deal(state, b, 2);
+    const second = tick(state, def);
+    expect(ruleLines(second.lines, destroyLethal.id)).toHaveLength(1);
+    expect(state.cards[b]).toBeUndefined();
+    expect(state.continuousFired[continuousKey(destroyLethal.id, null, b)]).toBe(true);
+    expect(state.zones[BF_KEY].cardIds).toEqual([]);
+  });
+
+  // AC: SP17
+  it('does NOT re-fire for the same unchanged card, however many transactions later', () => {
+    const def = defWith(countDeaths);
+    const { state, a, b } = twoCreatures(def);
+
+    deal(state, a, 2);
+    tick(state, def);
+    expect(state.pools[DEATHS]).toBe(1);
+
+    // Three more transactions, nothing changed: the arm stays fired and stays quiet. Its condition
+    // never goes false (the effect does not remove its own cause), so this is §9.4(c)'s trap
+    // multiplied by the candidate count — the exact thing the per-card key has to survive.
+    for (let i = 0; i < 3; i++) {
+      const run = tick(state, def);
+      expect(ruleLines(run.lines, countDeaths.id)).toHaveLength(0);
+      expect(state.pools[DEATHS]).toBe(1);
+      expect(state.continuousFired[continuousKey(countDeaths.id, null, a)]).toBe(true);
+    }
+
+    // …and the OTHER arm is still independently armed, which is what makes the silence above a
+    // per-card decision rather than a rule that simply stopped working.
+    deal(state, b, 2);
+    tick(state, def);
+    expect(state.pools[DEATHS]).toBe(2);
+  });
+
+  it('re-arms one card: damage healed then re-dealt fires that arm a second time', () => {
+    const def = defWith(countDeaths);
+    const { state, a } = twoCreatures(def);
+    const key = continuousKey(countDeaths.id, null, a);
+
+    deal(state, a, 2);
+    tick(state, def);
+    expect(state.pools[DEATHS]).toBe(1);
+
+    deal(state, a, 0); // healed — the false half of the edge
+    tick(state, def);
+    expect(state.continuousFired[key]).toBeUndefined();
+
+    deal(state, a, 2);
+    tick(state, def);
+    expect(state.pools[DEATHS]).toBe(2);
+    expect(state.continuousFired[key]).toBe(true);
+  });
+
+  /**
+   * The reason G6 exists, kept as an executable statement of it: the same rule authored the v2 way —
+   * one boolean-form game-level rule with a board-wide condition — fires once and then never again,
+   * because its single key never clears while ANY creature is still lethally damaged.
+   */
+  it('the boolean form with a board-wide condition still fires exactly once — the gap G6 closes', () => {
+    const boardWide: RuleSet = {
+      ...countDeaths,
+      id: 'rs_board_wide',
+      continuous: true,
+      condition: {
+        kind: 'criteria',
+        left: { kind: 'countMatching', from: { kind: 'matching', from: everything, where: lethal } },
+        op: '>=',
+        right: { kind: 'literal', value: 1 },
+      },
+    };
+    const def = defWith(boardWide);
+    const { state, a, b } = twoCreatures(def);
+
+    deal(state, a, 2);
+    tick(state, def);
+    expect(state.pools[DEATHS]).toBe(1);
+
+    deal(state, b, 2); // a second creature, later — and nothing happens
+    tick(state, def);
+    expect(state.pools[DEATHS]).toBe(1);
+    expect(state.continuousFired[continuousKey(boardWide.id, null)]).toBe(true);
+  });
+
+  it('produces arms in §5.1 order — candidate id is the final tiebreak, so a replay is identical', () => {
+    const def = defWith(countDeaths);
+    const { state, a, b } = twoCreatures(def);
+    deal(state, a, 2);
+    deal(state, b, 2);
+
+    expect(scanContinuous(state, def)).toBe(true);
+    // Pushed in REVERSE §5.1 order so the FIRST arm runs first (`push` is LIFO) — the same
+    // discipline the boolean form uses, now with the candidate deciding the order.
+    const armed = state.stack.flatMap((f) => (f.kind === 'rule' ? [f.ctx.candidateCardId] : []));
+    expect(armed).toEqual([b, a]);
+  });
+
+  it('an `over` selector that prompts produces NO arms — the runtime half of v4 §3 decision 4', () => {
+    const prompting = rule(
+      'rs_prompting_over',
+      { over: { kind: 'prompt', from: everything, count: { kind: 'literal', value: 1 }, promptText: 'Pick' } },
+      []
+    );
+    const def = defWith(prompting);
+    const { state, a } = twoCreatures(def);
+    deal(state, a, 2);
+
+    // `schema.ts` rejects this at author/import time; a hand-edited file that gets past it degrades
+    // to nothing here rather than asking a question in the middle of a read.
+    expect(scanContinuous(state, def)).toBe(false);
+    expect(state.stack).toEqual([]);
+    expect(state.interaction).toBeNull();
+    expect(Object.keys(state.continuousFired)).toEqual([]);
   });
 });

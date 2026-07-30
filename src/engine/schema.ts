@@ -19,6 +19,7 @@ import type {
   GameDefinition,
   SeatRef,
   TargetSelector,
+  ValueRef,
   ZoneRef,
 } from './types';
 
@@ -52,6 +53,8 @@ const EFFECT_KINDS = [
   'sealedChoice',
   'chooseMode',
   'chooseNumber',
+  // v4 §4.3 (G3). Appended, never inserted — this enum's order is `replaces.effectKind`'s wire order.
+  'chooseSeat',
 ] as const;
 
 const EffectKindSchema = z.enum(EFFECT_KINDS);
@@ -138,6 +141,8 @@ export const SeatRefSchema: z.ZodType<SeatRef, z.ZodTypeDef, SeatRef> = z.discri
   /** §4.1's `sum` is admitted by SHAPE here; `checkValueRef` below is what refuses it over a
    *  boolean pool, because only the referential-integrity pass knows a pool's declared type. */
   z.object({ kind: z.literal('all'), quantifier: z.enum(['every', 'some', 'sum']).optional() }),
+  /** v4 §4.3 (G3) — `key` names nothing declared, exactly like `chooseSeat.key`/`promptNumber.key`. */
+  z.object({ kind: z.literal('promptSeat'), key: z.string() }),
 ]);
 
 export const ZoneRefSchema = z.object({
@@ -158,6 +163,8 @@ export const CardRefSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('candidate') }),
   /** v2 §4.2, §5.7 — bound only inside a replacement rule's `replaces.match`; carries no id. */
   z.object({ kind: z.literal('replacedTarget') }),
+  /** v4 §4.2 (G4) — resolved off `TriggerContext.sourceCardId`; carries no authored id either. */
+  z.object({ kind: z.literal('self') }),
 ]);
 
 /**
@@ -170,7 +177,12 @@ export const ActionRefSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('action'), id: IdSchema }),
 ]);
 
-export const ValueRefSchema = z.discriminatedUnion('kind', [
+/**
+ * v4 §4.1 made this recursive twice over — `arith` holds two `ValueRef`s and the two folds hold a
+ * `TargetSelector`, which holds `ValueRef`s again — so it needs the explicit `z.ZodType` annotation
+ * `SeatRefSchema`/`CriteriaNodeSchema` already carry, and `z.lazy` on both back-references.
+ */
+export const ValueRefSchema: z.ZodType<ValueRef, z.ZodTypeDef, ValueRef> = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('literal'), value: z.union([z.number(), z.boolean()]) }),
   z.object({ kind: z.literal('pool'), poolId: IdSchema, seat: SeatRefSchema.nullable() }),
   z.object({ kind: z.literal('cardIndex'), card: CardRefSchema, indexId: IdSchema }),
@@ -187,6 +199,21 @@ export const ValueRefSchema = z.discriminatedUnion('kind', [
   }),
   /** v2 §4.2, §8 step 28 — the `chooseNumber` design-slip closure; `key` names nothing declared. */
   z.object({ kind: z.literal('promptNumber'), key: z.string() }),
+  /** v4 §4.1 (G1) — self-recursive. Admitted by SHAPE over booleans too: only the resolver knows
+   *  what a `pool` or a `cardIndex` operand actually reads as, so the `TYPE_MISMATCH` is its. */
+  z.object({
+    kind: z.literal('arith'),
+    op: z.enum(['add', 'subtract', 'multiply', 'min', 'max']),
+    left: z.lazy(() => ValueRefSchema),
+    right: z.lazy(() => ValueRefSchema),
+  }),
+  /** v4 §4.1 (G2) — mutually recursive with `TargetSelectorSchema`, which is declared below. */
+  z.object({ kind: z.literal('countMatching'), from: z.lazy(() => TargetSelectorSchema) }),
+  z.object({
+    kind: z.literal('sumIndex'),
+    from: z.lazy(() => TargetSelectorSchema),
+    indexId: IdSchema,
+  }),
 ]);
 
 // ---------------------------------------------------------------------------
@@ -409,6 +436,13 @@ export const EffectSchema: z.ZodType<Effect, z.ZodTypeDef, Effect> = z.discrimin
     max: ValueRefSchema,
     key: z.string(),
   }),
+  /** v4 §4.3 (G3) — `seat` is who is ASKED; the answer is read back as `SeatRef{kind:'promptSeat'}`. */
+  z.object({
+    kind: z.literal('chooseSeat'),
+    promptText: z.string(),
+    seat: SeatRefSchema,
+    key: z.string(),
+  }),
 ]);
 
 /** §5.8's refinement — true (with a reason) if `selector` is, or wraps, a `prompt` at any depth. */
@@ -419,21 +453,28 @@ function selectorSuspends(s: TargetSelector): boolean {
 }
 
 /**
- * §5.8's refinement — the reason a cost effect would suspend the transaction, or `null` if it
- * cannot. The four listed kinds always suspend; every other kind suspends only via a `prompt`
- * TargetSelector reachable through its `target`.
+ * v4 §4.5.0(c) — the reason a cost effect cannot be frozen by v4's two-pass cost, or `null` if it can.
+ *
+ * v2 banned five kinds plus any `prompt` target selector, because a cost that suspended committed the
+ * transaction and published a half-applied cost. v4 §4.5 freezes the interaction FIRST and applies the
+ * cost only once nothing further suspends, which lifts the ban for a `prompt` selector, `chooseNumber`
+ * and `chooseSeat` — every case G5 was raised for, "sacrifice a creature" through "pay {X}".
+ *
+ * The three that remain are the three that pass cannot freeze:
+ *  - `chooseMode`: WHICH branch is chosen decides which sub-effects exist, and those may prompt in
+ *    turn, to arbitrary depth — freezing it means freezing a tree whose shape is unknown until the
+ *    answers arrive. v4 row 5 (§4.6) makes branches suspendable; combining that with cost atomicity
+ *    is a compounding risk and waits until both have landed independently.
+ *  - `sealedChoice`: needs several seats to submit, and one seat's cost payment cannot drive that.
+ *  - `openPriority`: a priority window inside a cost has no defensible resolution point.
+ *
+ * Duplicated in `activation.ts` ON PURPOSE — see that file's header. Imported JSON never passes
+ * through this refinement, and a second enforcement layer that shares a code path with the first one
+ * is not a second layer.
  */
 function costEffectSuspends(e: Effect): string | null {
-  if (
-    e.kind === 'chooseMode' ||
-    e.kind === 'chooseNumber' ||
-    e.kind === 'sealedChoice' ||
-    e.kind === 'openPriority'
-  ) {
+  if (e.kind === 'chooseMode' || e.kind === 'sealedChoice' || e.kind === 'openPriority') {
     return `it is a "${e.kind}" effect`;
-  }
-  if ('target' in e && selectorSuspends(e.target)) {
-    return 'its target selector contains a prompt';
   }
   return null;
 }
@@ -458,8 +499,14 @@ export const RuleSetSchema = z.object({
       activeZones: z.array(IdSchema),
     })
     .nullable(),
-  /** v2 §4.5, §5.6. `.nullable()`-and-PRESENT siblings below share its §7.2 rationale. */
-  continuous: z.boolean(),
+  /**
+   * v2 §4.5, §5.6. `.nullable()`-and-PRESENT siblings below share its §7.2 rationale.
+   *
+   * v4 §4.4 (G6) — widened IN PLACE, not appended beside: the object form is a second shape for the
+   * same field, so key order (and therefore every existing file's bytes) is untouched, and a v2
+   * file's `continuous: false` still parses as the same boolean it always did.
+   */
+  continuous: z.union([z.boolean(), z.object({ over: TargetSelectorSchema })]),
   /** v2 §4.5, §5.7. */
   replaces: z
     .object({
@@ -480,6 +527,9 @@ export const RuleSetSchema = z.object({
 }).superRefine((rs, ctx) => {
   // §4.5 — a rule may be at most one of: continuous, modifier, replaces, activation. Simultaneously
   // a trigger, a modifier and a replacement has no defensible evaluation order.
+  //
+  // v4 §4.4 — `filter(Boolean)` needs no widening for the object form: `false` is the only
+  // not-continuous value, and `{ over }` is truthy, so a per-object rule counts as exactly one mode.
   const modeCount = [rs.continuous, rs.modifier !== null, rs.replaces !== null, rs.activation !== null]
     .filter(Boolean).length;
   if (modeCount > 1) {
@@ -488,6 +538,19 @@ export const RuleSetSchema = z.object({
       path: ['continuous'],
       message:
         'A RuleSet may be at most one of: continuous, modifier, replaces, activation — pick one.',
+    });
+  }
+
+  // v4 §4.4, §3 decision 4 — a per-object rule's `over` is resolved during the settle SCAN, which is
+  // a read, and a read never asks a question. `selectorSuspends` is the same walker §5.8 uses on cost
+  // effects, so "at any depth" means the same thing in both places. `continuous.ts` degrades to zero
+  // arms if an imported file gets one past this anyway — dual-checked, like every other such rule.
+  if (typeof rs.continuous === 'object' && selectorSuspends(rs.continuous.over)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['continuous', 'over'],
+      message:
+        'A per-object continuous rule\'s "over" selector may not contain a prompt at any depth — the settle scan is a read and cannot ask a question (v4 §4.4).',
     });
   }
 
@@ -500,10 +563,9 @@ export const RuleSetSchema = z.object({
     });
   }
 
-  // §5.8 — a cost effect may not suspend: no chooseMode/chooseNumber/sealedChoice/openPriority, and
-  // no `prompt` TargetSelector at any depth (a prompt nested inside a `matching`'s `from` counts).
-  // Suspending commits the transaction, which publishes the half-applied cost, and the discard
-  // model this activation relies on can then never discard it.
+  // §5.8, v4 §4.5 — a cost effect must be FREEZABLE: a prompting target selector, a `chooseNumber` or
+  // a `chooseSeat` is asked before the cost applies and answered into `@costTarget:<i>`, but
+  // chooseMode/sealedChoice/openPriority cannot be frozen at all (see `costEffectSuspends`).
   if (rs.activation !== null) {
     rs.activation.cost.forEach((effect, i) => {
       const suspending = costEffectSuspends(effect);
@@ -511,7 +573,7 @@ export const RuleSetSchema = z.object({
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['activation', 'cost', i],
-          message: `Cost effect ${i} (${effect.kind}) may suspend (${suspending}) — a cost effect must not raise an Interaction (§5.8).`,
+          message: `Cost effect ${i} (${effect.kind}) cannot be frozen ahead of the cost (${suspending}) — a cost may ask for a target, a number or a player, but not this (v4 §4.5).`,
         });
       }
     });
@@ -670,6 +732,19 @@ function checkValueRef(v: z.infer<typeof ValueRefSchema>, p: Path, r: Refs): voi
     case 'cardTag':
       checkCardRef(v.card, [...p, 'card'], r);
       break;
+    // v4 §4.1 — the first ValueRefs holding a ValueRef and a TargetSelector. Descending costs three
+    // lines and an index deleted from under `arith.left.cardIndex` would otherwise import cleanly.
+    case 'arith':
+      checkValueRef(v.left, [...p, 'left'], r);
+      checkValueRef(v.right, [...p, 'right'], r);
+      break;
+    case 'countMatching':
+      checkSelector(v.from, [...p, 'from'], r);
+      break;
+    case 'sumIndex':
+      checkSelector(v.from, [...p, 'from'], r);
+      known(r, r.indexes, v.indexId, [...p, 'indexId'], 'card index');
+      break;
     case 'literal':
     case 'activeSeatCount':
       break;
@@ -801,6 +876,10 @@ function checkEffect(e: Effect, p: Path, r: Refs): void {
       checkValueRef(e.min, [...p, 'min'], r);
       checkValueRef(e.max, [...p, 'max'], r);
       break;
+    // v4 §4.3 — `key` is free-form like `chooseNumber.key`; only who-is-asked can dangle.
+    case 'chooseSeat':
+      checkSeatRef(e.seat, [...p, 'seat'], r);
+      break;
   }
 }
 
@@ -866,6 +945,11 @@ function checkReferences(d: GameDefinition, ctx: z.RefinementCtx): void {
       known(r, r.indexes, rs.modifier.indexId, [...m, 'indexId'], 'card index');
       checkValueRef(rs.modifier.amount, [...m, 'amount'], r);
       rs.modifier.activeZones.forEach((z, j) => known(r, r.zones, z, [...m, 'activeZones', j], 'zone'));
+    }
+    // v4 §4.4 — `continuous.over` holds a TargetSelector, so it dangles exactly like `modifier.scope`
+    // does: a zone deleted from under an imported per-object rule must fail here, not at settle time.
+    if (typeof rs.continuous === 'object') {
+      checkSelector(rs.continuous.over, ['ruleSets', i, 'continuous', 'over'], r);
     }
     if (rs.replaces !== null && rs.replaces.match !== null) {
       checkCriteria(rs.replaces.match, ['ruleSets', i, 'replaces', 'match'], r);

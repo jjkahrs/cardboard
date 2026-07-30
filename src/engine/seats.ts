@@ -75,7 +75,8 @@ function ok(seats: SeatId[], quantifier: SeatQuantifier = 'every'): SeatResoluti
  * Only three kinds of ref can produce one. `relative`, `next`, `previous` and `all` never can —
  * they only ever return members of `seatOrder` — and `{kind:'seat', index}` is the one documented
  * exception, kept readable for forensics. That leaves the refs that read a seat out of the state or
- * off a card: `active`, `triggeringSeat`, and §4.3's `owner`/`controller`.
+ * off a card: `active`, `triggeringSeat`, §4.3's `owner`/`controller`, and v4 §4.3's `promptSeat` —
+ * whose answer was a live seat when it was given, and can be ousted before a later effect reads it.
  *
  * Note the deliberate asymmetry with `stepRing` below, which fails `INVALID_SEAT` when its BASE is
  * eliminated: §4.1 pins that case to `INVALID_SEAT` by name, because "the seat after an ousted
@@ -190,6 +191,33 @@ export function resolveSeat(ref: SeatRef, state: PlayState, ctx: TriggerContext)
         );
       }
       return live(seat, state, ref.kind);
+    }
+    // v4 §4.3 (G3) — the seat twin of `ValueRef{kind:'promptNumber'}`, and read exactly like it:
+    // `dispatch.ts`'s `runEffect` writes `chooseSeat`'s answer into the RULE FRAME's own
+    // `ctx.promptAnswers` under the authored `key`, so it survives past the one effect that raised
+    // the prompt and any later effect in the same rule can aim at the chosen seat.
+    //
+    // UNBOUND_REF rather than a fallback to `active` when nothing has answered: "target player"
+    // silently becoming "whoever's turn it is" is precisely the retarget §4.3 refuses elsewhere.
+    case 'promptSeat': {
+      const answer = ctx.promptAnswers[ref.key]?.[0];
+      if (answer === undefined) {
+        return fail(
+          'UNBOUND_REF',
+          `Player ref "promptSeat" (key "${ref.key}") is unbound: no chooseSeat has answered under that key yet.`
+        );
+      }
+      // `Number('')` is 0 and `Number(' 1 ')` is 1, so the stored string is checked as a string
+      // first: only `answerSeat` ever writes this key, but a rewound or hand-poked session must not
+      // turn a blank into seat 0.
+      const seat = /^-?\d+$/.test(answer) ? Number(answer) : NaN;
+      if (!Number.isInteger(seat) || seat < 0 || seat >= N) {
+        return fail(
+          'INVALID_SEAT',
+          `Player ref "promptSeat" (key "${ref.key}"): stored answer "${answer}" is not a valid seat (${N} seats).`
+        );
+      }
+      return live(seat, state, 'promptSeat');
     }
   }
 }
@@ -347,5 +375,19 @@ export function resolveCardRef(ref: CardRef, state: PlayState, ctx: TriggerConte
     // behaviour, not a stub — UNBOUND_REF is genuinely correct everywhere this wave can reach it.
     case 'replacedTarget':
       return fail('UNBOUND_REF', 'Ref "replacedTarget" is unbound: it resolves only inside a replacement rule.');
+    // v4 §4.2 (G4) — "this creature": the card CARRYING the rule, one hop inside `host`. Reads the
+    // same `ctx.sourceCardId` `host` does, which is why it is correct in triggers, activations,
+    // modifiers and resolutions with no new plumbing: `dispatch.ts` stamps it per binding, it rides
+    // on `PendingAction.ctx`, and `modifiers.ts` sets it before evaluating a modifier's scope.
+    //
+    // UNBOUND_REF for a game-level rule — there genuinely is no card, and answering with the
+    // triggering one would make "this creature" mean whatever set the event off.
+    case 'self': {
+      if (ctx.sourceCardId === null) {
+        return fail('UNBOUND_REF', 'Ref "self" is unbound: this rule has no source card.');
+      }
+      const card = state.cards[ctx.sourceCardId];
+      return card ? { ok: true, card } : fail('TARGET_GONE', `Card "${ctx.sourceCardId}" no longer exists.`);
+    }
   }
 }

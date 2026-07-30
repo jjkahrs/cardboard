@@ -1436,13 +1436,17 @@ describe('module boundaries', () => {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// v2 §4.5, §5.11, step 28/29 — `chooseMode`/`chooseNumber`/`sealedChoice` at the `applyEffect` unit
-// level. All three RAISE via `dispatch.ts`'s `runEffect`, not `effects.ts` — this module never
-// touches frames or `state.interaction` (file header). What `applyEffectInner` owns, and what these
-// tests cover, is: (a) the defensive "no answer bound" rejection `runEffect` never actually triggers
-// in the normal top-level flow, and (b) `chooseMode`'s real job once answered — running the chosen
-// branch's effects in order. The full suspend → answer → resume loop is `dispatch.test.ts`'s (AC:
-// SP10 lives there, tagged).
+// v2 §4.5, §5.11, step 28/29; v4 §4.6 — `chooseMode`/`chooseNumber`/`sealedChoice` at the
+// `applyEffect` unit level. All three RAISE via `dispatch.ts`'s `runEffect`, not `effects.ts` — this
+// module never touches frames or `state.interaction` (file header). What `applyEffectInner` owns, and
+// what these tests cover, is: (a) the defensive "no answer bound" rejection `runEffect` never actually
+// triggers in the normal top-level flow, and (b) `chooseMode`'s answer VALIDATION and its log line.
+//
+// v4 §4.6 (G8) moved branch EXECUTION out of this module: the chosen branch's effects are now queued
+// on the `rule` frame with a cursor of their own, so any of them can suspend. That cursor is
+// frame-level scheduling this module is forbidden to touch, so the assertion below is that the arm
+// mutates NOTHING — the inline `for` loop it used to run is gone, and the branch running in order is
+// `dispatch.test.ts`'s to prove (AC: SP10 and AC: SP19 both live there, tagged).
 // ---------------------------------------------------------------------------
 
 describe('chooseMode / chooseNumber / sealedChoice — applyEffect unit level', () => {
@@ -1454,7 +1458,7 @@ describe('chooseMode / chooseNumber / sealedChoice — applyEffect unit level', 
     expect(JSON.stringify(h.state)).toBe(before);
   });
 
-  it('chooseMode runs the chosen branch\'s effects, in order, once an answer is bound', () => {
+  it('chooseMode accepts the answer and logs the mode WITHOUT running the branch (v4 §4.6)', () => {
     const effect: Effect = {
       kind: 'chooseMode',
       promptText: 'Pick',
@@ -1470,12 +1474,15 @@ describe('chooseMode / chooseNumber / sealedChoice — applyEffect unit level', 
         },
       ],
     };
-    // Mode index 1 ("Hurt then heal") — proves ORDER, not just "some branch ran": -5 then +1 nets -4,
-    // whereas running the two effects in the wrong order (or only one of them) would not.
+    const before = JSON.stringify(h.state);
     h.ec.ctx.promptAnswers['@chosen'] = ['1'];
     const result = applyEffect(effect, h.ec);
+
     expect(result).toEqual({ ok: true });
-    expect(h.state.playerPools[HP][0]).toBe(16);
+    // Mode index 1's branch would have netted -4 on HP if this arm still ran it inline. Scheduling it
+    // is `dispatch.ts`'s job now, and this module has no frame to schedule onto — so nothing moved.
+    expect(JSON.stringify(h.state)).toBe(before);
+    expect(h.lines.at(-1)).toMatchObject({ kind: 'prompt', message: 'Mode "Hurt then heal" chosen.' });
   });
 
   it('chooseMode rejects TYPE_MISMATCH for an answer naming no mode, and mutates nothing', () => {
@@ -1503,6 +1510,26 @@ describe('chooseMode / chooseNumber / sealedChoice — applyEffect unit level', 
     expect(result).toEqual({ ok: true });
     expect(JSON.stringify(h.state)).toBe(before);
     expect(h.lines.some((l) => l.message.includes('"k": 7'))).toBe(true);
+  });
+
+  // v4 §4.3 (G3) — `chooseSeat` is `chooseNumber`'s twin at this level too: the arm confirms and
+  // logs, and `dispatch.ts` owns the raise and the persist.
+  it('chooseSeat rejects AWAITING_PROMPT and mutates nothing when no answer is bound', () => {
+    const before = JSON.stringify(h.state);
+    const effect: Effect = { kind: 'chooseSeat', promptText: 'Pick a player', seat: seat(0), key: 'victim' };
+    const result = applyEffect(effect, h.ec);
+    expect(result).toEqual({ ok: false, reason: 'AWAITING_PROMPT', detail: expect.stringContaining('no answer bound') });
+    expect(JSON.stringify(h.state)).toBe(before);
+  });
+
+  it('chooseSeat succeeds once an answer is bound, logging the chosen seat — it does not itself write state', () => {
+    const before = JSON.stringify(h.state);
+    const effect: Effect = { kind: 'chooseSeat', promptText: 'Pick a player', seat: seat(0), key: 'victim' };
+    h.ec.ctx.promptAnswers['@chosen'] = ['1'];
+    const result = applyEffect(effect, h.ec);
+    expect(result).toEqual({ ok: true });
+    expect(JSON.stringify(h.state)).toBe(before);
+    expect(h.lines.some((l) => l.message.includes('"victim": seat 1'))).toBe(true);
   });
 
   it('sealedChoice always rejects AWAITING_PROMPT from applyEffect — it can only open via dispatch.ts\'s frame-level machinery', () => {

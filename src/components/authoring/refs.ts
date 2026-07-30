@@ -36,6 +36,8 @@ export function cardLabel(def: GameDefinition, card: CardRef): string {
       return 'the card';
     case 'replacedTarget':
       return 'the replaced target';
+    case 'self':
+      return 'this card itself';
   }
 }
 
@@ -65,5 +67,7 @@ export function seatLabel(def: GameDefinition, seat: SeatRef): string {
       if (seat.quantifier === 'some') return 'any player';
       if (seat.quantifier === 'sum') return 'all players combined';
       return 'each player';
+    case 'promptSeat':
+      return `the player chosen for "${seat.key}"`;
   }
 }

@@ -9,8 +9,11 @@ import {
   END_STATE_ID,
   SCHEMA_VERSION,
   START_STATE_ID,
+  type CardRef,
   type CardTemplate,
+  type ChoiceMode,
   type CriteriaNode,
+  type Effect,
   type EngineInput,
   type Frame,
   type GameDefinition,
@@ -1574,6 +1577,190 @@ describe('AC: SP10 — chooseMode pauses showing mode labels, not cards', () => 
 });
 
 // ---------------------------------------------------------------------------
+// v4 §4.6 (G8) — AC: SP19. A modal branch is queued on the `rule` frame with a cursor of its own, so
+// a branch effect that needs a FRESH interaction suspends re-entrantly instead of failing
+// AWAITING_PROMPT. Everything here drives the real dispatcher: the whole point is the frame-level
+// cursor, which no unit-level `applyEffect` call has.
+//
+// The branch is THREE effects with the prompt in the MIDDLE, deliberately. A two-effect branch whose
+// last effect prompts would pass with a "suspend, then abandon the rest" implementation; only a third
+// effect after the prompt proves the queue resumes rather than unwinds. The magnitudes are powers of
+// ten so the pool value alone names exactly which effects have run, in what order.
+// ---------------------------------------------------------------------------
+
+describe('AC: SP19 — a modal branch suspends and resumes into the rest of its own effects', () => {
+  const ZM = 'zM';
+  const KEY = zoneKey(ZM, null);
+  const add = (value: number): Effect => ({ kind: 'changePool', poolId: N, seat: null, op: 'add', amount: { kind: 'literal', value } });
+  const destroyPrompt = (promptText: string): Effect => ({
+    kind: 'destroyCards',
+    target: { kind: 'prompt', from: { kind: 'allInZone', zone: { zoneId: ZM, seat: null } }, count: { kind: 'literal', value: 1 }, promptText },
+  });
+
+  const TARGETING_MODE: ChoiceMode = {
+    label: 'Targeted',
+    effects: [add(10), destroyPrompt('Choose one to destroy'), add(1_000)],
+  };
+
+  /** One `chooseMode` over `modes`, then one more rule effect that must run after the whole branch. */
+  function setup(modes: ChoiceMode[], onRejection: RuleSet['onRejection'] = 'continue') {
+    const rule = bump('rs_branch', 'e', {
+      onRejection,
+      effects: [
+        { kind: 'chooseMode', promptText: 'Pick a mode', seat: { kind: 'seat', index: 0 }, modes },
+        add(100_000),
+      ],
+    });
+    const def = mini({
+      zones: [sharedZone(ZM)],
+      // `t_m` carries no rules — the two cards exist only to be targeted.
+      templates: [tpl('t_m', [])],
+      ruleSets: [rule],
+      globalRuleSetIds: [rule.id],
+    });
+    const state = emptyBoard(def);
+    place(state, def, KEY, 't_m', 'm1');
+    place(state, def, KEY, 't_m', 'm2');
+    return { def, state };
+  }
+
+  /** Every pool write in `lines`, in the order it landed: "before→after". */
+  const poolWrites = (lines: LogLine[]) =>
+    lines.filter((l) => l.change?.path === `pools.${N}`).map((l) => `${String(l.change!.before)}→${String(l.change!.after)}`);
+
+  const ruleFrame = (state: PlayState) =>
+    state.stack.find((f): f is Extract<Frame, { kind: 'rule' }> => f.kind === 'rule');
+
+  it('AC: SP19 — suspends for the branch\'s target choice, and the effect AFTER it in the branch has not run', () => {
+    const { def, state } = setup([{ label: 'Plain', effects: [add(1)] }, TARGETING_MODE]);
+
+    drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+    const { result } = drive(state, def, { kind: 'answerOption', optionId: '1' });
+
+    // Before v4 this was the failure: no frame slot tracked the mid-flight branch effect, so the
+    // prompt could not be raised and the effect rejected AWAITING_PROMPT instead.
+    expect(result).toEqual({ done: true, suspended: true, haltedByLoopGuard: false });
+    expect(chooseCards(state.interaction).promptText).toBe('Choose one to destroy');
+    expect(chooseCards(state.interaction).candidates).toEqual(['m1', 'm2']);
+    // 10 and only 10: branch effect 0 ran, branch effect 2 did not, and neither did the trailing
+    // 100_000 in the enclosing rule.
+    expect(state.pools[N]).toBe(10);
+    expect(state.zones[KEY].cardIds).toEqual(['m1', 'm2']);
+  });
+
+  it('AC: SP19 — the answer resumes into the REST of that mode\'s effects, in order, then the rule continues', () => {
+    const { def, state } = setup([{ label: 'Plain', effects: [add(1)] }, TARGETING_MODE]);
+    drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+    drive(state, def, { kind: 'answerOption', optionId: '1' });
+
+    const { lines, result } = drive(state, def, { kind: 'answerPrompt', chosen: ['m2'] });
+
+    expect(result.suspended).toBe(false);
+    expect(state.interaction).toBeNull();
+    // 10 + 1_000 + 100_000, with no 1 (the mode not chosen) and nothing counted twice.
+    expect(state.pools[N]).toBe(101_010);
+    expect(state.zones[KEY].cardIds).toEqual(['m1']);
+    // ORDER, asserted rather than inferred from the total: the branch's THIRD effect runs after the
+    // destroy that suspended, and the enclosing rule's own next effect runs after both.
+    expect(poolWrites(lines)).toEqual(['10→1010', '1010→101010']);
+    const destroyAt = lines.findIndex((l) => l.effectKind === 'destroyCards' && l.message.includes('m2'));
+    const thirdAt = lines.findIndex((l) => l.change?.after === 1_010);
+    expect(destroyAt).toBeGreaterThanOrEqual(0);
+    expect(destroyAt).toBeLessThan(thirdAt);
+    expect(idle(state)).toEqual(IDLE);
+  });
+
+  it('parks the frame ON the chooseMode with a branch path, and leaves the rule cursor alone', () => {
+    // The mechanism itself (v4 §4.6): `frame.cursor` stays on the `chooseMode` so the path can be
+    // re-derived from the definition, and `branch` records which mode and which of its effects.
+    const { def, state } = setup([{ label: 'Plain', effects: [add(1)] }, TARGETING_MODE]);
+    drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+    drive(state, def, { kind: 'answerOption', optionId: '1' });
+
+    expect(ruleFrame(state)?.cursor).toBe(0);
+    expect(ruleFrame(state)?.branch).toEqual([{ mode: 1, cursor: 1 }]);
+  });
+
+  it('nests: a chooseMode INSIDE a branch gets its own level, and its branch prompts too', () => {
+    const inner: Effect = {
+      kind: 'chooseMode',
+      promptText: 'Pick again',
+      seat: { kind: 'seat', index: 0 },
+      modes: [
+        { label: 'Inner plain', effects: [add(2)] },
+        { label: 'Inner targeted', effects: [add(20), destroyPrompt('Choose one (inner)'), add(2_000)] },
+      ],
+    };
+    const { def, state } = setup([{ label: 'Outer', effects: [add(10), inner, add(1_000)] }]);
+
+    drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+    drive(state, def, { kind: 'answerOption', optionId: '0' }); // outer mode
+    const nested = drive(state, def, { kind: 'answerOption', optionId: '1' }); // inner mode
+
+    // Two levels deep, suspended on the INNER branch's prompt.
+    expect(nested.result.suspended).toBe(true);
+    expect(chooseCards(state.interaction).promptText).toBe('Choose one (inner)');
+    expect(ruleFrame(state)?.branch).toEqual([{ mode: 0, cursor: 1 }, { mode: 1, cursor: 1 }]);
+    expect(state.pools[N]).toBe(30); // 10 (outer) + 20 (inner), nothing past either prompt
+
+    const { lines } = drive(state, def, { kind: 'answerPrompt', chosen: ['m1'] });
+
+    // Every level unwinds in order: the inner branch's tail, then the outer branch's, then the rule's.
+    expect(poolWrites(lines)).toEqual(['30→2030', '2030→3030', '3030→103030']);
+    expect(state.pools[N]).toBe(103_030); // 10 + 20 + 2_000 + 1_000 + 100_000
+    expect(state.interaction).toBeNull();
+    expect(idle(state)).toEqual(IDLE);
+  });
+
+  it('two prompting branch effects get their own prompts — neither answer satisfies the other', () => {
+    // The promptId collision this would have if the whole branch shared `frame.cursor`'s id: the
+    // first answer would mark the second effect "already answered" and its prompt would never raise.
+    const { def, state } = setup([{ label: 'Twice', effects: [destroyPrompt('First'), destroyPrompt('Second')] }]);
+
+    drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+    drive(state, def, { kind: 'answerOption', optionId: '0' });
+    expect(chooseCards(state.interaction).promptText).toBe('First');
+
+    drive(state, def, { kind: 'answerPrompt', chosen: ['m1'] });
+    expect(chooseCards(state.interaction).promptText).toBe('Second');
+    expect(chooseCards(state.interaction).candidates).toEqual(['m2']); // m1 is gone
+
+    drive(state, def, { kind: 'answerPrompt', chosen: ['m2'] });
+    expect(state.zones[KEY].cardIds).toEqual([]);
+    expect(state.pools[N]).toBe(100_000);
+  });
+
+  // v4 §4.6 — `onRejection` inside a branch is the rule's own policy, unchanged: `continue` skips the
+  // one failed effect, `abort` stops the whole frame. Both halves asserted, because "consistent with a
+  // top-level effect" is a claim about both.
+  it('onRejection "continue": a failed branch effect is skipped and the NEXT branch effect still runs', () => {
+    const { def, state } = setup([{ label: 'Empty prompt', effects: [add(10), destroyPrompt('Nothing to pick'), add(1_000)] }]);
+    state.zones[KEY].cardIds = [];
+
+    drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+    const { lines } = drive(state, def, { kind: 'answerOption', optionId: '0' });
+
+    expect(state.interaction).toBeNull();
+    expect(state.pools[N]).toBe(101_010); // the middle effect skipped, the third one ran anyway
+    expect(lines.some((l) => l.message.includes('Prompt skipped'))).toBe(true);
+  });
+
+  it('onRejection "abort": a failed branch effect aborts the rule — branch tail AND rule tail skipped', () => {
+    const { def, state } = setup(
+      [{ label: 'Empty prompt', effects: [add(10), destroyPrompt('Nothing to pick'), add(1_000)] }],
+      'abort'
+    );
+    state.zones[KEY].cardIds = [];
+
+    drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+    drive(state, def, { kind: 'answerOption', optionId: '0' });
+
+    expect(state.pools[N]).toBe(10); // neither the branch's third effect nor the rule's own next one
+    expect(idle(state)).toEqual(IDLE);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // v2 §4.2, §4.5, step 28 — the `chooseNumber` design-slip closure, end to end: the effect raises,
 // the resolved min/max land on the Interaction, and the answer is readable by a LATER effect via
 // `ValueRef{kind:'promptNumber'}`. The unit-level ValueRef read itself is `valueRef.test.ts`'s.
@@ -1625,6 +1812,185 @@ describe('chooseNumber + ValueRef{kind:"promptNumber"} — end to end', () => {
     expect(JSON.stringify(state)).toBe(before);
     expect(result.suspended).toBe(true);
     expect(lines[0].message).toContain('Answer invalid');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v4 §4.2 (G4) — `CardRef{kind:'self'}` end to end. The resolver is `seats.test.ts`'s; what only
+// this file can prove is the design's actual claim: that `dispatch.ts` stamps `sourceCardId` PER
+// BINDING (`:731`), so two copies of one rule on two different cards each read their own card even
+// though both share one event ctx — and that `triggering` on the same board answers differently.
+//
+// A CUSTOM event on purpose. Under the four `CARD_BINDING_EVENTS` a card rule binds only for the
+// triggering card, which makes `self` and `triggering` the same card and proves nothing.
+// ---------------------------------------------------------------------------
+
+describe('CardRef{kind:"self"} — end to end (v4 §4.2)', () => {
+  const RS_SELF = 'rs_self';
+  const POWERFUL = 5;
+
+  /** "When e fires, if MY power is 5+, seat 0 loses 1 HP." `card` is the ref under test. */
+  const powerRule = (card: CardRef): RuleSet => ({
+    id: RS_SELF,
+    name: 'Heavy hitter',
+    trigger: 'e',
+    stateFilter: null,
+    condition: {
+      kind: 'criteria',
+      left: { kind: 'cardIndex', card, indexId: POWER },
+      op: '>=',
+      right: { kind: 'literal', value: POWERFUL },
+    },
+    effects: [{ kind: 'changePool', poolId: HP, seat: { kind: 'seat', index: 0 }, op: 'subtract', amount: { kind: 'literal', value: 1 } }],
+    priority: 0,
+    onRejection: 'continue',
+    modifier: null,
+    continuous: false,
+    replaces: null,
+    activation: null,
+  });
+
+  /** The rule attached to every Grunt (`attached`) or bound once as a game-level rule. */
+  function selfDef(card: CardRef, attached: boolean): GameDefinition {
+    const rule = powerRule(card);
+    return {
+      ...duel,
+      customEvents: ['e'],
+      ruleSets: [...duel.ruleSets, rule],
+      globalRuleSetIds: attached ? duel.globalRuleSetIds : [...duel.globalRuleSetIds, rule.id],
+      templates: duel.templates.map((t) =>
+        t.id === GRUNT && attached ? { ...t, ruleSetIds: [...t.ruleSetIds, rule.id] } : t
+      ),
+    };
+  }
+
+  /** Two Grunts on the shared Battlefield: `weak` at the default power, `strong` at 5. */
+  function board(def: GameDefinition): PlayState {
+    const state = emptyBoard(def, MAIN);
+    place(state, def, BF, GRUNT, 'weak');
+    place(state, def, BF, GRUNT, 'strong');
+    state.cards['strong'].indexValues[POWER] = POWERFUL;
+    return state;
+  }
+
+  // AC: SP15
+  it('resolves to the card carrying the rule, not to the card the event was about', () => {
+    const withSelf = selfDef({ kind: 'self' }, true);
+    const state = board(withSelf);
+
+    // The event is about `weak`; the rule is on BOTH cards. Only `strong`'s copy should fire.
+    driveEvent(state, withSelf, 'e', 'weak');
+    expect(state.playerPools[HP]).toEqual([19, 20]);
+
+    // Same board, same event, `triggering` instead: both copies now read `weak`'s power of 1, so
+    // NEITHER fires. That difference is the whole criterion — without it the assertion above could
+    // pass for the wrong reason.
+    const withTriggering = selfDef({ kind: 'triggering' }, true);
+    const other = board(withTriggering);
+    driveEvent(other, withTriggering, 'e', 'weak');
+    expect(other.playerPools[HP]).toEqual([20, 20]);
+  });
+
+  // AC: SP15
+  it('fails UNBOUND_REF in a game-level rule, which has no card to mean — and the log says so', () => {
+    const def = selfDef({ kind: 'self' }, false);
+    const state = board(def);
+
+    const { lines } = driveEvent(state, def, 'e', 'weak', 0);
+
+    // The criterion's leaf is forced false by the bad ref (§5.9), so the effect never runs.
+    expect(state.playerPools[HP]).toEqual([20, 20]);
+    expect(lines.some((l) => l.message.includes('Ref "self" is unbound'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v4 §4.3 (G3) — `chooseSeat` + `SeatRef{kind:'promptSeat'}` end to end, the exact shape of the
+// `chooseNumber`/`promptNumber` block above: the effect raises with the live ring as candidates,
+// nothing is mutated until the answer lands, and a LATER effect in the same rule aims at the chosen
+// seat. `interaction.ts`'s validation and `dispatch.ts`'s `answerSeat` handler already existed —
+// this is the first test in which either one actually runs.
+// ---------------------------------------------------------------------------
+
+describe('chooseSeat + SeatRef{kind:"promptSeat"} — end to end (v4 §4.3)', () => {
+  const RULE_ID = 'rs_seat';
+  const LIFE = 'pool_life';
+  const KEY = 'victim';
+
+  function seatDef(): GameDefinition {
+    const rule = bump(RULE_ID, 'e', {
+      effects: [
+        { kind: 'chooseSeat', promptText: 'Choose a player', seat: { kind: 'seat', index: 0 }, key: KEY },
+        {
+          kind: 'changePool',
+          poolId: LIFE,
+          seat: { kind: 'promptSeat', key: KEY },
+          op: 'subtract',
+          amount: { kind: 'literal', value: 3 },
+        },
+      ],
+    });
+    return mini({
+      pools: [
+        { id: N, scope: 'game', value: { type: 'integer', name: 'n', defaultValue: 0, min: 0, max: null } },
+        { id: LIFE, scope: 'player', value: { type: 'integer', name: 'life', defaultValue: 20, min: 0, max: null } },
+      ],
+      ruleSets: [rule],
+      globalRuleSetIds: [rule.id],
+    });
+  }
+
+  // AC: SP16
+  it('suspends on a seat choice, then a LATER effect resolves its seat ref to the chosen seat', () => {
+    const def = seatDef();
+    const state = createPlayState(def, 'seed');
+
+    drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+
+    // Raised before anything moved (§3.3), with the LIVE ring as candidates — not 0..playerCount-1.
+    expect(state.interaction).toMatchObject({
+      kind: 'chooseSeat',
+      promptText: 'Choose a player',
+      seat: 0,
+      candidates: [0, 1],
+    });
+    expect(state.playerPools[LIFE]).toEqual([20, 20]);
+
+    // Seat 1 — deliberately NOT the seat that was asked, so "aimed at the chosen seat" cannot pass
+    // by accidentally reading `chooseSeat.seat` (or `active`) instead of the answer.
+    const { result } = drive(state, def, { kind: 'answerSeat', seat: 1 });
+
+    expect(result.suspended).toBe(false);
+    expect(state.interaction).toBeNull();
+    expect(state.playerPools[LIFE]).toEqual([20, 17]);
+    expect(idle(state)).toEqual(IDLE);
+  });
+
+  it('rejects a seat that is not among the candidates, leaving state and suspension untouched', () => {
+    const def = seatDef();
+    const state = createPlayState(def, 'seed');
+    drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+    const before = JSON.stringify(state);
+
+    const { lines, result } = drive(state, def, { kind: 'answerSeat', seat: 7 });
+
+    expect(JSON.stringify(state)).toBe(before);
+    expect(result.suspended).toBe(true);
+    expect(lines[0].message).toContain('Answer invalid');
+  });
+
+  it('offers only seats still in the ring, and its own effect is skipped when the answer is later ousted', () => {
+    const def = seatDef();
+    const state = createPlayState(def, 'seed');
+    // Seat 1 ousted before the prompt: §5.12's ring is what `candidates` is built from.
+    state.seatOrder = [0];
+    state.eliminated = [1];
+
+    drive(state, def, { kind: 'fireEvent', name: 'e', seat: 0 });
+    expect(state.interaction).toMatchObject({ kind: 'chooseSeat', candidates: [0] });
+
+    drive(state, def, { kind: 'answerSeat', seat: 0 });
+    expect(state.playerPools[LIFE]).toEqual([17, 20]);
   });
 });
 

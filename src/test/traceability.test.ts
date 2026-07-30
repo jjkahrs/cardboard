@@ -141,6 +141,31 @@ const IN_SCOPE: Criterion[] = [
   { id: 'IM8', prose: 'A file from another schema version is rejected naming both versions, from the editor surface too', expected: 'import.test.tsx' },
   { id: 'IM9', prose: 'Replace stamps its own updatedAt; the file\'s timestamp does not survive into the stored game', expected: 'import.test.tsx' },
   { id: 'IM10', prose: 'While a file drag is over the window each screen states what a drop would do, and stops when it leaves', expected: 'import.test.tsx' },
+  // v4 §4.1 — derived values. Both rows are engine-level and provable headlessly the moment
+  // `valueRef.ts` grows the three arms, so neither is ever a candidate for PENDING.
+  { id: 'SP13', prose: 'A criterion comparing a nested arithmetic value against a literal resolves the whole expression to one number; a boolean operand is rejected as TYPE_MISMATCH rather than coerced', expected: 'valueRef.test.ts' },
+  { id: 'SP14', prose: 'Five cards, three matching a predicate -> countMatching resolves to 3; sumIndex over the same set totals every modifier currently applying, not the stored base values', expected: 'valueRef.test.ts' },
+  // v4 §4.2, §4.3 — self reference and player-as-a-target. Both are engine-level: SP15 needs the
+  // real per-binding `sourceCardId` stamp, and SP16 needs the whole suspend/answer/resume round
+  // trip, so both are proved from `dispatch.ts` rather than from a resolver in isolation.
+  { id: 'SP15', prose: 'A rule attached to a card referring to itself resolves to that card instance and not to the card an event was about; the same reference in a game-level rule fails UNBOUND_REF', expected: 'dispatch.test.ts, seats.test.ts' },
+  { id: 'SP16', prose: 'An effect asking a player to choose a player suspends the session on a seat choice; once answered, a later effect in the same rule resolves its seat reference to the chosen seat', expected: 'dispatch.test.ts' },
+  // v4 §4.4 — per-object continuous rules. Both halves of the criterion are settle-scan behaviour, so
+  // the proof sits with the scan itself and needs a real board rather than the card-less fixtures the
+  // rest of `continuous.test.ts` uses.
+  { id: 'SP17', prose: 'One per-object continuous rule and two creatures: the first meets the condition and is dealt with, later the second meets it and the rule fires again for the second; given neither has changed, it does not fire repeatedly for the same card', expected: 'continuous.test.ts' },
+  // v4 §4.5 — the interactive cost. Three clauses, three separate tests behind the one marker: the
+  // sharp edge is the cancellation, and a shared test would let the two happy paths carry it.
+  { id: 'SP18', prose: 'An activation whose cost requires choosing a card to discard suspends before anything is spent; once the choice is answered the whole cost applies in one transaction; and when the choice is cancelled nothing is spent and no card moved', expected: 'activation.test.ts' },
+  // v4 §4.6 — the suspendable modal branch. Proved from the dispatcher, because the whole criterion is
+  // about the frame-level cursor: an `applyEffect` unit call has no frame and could not fail this.
+  // `sessionStore.test.ts` carries the other half of the risk (§8) — that the branch queue rewinds —
+  // under its own describe rather than a second marker.
+  { id: 'SP19', prose: 'A modal effect one of whose modes targets: when that mode is chosen the session suspends for the target choice and resumes into the rest of that mode\'s effects in order, rather than failing', expected: 'dispatch.test.ts' },
+  // v4 §6 — the sample game, and the only criterion in the series that is about PLAYING rather than
+  // about a primitive. Proved by driving the shipped definition through the real dispatcher, because
+  // a sample that validates but cannot be played would prove nothing.
+  { id: 'MTG12', prose: 'Given the shipped Magic sample, when it is imported and played, then a turn completes: a land is played under a once-per-turn limit, a creature is cast through the stack, a burn spell targets a chosen player, and a "for each" spell reads a count off the board', expected: 'mtg.test.ts' },
 ];
 
 // Nothing lands here right now. A criterion goes in PENDING only when its sole possible proof is a

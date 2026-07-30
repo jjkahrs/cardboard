@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseZoneKey, resolvePoolDef, resolveSeat, resolveValueRef, zoneKey } from './valueRef';
 import { evalCriteriaBool } from './criteria';
-import type { CriteriaNode } from './types';
+import type { CriteriaNode, RuleSet, TargetSelector, ValueRef } from './types';
 import {
   DEFAULT_MAX_DEPTH,
   DEFAULT_MAX_EFFECTS,
@@ -848,6 +848,311 @@ describe('resolveValueRef', () => {
       const ctx = makeCtx({ promptAnswers: { y: ['7'] } });
       const result = resolveValueRef({ kind: 'promptNumber', key: 'x' }, makeState(2, 0), ctx, makeDef());
       expect(result).toMatchObject({ ok: false, reason: 'UNBOUND_REF' });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // v4 §4.1 (G1) — `arith`, the value language's only combinator.
+  // -------------------------------------------------------------------------
+
+  describe('arith', () => {
+    const lit = (value: number | boolean): ValueRef => ({ kind: 'literal', value });
+    const arith = (op: Extract<ValueRef, { kind: 'arith' }>['op'], left: ValueRef, right: ValueRef): ValueRef =>
+      ({ kind: 'arith', op, left, right });
+    const resolve = (ref: ValueRef, def = makeDef()) =>
+      resolveValueRef(ref, makeState(2, 0), makeCtx(), def);
+
+    it('applies each of the five ops to two literals', () => {
+      expect(resolve(arith('add', lit(2), lit(3)))).toEqual({ ok: true, values: [5], quantifier: 'every' });
+      expect(resolve(arith('subtract', lit(2), lit(3)))).toEqual({ ok: true, values: [-1], quantifier: 'every' });
+      expect(resolve(arith('multiply', lit(2), lit(3)))).toEqual({ ok: true, values: [6], quantifier: 'every' });
+      expect(resolve(arith('min', lit(2), lit(3)))).toEqual({ ok: true, values: [2], quantifier: 'every' });
+      expect(resolve(arith('max', lit(2), lit(3)))).toEqual({ ok: true, values: [3], quantifier: 'every' });
+    });
+
+    // AC: SP13 — a nested expression compared against a literal resolves to ONE number, and a
+    // boolean operand is refused rather than coerced. Both halves of the criterion, one test.
+    it('resolves a nested expression to one number, and refuses a boolean operand', () => {
+      const nested = arith('multiply', arith('add', lit(2), lit(3)), lit(4)); // (2 + 3) * 4
+      const criterion: CriteriaNode = { kind: 'criteria', left: nested, op: '=', right: lit(20) };
+      expect(resolve(nested)).toEqual({ ok: true, values: [20], quantifier: 'every' });
+      expect(evalCriteriaBool(criterion, makeState(2, 0), makeCtx(), makeDef())).toBe(true);
+
+      // `true` is neither 1 nor an error to swallow — the same refusal `modifiers.ts` makes rather
+      // than adding a boolean into an `adjust`, and it holds on either side.
+      expect(resolve(arith('add', lit(true), lit(1)))).toMatchObject({ ok: false, reason: 'TYPE_MISMATCH' });
+      expect(resolve(arith('add', lit(1), lit(false)))).toMatchObject({ ok: false, reason: 'TYPE_MISMATCH' });
+      expect(resolve(arith('max', lit(1), lit(true)))).toMatchObject({ ok: false, reason: 'TYPE_MISMATCH' });
+    });
+
+    it('reads real refs on both sides, not just literals', () => {
+      const def = makeDef({ pools: [{ id: 'hp', scope: 'player', value: { type: 'integer', name: 'HP', defaultValue: 0, min: null, max: null } }] });
+      const state = makeState(2, 0, { playerPools: { hp: [7, 2] } });
+      const ref: ValueRef = arith('subtract', { kind: 'pool', poolId: 'hp', seat: { kind: 'seat', index: 0 } }, { kind: 'activeSeatCount' });
+      expect(resolveValueRef(ref, state, makeCtx(), def)).toEqual({ ok: true, values: [5], quantifier: 'every' });
+    });
+
+    it('an operand resolving to one value PER SEAT has no single answer', () => {
+      const def = makeDef({ pools: [{ id: 'hp', scope: 'player', value: { type: 'integer', name: 'HP', defaultValue: 0, min: null, max: null } }] });
+      const state = makeState(2, 0, { playerPools: { hp: [7, 2] } });
+      const ref: ValueRef = arith('add', { kind: 'pool', poolId: 'hp', seat: { kind: 'all' } }, lit(1));
+      expect(resolveValueRef(ref, state, makeCtx(), def)).toMatchObject({ ok: false, reason: 'INVALID_SEAT' });
+      // …but the `sum` quantifier collapses it to one total first, and then it does.
+      const summed: ValueRef = arith('add', { kind: 'pool', poolId: 'hp', seat: { kind: 'all', quantifier: 'sum' } }, lit(1));
+      expect(resolveValueRef(summed, state, makeCtx(), def)).toEqual({ ok: true, values: [10], quantifier: 'every' });
+    });
+
+    it('propagates an operand failure rather than treating it as zero', () => {
+      expect(resolve(arith('add', { kind: 'replacedAmount' }, lit(1)))).toMatchObject({ ok: false, reason: 'UNBOUND_REF' });
+    });
+
+    // §5.5's ceiling, answered by the DEFINITION's knob rather than a hardcoded constant — the same
+    // property `dispatch.test.ts` asserts for causal depth.
+    it('nesting deeper than limits.maxDepth is RULE_LOOP, at the definition\'s own limit', () => {
+      const def = makeDef({ limits: { ...makeDef().limits, maxDepth: 3 } });
+      let deep: ValueRef = lit(1);
+      for (let i = 0; i < 3; i++) deep = arith('add', deep, lit(1));
+      expect(resolve(deep, def)).toEqual({ ok: true, values: [4], quantifier: 'every' });
+      expect(resolve(arith('add', deep, lit(1)), def)).toMatchObject({ ok: false, reason: 'RULE_LOOP' });
+      // The same expression is fine under the default limit: the cap is configuration, not a bug.
+      expect(resolve(arith('add', deep, lit(1)))).toEqual({ ok: true, values: [5], quantifier: 'every' });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // v4 §4.1 (G2) — `countMatching` and `sumIndex`, the two folds over a card set.
+  // -------------------------------------------------------------------------
+
+  describe('countMatching / sumIndex', () => {
+    const BF = 'bf';
+    const ENCH = 'ench';
+    const powerIndex = { id: 'power', value: { type: 'integer' as const, name: 'Power', defaultValue: 0, min: null, max: null }, icon: 'sword', position: 'topLeft' as const };
+    const shared = (id: string, name: string) =>
+      ({ id, name, scope: 'shared' as const, visibility: 'faceUp' as const, layout: 'row' as const, ordered: false, maxCapacity: null });
+
+    /**
+     * Two shared zones and two templates. The rule-carrying template sits in the OTHER zone and
+     * declares no index of its own, so one modifier means exactly one source: a rule on the counted
+     * cards themselves would apply once per copy and bury the arithmetic these tests are about.
+     */
+    function boardDef(ruleSets: RuleSet[] = []): GameDefinition {
+      const template = (id: string, indexes: typeof powerIndex[], ruleSetIds: string[]) =>
+        ({ id, name: id, marquee: id, faceIcon: 'sword', borderColor: '#000', tags: [], indexes, ruleSetIds, rulesTextOverride: null });
+      return makeDef({
+        zones: [shared(BF, 'Battlefield'), shared(ENCH, 'Enchantments')],
+        templates: [template('t1', [powerIndex], []), template('lord', [], ruleSets.map((r) => r.id))],
+        ruleSets,
+        globalRuleSetIds: [],
+      });
+    }
+
+    /** Cards on the battlefield with the given Power values, plus the one rule-carrying source. */
+    function board(powers: number[]): PlayState {
+      const ids = powers.map((_, i) => `c${i + 1}`);
+      return makeState(2, 0, {
+        cards: {
+          ...Object.fromEntries(powers.map((p, i) => [ids[i], card(ids[i], { power: p })])),
+          lord: { ...card('lord'), templateId: 'lord' },
+        },
+        zones: { [BF]: zoneInst(BF, null, ids), [ENCH]: zoneInst(ENCH, null, ['lord']) },
+      });
+    }
+
+    const allOnBoard: TargetSelector = { kind: 'allInZone', zone: { zoneId: BF, seat: null } };
+    /** "…where Power of the card is above 2" — the predicate three of the five cards pass. */
+    const bigOnes: TargetSelector = {
+      kind: 'matching',
+      from: allOnBoard,
+      where: {
+        kind: 'criteria',
+        left: { kind: 'cardIndex', card: { kind: 'candidate' }, indexId: 'power' },
+        op: '>',
+        right: { kind: 'literal', value: 2 },
+      },
+    };
+
+    /** An anthem: +1 Power to every card on the battlefield, from a rule every card carries. */
+    const anthem: RuleSet = {
+      id: 'anthem',
+      name: 'Anthem',
+      trigger: 'onGameStart',
+      stateFilter: null,
+      condition: null,
+      effects: [],
+      priority: 0,
+      onRejection: 'continue',
+      continuous: false,
+      replaces: null,
+      activation: null,
+      modifier: { scope: allOnBoard, indexId: 'power', op: 'adjust', amount: { kind: 'literal', value: 1 }, activeZones: [] },
+    };
+
+    // AC: SP14 — five cards, three matching the predicate -> countMatching reads 3; and sumIndex over
+    // that same set totals what the cards READ AS, modifiers included, not their stored base values.
+    it('counts the matching cards and totals their EFFECTIVE index, not the stored base', () => {
+      const powers = [1, 2, 3, 4, 5]; // three are above 2
+      expect(resolveValueRef({ kind: 'countMatching', from: bigOnes }, board(powers), makeCtx(), boardDef())).toEqual({
+        ok: true,
+        values: [3],
+        quantifier: 'every',
+      });
+
+      const sum: ValueRef = { kind: 'sumIndex', from: bigOnes, indexId: 'power' };
+      expect(resolveValueRef(sum, board(powers), makeCtx(), boardDef())).toEqual({
+        ok: true,
+        values: [12], // 3 + 4 + 5, the stored values
+        quantifier: 'every',
+      });
+
+      // The same board under one anthem. Reading `card.indexValues` would still say 12 — the exact
+      // blindness MTG6 exists to prevent for a single card, here for a fold (§4.1).
+      const buffed = boardDef([anthem]);
+      expect(resolveValueRef(sum, board(powers), makeCtx(), buffed)).toEqual({
+        ok: true,
+        values: [18], // 3+1, 4+1, 5+1 — and 2+1, which is the next line
+        quantifier: 'every',
+      });
+      // …and the anthem moves a card INTO the matching set, because the predicate reads effectively
+      // too: Power 2 becomes 3, so four cards now match rather than three.
+      expect(resolveValueRef({ kind: 'countMatching', from: bigOnes }, board(powers), makeCtx(), buffed)).toEqual({
+        ok: true,
+        values: [4],
+        quantifier: 'every',
+      });
+    });
+
+    it('an empty board counts 0 and totals 0 rather than failing NO_TARGETS', () => {
+      const empty = makeState(2, 0, { zones: { [BF]: zoneInst(BF, null, []) } });
+      expect(resolveValueRef({ kind: 'countMatching', from: allOnBoard }, empty, makeCtx(), boardDef())).toEqual({
+        ok: true,
+        values: [0],
+        quantifier: 'every',
+      });
+      expect(resolveValueRef({ kind: 'sumIndex', from: allOnBoard, indexId: 'power' }, empty, makeCtx(), boardDef())).toEqual({
+        ok: true,
+        values: [0],
+        quantifier: 'every',
+      });
+    });
+
+    it('a deleted zone still fails — "none" and "broken" are not the same answer', () => {
+      const ghost: TargetSelector = { kind: 'allInZone', zone: { zoneId: 'ghost', seat: null } };
+      expect(resolveValueRef({ kind: 'countMatching', from: ghost }, board([1]), makeCtx(), boardDef())).toMatchObject({
+        ok: false,
+        reason: 'MISSING_REFERENT',
+      });
+    });
+
+    // v4 §3 decision 4 — a read never asks a question. The precedent is `modifiers.ts`'s handling of
+    // a `prompt` scope during a modifier read.
+    it('a prompt anywhere inside `from` folds over nothing', () => {
+      const asked: TargetSelector = { kind: 'prompt', from: allOnBoard, count: { kind: 'literal', value: 1 }, promptText: 'Pick' };
+      const state = board([1, 2, 3, 4, 5]);
+      expect(resolveValueRef({ kind: 'countMatching', from: asked }, state, makeCtx(), boardDef())).toEqual({
+        ok: true,
+        values: [0],
+        quantifier: 'every',
+      });
+      // Wrapped the other way round (`matching(prompt(…))`) the prompt variant is what propagates
+      // outward, so the same answer has to come back — this is the arm that catches depth.
+      const wrapped: TargetSelector = { ...bigOnes, from: asked };
+      expect(resolveValueRef({ kind: 'sumIndex', from: wrapped, indexId: 'power' }, state, makeCtx(), boardDef())).toEqual({
+        ok: true,
+        values: [0],
+        quantifier: 'every',
+      });
+    });
+
+    it('a card that does not declare the index contributes nothing', () => {
+      const state = board([3, 4]);
+      state.cards.c2 = card('c2', {}); // same template, no stored Power
+      expect(resolveValueRef({ kind: 'sumIndex', from: allOnBoard, indexId: 'power' }, state, makeCtx(), boardDef())).toEqual({
+        ok: true,
+        values: [3],
+        quantifier: 'every',
+      });
+    });
+
+    it('a boolean index has no total', () => {
+      const flagIndex = { ...powerIndex, id: 'flag', value: { type: 'boolean' as const, name: 'Flag', defaultValue: false } };
+      const def = makeDef({
+        zones: [{ id: BF, name: 'Battlefield', scope: 'shared', visibility: 'faceUp', layout: 'row', ordered: false, maxCapacity: null }],
+        templates: [{ id: 't1', name: 'T', marquee: 'T', faceIcon: 'sword', borderColor: '#000', tags: [], indexes: [flagIndex], ruleSetIds: [], rulesTextOverride: null }],
+      });
+      const state = makeState(2, 0, {
+        cards: { c1: card('c1', { flag: true }) },
+        zones: { [BF]: zoneInst(BF, null, ['c1']) },
+      });
+      expect(resolveValueRef({ kind: 'sumIndex', from: allOnBoard, indexId: 'flag' }, state, makeCtx(), def)).toMatchObject({
+        ok: false,
+        reason: 'TYPE_MISMATCH',
+      });
+    });
+
+    /**
+     * v4 §4.1's named hazard, and §8's third risk: `valueRef -> resolveTargets -> evalCriteria ->
+     * resolveValueRef` is a cycle ordinary authored text closes. This rule is exactly the sentence
+     * the design cites — "creatures get +1/+1 while the total power of your creatures is 5 or more" —
+     * with the fold in the modifier's own `amount`, which is the tightest form of it.
+     */
+    const selfReferentialAnthem: RuleSet = {
+      ...anthem,
+      modifier: {
+        scope: allOnBoard,
+        indexId: 'power',
+        op: 'adjust',
+        // The amount is a total of the very index this modifier adjusts.
+        amount: { kind: 'sumIndex', from: allOnBoard, indexId: 'power' },
+        activeZones: [],
+      },
+    };
+
+    const total: ValueRef = { kind: 'sumIndex', from: allOnBoard, indexId: 'power' };
+    const powerOf = (id: string): ValueRef => ({ kind: 'cardIndex', card: { kind: 'instance', id }, indexId: 'power' });
+
+    it('a fold that reads the index it modifies terminates rather than recursing', () => {
+      const def = boardDef([selfReferentialAnthem]);
+      const read = () => resolveValueRef(total, board([1, 2]), makeCtx(), def);
+      // Terminates at all: without the shared `inFlight` guard this is a stack overflow inside a
+      // render. ponytail: the magnitude of a self-referential fold is defined but not meaningful —
+      // the re-entrant read answers 0, so each card sees a total taken with itself held at base.
+      // Getting a *layered* answer is MTG's layer system, which §5.4 deliberately stops short of.
+      expect(read()).toEqual({ ok: true, values: [9], quantifier: 'every' });
+      expect(read()).toEqual(read());
+    });
+
+    // §8's third risk, in full: "the degraded answer must not depend on which card the UI read
+    // first". A committed `PlayState` is shared between a render and the engine's own criteria
+    // gates, so if a prior read could change this one, rendering could change a rule's outcome.
+    it('a prior read of the same index does not change the fold\'s answer', () => {
+      const def = boardDef([selfReferentialAnthem]);
+      const fresh = resolveValueRef(total, board([1, 2]), makeCtx(), def);
+
+      // Same state object, per-card reads FIRST — the order that populates the §5.4 memo before the
+      // fold runs. The memo must not have kept a value that a degraded read contributed to.
+      const state = board([1, 2]);
+      resolveValueRef(powerOf('c1'), state, makeCtx(), def);
+      resolveValueRef(powerOf('c2'), state, makeCtx(), def);
+      expect(resolveValueRef(total, state, makeCtx(), def)).toEqual(fresh);
+
+      // And the reverse order, on a third state: fold first, then the per-card reads.
+      const other = board([1, 2]);
+      resolveValueRef(total, other, makeCtx(), def);
+      expect(resolveValueRef(powerOf('c1'), other, makeCtx(), def)).toEqual(
+        resolveValueRef(powerOf('c1'), board([1, 2]), makeCtx(), def)
+      );
+    });
+
+    // The memo is only disabled where a cycle actually forced a degraded read: an ordinary board
+    // still caches, which is the whole reason §5.4 has a memo.
+    it('an acyclic modifier board still memoizes — one read, one collect', () => {
+      const def = boardDef([anthem]);
+      const state = board([1, 2]);
+      expect(resolveValueRef(powerOf('c1'), state, makeCtx(), def)).toEqual({ ok: true, values: [2], quantifier: 'every' });
+      // Mutating the base UNDER the memo is visible only if the memo was not written. It is: the
+      // second read answers the cached 2, not the 6 the mutated base would produce.
+      state.cards.c1.indexValues.power = 5;
+      expect(resolveValueRef(powerOf('c1'), state, makeCtx(), def)).toEqual({ ok: true, values: [2], quantifier: 'every' });
     });
   });
 });

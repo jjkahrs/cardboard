@@ -74,9 +74,56 @@ const indexCache = new WeakMap<PlayState, Map<string, number | boolean>>();
  *
  * Upgrade path if layered modifiers are ever genuinely wanted: a dependency-ordering pass in
  * `collectModifiers` — which is MTG's layer system, and what §5.4 deliberately stops short of.
+ *
+ * v4 §4.1 widened the element type from `string` to `unknown` so `guardReentrant` below can put a
+ * derived `ValueRef` node in the SAME set rather than standing up a second guard: the two cycles
+ * meet (a fold reads an index, an index's modifier amount is a fold), so one set is what keeps
+ * `outermost` honest across both.
  */
 let collecting = false;
-const inFlight = new Set<string>();
+const inFlight = new Set<unknown>();
+
+/**
+ * v4 §4.1 — "never memoize a degraded answer", applied TRANSITIVELY.
+ *
+ * §5.4 skipped memoizing the degraded read itself but still cached values COMPUTED FROM one, which
+ * makes the cached value depend on which read came first: read a self-referential index directly and
+ * the memo keeps the answer it got in isolation; read it through a `sumIndex` first and the fold's
+ * own answer differs, because the outer read was still in flight. Committed states are shared
+ * between a UI render and the engine's own criteria gates, so that is a route by which rendering
+ * could change a rule's outcome — exactly what §5.4's "same-seed replays cannot diverge" forbids.
+ *
+ * Only the `inFlight` degradations count. `collecting`'s answer is the base value for every card
+ * unconditionally, so it does not depend on read order and anything derived from it is still safe to
+ * cache — which is what keeps this from disabling the memo on every ordinary modifier board.
+ */
+let degradedReads = 0;
+
+/**
+ * v4 §4.1 — the §5.4 discipline, shared rather than re-invented, for the
+ * `valueRef -> resolveTargets -> evalCriteria -> resolveValueRef` cycle that `countMatching` and
+ * `sumIndex` close. `token` is the authored `ValueRef` node itself: a definition is a finite tree,
+ * so the only way a node is reached while it is already resolving is round a cycle through the
+ * board, and object identity names that with no key to derive.
+ *
+ * Same three rules as the index guard: answer `degraded` rather than recurse, never memoize the
+ * degraded answer (nothing here memoizes at all), and keep `degraded` a constant so it cannot
+ * depend on which card the UI read first. It also parks a token in `inFlight` for the duration,
+ * which stops `effectiveIndex` calling itself outermost — so no index value computed under a
+ * degraded fold is ever written into the §5.4 memo.
+ */
+export function guardReentrant<T>(token: object, degraded: T, compute: () => T): T {
+  if (inFlight.has(token)) {
+    degradedReads += 1;
+    return degraded;
+  }
+  inFlight.add(token);
+  try {
+    return compute();
+  } finally {
+    inFlight.delete(token);
+  }
+}
 
 /**
  * Drops both memos for `state`.
@@ -256,9 +303,14 @@ export function effectiveIndex(
   const clamped = (v: number | boolean) => (indexDef ? clampValue(indexDef.value, v) : v);
 
   // The guarded answer — see the `collecting` / `inFlight` comment above. Deliberately not memoized.
-  if (collecting || inFlight.has(key)) return clamped(base);
+  if (collecting) return clamped(base);
+  if (inFlight.has(key)) {
+    degradedReads += 1; // path-dependent, unlike `collecting`'s — see the memo write below
+    return clamped(base);
+  }
 
   const outermost = inFlight.size === 0;
+  const degradedBefore = degradedReads;
   inFlight.add(key);
   let value: number | boolean = base;
   try {
@@ -284,7 +336,9 @@ export function effectiveIndex(
   }
 
   value = clamped(value);
-  if (outermost) perState.set(key, value);
+  // A cached value is always a fully-resolved one: not just "this read was not the degraded one" but
+  // "nothing under this read was", so the memo cannot make two read orders disagree.
+  if (outermost && degradedReads === degradedBefore) perState.set(key, value);
   return value;
 }
 

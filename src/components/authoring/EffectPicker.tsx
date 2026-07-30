@@ -11,12 +11,15 @@ export function EffectPicker({
   definition,
   onAdd,
   depth = 0,
+  inCost = false,
   ariaLabel = 'Add an effect',
 }: {
   definition: GameDefinition;
   onAdd: (effect: Effect) => void;
   /** §6.11 — how many effect lists deep this picker sits; `chooseMode` is refused at depth 1. */
   depth?: number;
+  /** v4 §4.5 — this is an `activation.cost` list; three kinds cannot be frozen ahead of the cost. */
+  inCost?: boolean;
   ariaLabel?: string;
 }) {
   return (
@@ -24,7 +27,7 @@ export function EffectPicker({
       {(close) => (
         <ul className="cb-list">
           {EFFECT_KINDS.map(({ kind, label }) => {
-            const missing = missingFor(kind, definition, depth);
+            const missing = missingFor(kind, definition, depth, inCost);
             return (
               <li key={kind} className="cb-list__row">
                 <button

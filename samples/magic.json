@@ -1,0 +1,4283 @@
+{
+  "schemaVersion": 2,
+  "id": "game_sparkbloomDuel",
+  "name": "Sparkbloom Duel",
+  "playerCount": 2,
+  "pools": [
+    {
+      "id": "pool_life",
+      "scope": "player",
+      "value": {
+        "type": "integer",
+        "name": "Life",
+        "defaultValue": 20,
+        "min": 0,
+        "max": 60
+      }
+    },
+    {
+      "id": "pool_manaRed",
+      "scope": "player",
+      "value": {
+        "type": "integer",
+        "name": "Red Mana",
+        "defaultValue": 0,
+        "min": 0,
+        "max": 20
+      }
+    },
+    {
+      "id": "pool_manaGreen",
+      "scope": "player",
+      "value": {
+        "type": "integer",
+        "name": "Green Mana",
+        "defaultValue": 0,
+        "min": 0,
+        "max": 20
+      }
+    },
+    {
+      "id": "pool_landPlayed",
+      "scope": "player",
+      "value": {
+        "type": "boolean",
+        "name": "Land Played",
+        "defaultValue": false
+      }
+    },
+    {
+      "id": "pool_attacks",
+      "scope": "player",
+      "value": {
+        "type": "integer",
+        "name": "Attacks",
+        "defaultValue": 0,
+        "min": 0,
+        "max": 99
+      }
+    },
+    {
+      "id": "pool_phase",
+      "scope": "game",
+      "value": {
+        "type": "integer",
+        "name": "Phase",
+        "defaultValue": 0,
+        "min": 0,
+        "max": 4
+      }
+    },
+    {
+      "id": "pool_seatNumber",
+      "scope": "player",
+      "value": {
+        "type": "integer",
+        "name": "Seat",
+        "defaultValue": 0,
+        "min": 0,
+        "max": 1
+      }
+    }
+  ],
+  "zones": [
+    {
+      "id": "zone_library",
+      "name": "Library",
+      "scope": "player",
+      "visibility": "faceDown",
+      "layout": "stack",
+      "ordered": true,
+      "maxCapacity": null
+    },
+    {
+      "id": "zone_hand",
+      "name": "Hand",
+      "scope": "player",
+      "visibility": "ownerOnly",
+      "layout": "fan",
+      "ordered": true,
+      "maxCapacity": null
+    },
+    {
+      "id": "zone_stack",
+      "name": "Stack",
+      "scope": "player",
+      "visibility": "faceUp",
+      "layout": "stack",
+      "ordered": true,
+      "maxCapacity": null
+    },
+    {
+      "id": "zone_battlefield",
+      "name": "Battlefield",
+      "scope": "player",
+      "visibility": "faceUp",
+      "layout": "row",
+      "ordered": true,
+      "maxCapacity": null
+    },
+    {
+      "id": "zone_graveyard",
+      "name": "Graveyard",
+      "scope": "player",
+      "visibility": "faceUp",
+      "layout": "stack",
+      "ordered": true,
+      "maxCapacity": null
+    }
+  ],
+  "templates": [
+    {
+      "id": "tpl_mountain",
+      "name": "Mountain",
+      "marquee": "Mountain",
+      "faceIcon": "gi-mountains",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "land",
+        "mountain",
+        "mountain"
+      ],
+      "indexes": [
+        {
+          "id": "idx_tapped",
+          "value": {
+            "type": "integer",
+            "name": "Tapped",
+            "defaultValue": 0,
+            "min": 0,
+            "max": 1
+          },
+          "icon": "gi-hourglass",
+          "position": "topRight"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": "Land — tap for {R} (once per turn you may play a land)."
+    },
+    {
+      "id": "tpl_forest",
+      "name": "Forest",
+      "marquee": "Forest",
+      "faceIcon": "gi-forest",
+      "borderColor": "#2b6034",
+      "tags": [
+        "land",
+        "forest",
+        "forest"
+      ],
+      "indexes": [
+        {
+          "id": "idx_tapped",
+          "value": {
+            "type": "integer",
+            "name": "Tapped",
+            "defaultValue": 0,
+            "min": 0,
+            "max": 1
+          },
+          "icon": "gi-hourglass",
+          "position": "topRight"
+        }
+      ],
+      "ruleSetIds": [],
+      "rulesTextOverride": "Land — tap for {G} (once per turn you may play a land)."
+    },
+    {
+      "id": "tpl_bolt",
+      "name": "Lightning Bolt",
+      "marquee": "Lightning Bolt",
+      "faceIcon": "gi-bolt-spell-cast",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "instant",
+        "bolt"
+      ],
+      "indexes": [],
+      "ruleSetIds": [
+        "rs_cast_bolt",
+        "rs_resolve_bolt"
+      ],
+      "rulesTextOverride": "Instant {R} — Lightning Bolt deals 3 damage to target player."
+    },
+    {
+      "id": "tpl_raider",
+      "name": "Goblin Raider",
+      "marquee": "Goblin Raider",
+      "faceIcon": "gi-goblin-head",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "creature",
+        "raider"
+      ],
+      "indexes": [
+        {
+          "id": "idx_power",
+          "value": {
+            "type": "integer",
+            "name": "Power",
+            "defaultValue": 2,
+            "min": 0,
+            "max": 99
+          },
+          "icon": "gi-broadsword",
+          "position": "bottomLeft"
+        },
+        {
+          "id": "idx_toughness",
+          "value": {
+            "type": "integer",
+            "name": "Toughness",
+            "defaultValue": 1,
+            "min": 0,
+            "max": 99
+          },
+          "icon": "gi-shield",
+          "position": "bottomRight"
+        },
+        {
+          "id": "idx_damage",
+          "value": {
+            "type": "integer",
+            "name": "Damage",
+            "defaultValue": 0,
+            "min": 0,
+            "max": 99
+          },
+          "icon": "gi-bleeding-wound",
+          "position": "topRight"
+        },
+        {
+          "id": "idx_ready",
+          "value": {
+            "type": "integer",
+            "name": "Ready",
+            "defaultValue": 0,
+            "min": 0,
+            "max": 1
+          },
+          "icon": "gi-run",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [
+        "rs_cast_raider",
+        "rs_resolve_raider",
+        "rs_strike"
+      ],
+      "rulesTextOverride": "Creature {R} 2/1 — the plain creature: cast it through the stack, strike with it in combat."
+    },
+    {
+      "id": "tpl_warcry",
+      "name": "Goblin War Cry",
+      "marquee": "Goblin War Cry",
+      "faceIcon": "gi-goblin",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "sorcery",
+        "warcry"
+      ],
+      "indexes": [],
+      "ruleSetIds": [
+        "rs_cast_warcry",
+        "rs_resolve_warcry"
+      ],
+      "rulesTextOverride": "Sorcery {R}{R} — Goblin War Cry deals damage equal to the number of creatures you control to target player."
+    },
+    {
+      "id": "tpl_cannon",
+      "name": "Ember Cannon",
+      "marquee": "Ember Cannon",
+      "faceIcon": "gi-burning-round-shot",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "artifact",
+        "cannon",
+        "cannon"
+      ],
+      "indexes": [],
+      "ruleSetIds": [
+        "rs_cast_cannon",
+        "rs_resolve_cannon",
+        "rs_emberCannonAbility"
+      ],
+      "rulesTextOverride": "Artifact {R}{R} — {X}{R}: Ember Cannon deals X damage to target player."
+    },
+    {
+      "id": "tpl_storm",
+      "name": "Splinter Storm",
+      "marquee": "Splinter Storm",
+      "faceIcon": "gi-thrown-daggers",
+      "borderColor": "#9e2f26",
+      "tags": [
+        "instant",
+        "storm"
+      ],
+      "indexes": [],
+      "ruleSetIds": [
+        "rs_cast_storm",
+        "rs_resolve_storm"
+      ],
+      "rulesTextOverride": "Instant {R} — Choose one: Splinter Storm deals 2 damage to target player; or destroy target creature."
+    },
+    {
+      "id": "tpl_bear",
+      "name": "Grizzly Bear",
+      "marquee": "Grizzly Bear",
+      "faceIcon": "gi-bear-head",
+      "borderColor": "#2b6034",
+      "tags": [
+        "creature",
+        "bear"
+      ],
+      "indexes": [
+        {
+          "id": "idx_power",
+          "value": {
+            "type": "integer",
+            "name": "Power",
+            "defaultValue": 2,
+            "min": 0,
+            "max": 99
+          },
+          "icon": "gi-broadsword",
+          "position": "bottomLeft"
+        },
+        {
+          "id": "idx_toughness",
+          "value": {
+            "type": "integer",
+            "name": "Toughness",
+            "defaultValue": 2,
+            "min": 0,
+            "max": 99
+          },
+          "icon": "gi-shield",
+          "position": "bottomRight"
+        },
+        {
+          "id": "idx_damage",
+          "value": {
+            "type": "integer",
+            "name": "Damage",
+            "defaultValue": 0,
+            "min": 0,
+            "max": 99
+          },
+          "icon": "gi-bleeding-wound",
+          "position": "topRight"
+        },
+        {
+          "id": "idx_ready",
+          "value": {
+            "type": "integer",
+            "name": "Ready",
+            "defaultValue": 0,
+            "min": 0,
+            "max": 1
+          },
+          "icon": "gi-run",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [
+        "rs_cast_bear",
+        "rs_resolve_bear",
+        "rs_strike"
+      ],
+      "rulesTextOverride": "Creature {G} 2/2 — a body: something for the Lord to buff and the Altar to eat."
+    },
+    {
+      "id": "tpl_lord",
+      "name": "Timber Lord",
+      "marquee": "Timber Lord",
+      "faceIcon": "gi-crown",
+      "borderColor": "#2b6034",
+      "tags": [
+        "creature",
+        "lord"
+      ],
+      "indexes": [
+        {
+          "id": "idx_power",
+          "value": {
+            "type": "integer",
+            "name": "Power",
+            "defaultValue": 2,
+            "min": 0,
+            "max": 99
+          },
+          "icon": "gi-broadsword",
+          "position": "bottomLeft"
+        },
+        {
+          "id": "idx_toughness",
+          "value": {
+            "type": "integer",
+            "name": "Toughness",
+            "defaultValue": 2,
+            "min": 0,
+            "max": 99
+          },
+          "icon": "gi-shield",
+          "position": "bottomRight"
+        },
+        {
+          "id": "idx_damage",
+          "value": {
+            "type": "integer",
+            "name": "Damage",
+            "defaultValue": 0,
+            "min": 0,
+            "max": 99
+          },
+          "icon": "gi-bleeding-wound",
+          "position": "topRight"
+        },
+        {
+          "id": "idx_ready",
+          "value": {
+            "type": "integer",
+            "name": "Ready",
+            "defaultValue": 0,
+            "min": 0,
+            "max": 1
+          },
+          "icon": "gi-run",
+          "position": "topLeft"
+        }
+      ],
+      "ruleSetIds": [
+        "rs_cast_lord",
+        "rs_resolve_lord",
+        "rs_strike",
+        "rs_lordPower",
+        "rs_lordToughness"
+      ],
+      "rulesTextOverride": "Creature {G}{G} 2/2 — Creatures you control get +1/+1 (this one included)."
+    },
+    {
+      "id": "tpl_growth",
+      "name": "Giant Growth",
+      "marquee": "Giant Growth",
+      "faceIcon": "gi-crystal-growth",
+      "borderColor": "#2b6034",
+      "tags": [
+        "instant",
+        "growth"
+      ],
+      "indexes": [],
+      "ruleSetIds": [
+        "rs_cast_growth",
+        "rs_resolve_growth"
+      ],
+      "rulesTextOverride": "Instant {G} — Target creature gets +3/+3 until end of turn."
+    },
+    {
+      "id": "tpl_altar",
+      "name": "Bone Altar",
+      "marquee": "Bone Altar",
+      "faceIcon": "gi-skull-crossed-bones",
+      "borderColor": "#2b6034",
+      "tags": [
+        "artifact",
+        "altar",
+        "altar"
+      ],
+      "indexes": [],
+      "ruleSetIds": [
+        "rs_cast_altar",
+        "rs_resolve_altar",
+        "rs_boneAltarAbility"
+      ],
+      "rulesTextOverride": "Artifact {G}{G} — Sacrifice a creature: Bone Altar deals 2 damage to target player."
+    },
+    {
+      "id": "tpl_tally",
+      "name": "Sylvan Tally",
+      "marquee": "Sylvan Tally",
+      "faceIcon": "gi-chestnut-leaf",
+      "borderColor": "#2b6034",
+      "tags": [
+        "sorcery",
+        "tally"
+      ],
+      "indexes": [],
+      "ruleSetIds": [
+        "rs_cast_tally",
+        "rs_resolve_tally"
+      ],
+      "rulesTextOverride": "Sorcery {G} — You gain life equal to the total power of the creatures you control."
+    }
+  ],
+  "decks": [
+    {
+      "id": "deck_sparkbloom",
+      "name": "Sparkbloom",
+      "zoneId": "zone_library",
+      "entries": [
+        {
+          "templateId": "tpl_mountain",
+          "quantity": 6
+        },
+        {
+          "templateId": "tpl_forest",
+          "quantity": 6
+        },
+        {
+          "templateId": "tpl_bolt",
+          "quantity": 2
+        },
+        {
+          "templateId": "tpl_raider",
+          "quantity": 2
+        },
+        {
+          "templateId": "tpl_warcry",
+          "quantity": 2
+        },
+        {
+          "templateId": "tpl_cannon",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_storm",
+          "quantity": 2
+        },
+        {
+          "templateId": "tpl_bear",
+          "quantity": 2
+        },
+        {
+          "templateId": "tpl_lord",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_growth",
+          "quantity": 2
+        },
+        {
+          "templateId": "tpl_altar",
+          "quantity": 1
+        },
+        {
+          "templateId": "tpl_tally",
+          "quantity": 1
+        }
+      ]
+    }
+  ],
+  "customEvents": [],
+  "ruleSets": [
+    {
+      "id": "rs_setup",
+      "name": "Set Up the Duel",
+      "trigger": "onGameStart",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "changePool",
+          "poolId": "pool_seatNumber",
+          "seat": {
+            "kind": "seat",
+            "index": 0
+          },
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 0
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_seatNumber",
+          "seat": {
+            "kind": "seat",
+            "index": 1
+          },
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 1
+          }
+        },
+        {
+          "kind": "drawCards",
+          "from": {
+            "zoneId": "zone_library",
+            "seat": {
+              "kind": "seat",
+              "index": 0
+            }
+          },
+          "to": {
+            "zoneId": "zone_hand",
+            "seat": {
+              "kind": "seat",
+              "index": 0
+            }
+          },
+          "count": {
+            "kind": "literal",
+            "value": 5
+          }
+        },
+        {
+          "kind": "drawCards",
+          "from": {
+            "zoneId": "zone_library",
+            "seat": {
+              "kind": "seat",
+              "index": 1
+            }
+          },
+          "to": {
+            "zoneId": "zone_hand",
+            "seat": {
+              "kind": "seat",
+              "index": 1
+            }
+          },
+          "count": {
+            "kind": "literal",
+            "value": 5
+          }
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_emptyMana",
+      "name": "Mana Empties",
+      "trigger": "onStateExit",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "changePool",
+          "poolId": "pool_manaRed",
+          "seat": {
+            "kind": "all"
+          },
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 0
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_manaGreen",
+          "seat": {
+            "kind": "all"
+          },
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 0
+          }
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_untapStep",
+      "name": "Untap Step",
+      "trigger": "onStateEnter",
+      "stateFilter": "state_untap",
+      "condition": null,
+      "effects": [
+        {
+          "kind": "changePool",
+          "poolId": "pool_phase",
+          "seat": null,
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 0
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_landPlayed",
+          "seat": {
+            "kind": "active"
+          },
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": false
+          }
+        },
+        {
+          "kind": "setCardIndex",
+          "target": {
+            "kind": "taggedInZone",
+            "zone": {
+              "zoneId": "zone_battlefield",
+              "seat": {
+                "kind": "active"
+              }
+            },
+            "tag": "land"
+          },
+          "indexId": "idx_tapped",
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 0
+          }
+        },
+        {
+          "kind": "rotateCard",
+          "target": {
+            "kind": "taggedInZone",
+            "zone": {
+              "zoneId": "zone_battlefield",
+              "seat": {
+                "kind": "active"
+              }
+            },
+            "tag": "land"
+          },
+          "to": "upright"
+        },
+        {
+          "kind": "setCardIndex",
+          "target": {
+            "kind": "taggedInZone",
+            "zone": {
+              "zoneId": "zone_battlefield",
+              "seat": {
+                "kind": "active"
+              }
+            },
+            "tag": "creature"
+          },
+          "indexId": "idx_ready",
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 1
+          }
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_attacks",
+          "seat": {
+            "kind": "active"
+          },
+          "op": "set",
+          "amount": {
+            "kind": "countMatching",
+            "from": {
+              "kind": "taggedInZone",
+              "zone": {
+                "zoneId": "zone_battlefield",
+                "seat": {
+                  "kind": "active"
+                }
+              },
+              "tag": "creature"
+            }
+          }
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_drawStep",
+      "name": "Draw Step",
+      "trigger": "onStateEnter",
+      "stateFilter": "state_draw",
+      "condition": null,
+      "effects": [
+        {
+          "kind": "changePool",
+          "poolId": "pool_phase",
+          "seat": null,
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 1
+          }
+        },
+        {
+          "kind": "drawCards",
+          "from": {
+            "zoneId": "zone_library",
+            "seat": {
+              "kind": "active"
+            }
+          },
+          "to": {
+            "zoneId": "zone_hand",
+            "seat": {
+              "kind": "active"
+            }
+          },
+          "count": {
+            "kind": "literal",
+            "value": 1
+          }
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_mainPhase",
+      "name": "Main Phase",
+      "trigger": "onStateEnter",
+      "stateFilter": "state_main",
+      "condition": null,
+      "effects": [
+        {
+          "kind": "changePool",
+          "poolId": "pool_phase",
+          "seat": null,
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 2
+          }
+        },
+        {
+          "kind": "openPriority",
+          "window": "win_stack"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_combatPhase",
+      "name": "Combat Phase",
+      "trigger": "onStateEnter",
+      "stateFilter": "state_combat",
+      "condition": null,
+      "effects": [
+        {
+          "kind": "changePool",
+          "poolId": "pool_phase",
+          "seat": null,
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 3
+          }
+        },
+        {
+          "kind": "openPriority",
+          "window": "win_stack"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_endStep",
+      "name": "End Step",
+      "trigger": "onStateEnter",
+      "stateFilter": "state_endStep",
+      "condition": null,
+      "effects": [
+        {
+          "kind": "changePool",
+          "poolId": "pool_phase",
+          "seat": null,
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 4
+          }
+        },
+        {
+          "kind": "setCardIndex",
+          "target": {
+            "kind": "taggedInZone",
+            "zone": {
+              "zoneId": "zone_battlefield",
+              "seat": {
+                "kind": "all"
+              }
+            },
+            "tag": "creature"
+          },
+          "indexId": "idx_damage",
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 0
+          }
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_growthWearsOff",
+      "name": "Giant Growth Wears Off",
+      "trigger": "onStateEnter",
+      "stateFilter": "state_endStep",
+      "condition": {
+        "kind": "criteria",
+        "left": {
+          "kind": "countMatching",
+          "from": {
+            "kind": "matching",
+            "from": {
+              "kind": "taggedInZone",
+              "zone": {
+                "zoneId": "zone_battlefield",
+                "seat": {
+                  "kind": "all"
+                }
+              },
+              "tag": "creature"
+            },
+            "where": {
+              "kind": "criteria",
+              "left": {
+                "kind": "cardTag",
+                "card": {
+                  "kind": "candidate"
+                },
+                "tag": "grown"
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": true
+              }
+            }
+          }
+        },
+        "op": ">=",
+        "right": {
+          "kind": "literal",
+          "value": 1
+        }
+      },
+      "effects": [
+        {
+          "kind": "setCardIndex",
+          "target": {
+            "kind": "matching",
+            "from": {
+              "kind": "taggedInZone",
+              "zone": {
+                "zoneId": "zone_battlefield",
+                "seat": {
+                  "kind": "all"
+                }
+              },
+              "tag": "creature"
+            },
+            "where": {
+              "kind": "criteria",
+              "left": {
+                "kind": "cardTag",
+                "card": {
+                  "kind": "candidate"
+                },
+                "tag": "grown"
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": true
+              }
+            }
+          },
+          "indexId": "idx_power",
+          "op": "subtract",
+          "amount": {
+            "kind": "literal",
+            "value": 3
+          }
+        },
+        {
+          "kind": "setCardIndex",
+          "target": {
+            "kind": "matching",
+            "from": {
+              "kind": "taggedInZone",
+              "zone": {
+                "zoneId": "zone_battlefield",
+                "seat": {
+                  "kind": "all"
+                }
+              },
+              "tag": "creature"
+            },
+            "where": {
+              "kind": "criteria",
+              "left": {
+                "kind": "cardTag",
+                "card": {
+                  "kind": "candidate"
+                },
+                "tag": "grown"
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": true
+              }
+            }
+          },
+          "indexId": "idx_toughness",
+          "op": "subtract",
+          "amount": {
+            "kind": "literal",
+            "value": 3
+          }
+        },
+        {
+          "kind": "setTag",
+          "target": {
+            "kind": "matching",
+            "from": {
+              "kind": "taggedInZone",
+              "zone": {
+                "zoneId": "zone_battlefield",
+                "seat": {
+                  "kind": "all"
+                }
+              },
+              "tag": "creature"
+            },
+            "where": {
+              "kind": "criteria",
+              "left": {
+                "kind": "cardTag",
+                "card": {
+                  "kind": "candidate"
+                },
+                "tag": "grown"
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": true
+              }
+            }
+          },
+          "tag": "grown",
+          "on": false
+        }
+      ],
+      "priority": 1,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_turnAdvance",
+      "name": "Pass the Turn",
+      "trigger": "onStateExit",
+      "stateFilter": "state_endStep",
+      "condition": null,
+      "effects": [
+        {
+          "kind": "changePool",
+          "poolId": "activePlayer",
+          "seat": null,
+          "op": "add",
+          "amount": {
+            "kind": "literal",
+            "value": 1
+          }
+        }
+      ],
+      "priority": 1,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_turnWrap",
+      "name": "Turn Wraps to Seat 0",
+      "trigger": "onStateExit",
+      "stateFilter": "state_endStep",
+      "condition": {
+        "kind": "criteria",
+        "left": {
+          "kind": "pool",
+          "poolId": "activePlayer",
+          "seat": null
+        },
+        "op": ">=",
+        "right": {
+          "kind": "literal",
+          "value": 2
+        }
+      },
+      "effects": [
+        {
+          "kind": "changePool",
+          "poolId": "activePlayer",
+          "seat": null,
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": 0
+          }
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_playLand",
+      "name": "Play a Land",
+      "trigger": "never_playLand",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "changePool",
+          "poolId": "pool_landPlayed",
+          "seat": {
+            "kind": "triggeringSeat"
+          },
+          "op": "set",
+          "amount": {
+            "kind": "literal",
+            "value": true
+          }
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "group",
+          "combinator": "and",
+          "children": [
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_landPlayed",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": false
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_phase",
+                "seat": null
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": 2
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_seatNumber",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": "=",
+              "right": {
+                "kind": "pool",
+                "poolId": "activePlayer",
+                "seat": null
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "countMatching",
+                "from": {
+                  "kind": "taggedInZone",
+                  "zone": {
+                    "zoneId": "zone_hand",
+                    "seat": {
+                      "kind": "triggeringSeat"
+                    }
+                  },
+                  "tag": "land"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            }
+          ]
+        },
+        "cost": [
+          {
+            "kind": "moveCards",
+            "target": {
+              "kind": "prompt",
+              "from": {
+                "kind": "taggedInZone",
+                "zone": {
+                  "zoneId": "zone_hand",
+                  "seat": {
+                    "kind": "triggeringSeat"
+                  }
+                },
+                "tag": "land"
+              },
+              "count": {
+                "kind": "literal",
+                "value": 1
+              },
+              "promptText": "Play which land?"
+            },
+            "to": {
+              "zoneId": "zone_battlefield",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "position": "top"
+          }
+        ],
+        "window": "win_stack",
+        "perInstance": false,
+        "label": "Play a Land"
+      }
+    },
+    {
+      "id": "rs_tapMountain",
+      "name": "Tap a Mountain",
+      "trigger": "never_rs_tapMountain",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "changePool",
+          "poolId": "pool_manaRed",
+          "seat": {
+            "kind": "triggeringSeat"
+          },
+          "op": "add",
+          "amount": {
+            "kind": "literal",
+            "value": 1
+          }
+        },
+        {
+          "kind": "rotateCard",
+          "target": {
+            "kind": "matching",
+            "from": {
+              "kind": "taggedInZone",
+              "zone": {
+                "zoneId": "zone_battlefield",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "tag": "land"
+            },
+            "where": {
+              "kind": "criteria",
+              "left": {
+                "kind": "cardIndex",
+                "card": {
+                  "kind": "candidate"
+                },
+                "indexId": "idx_tapped"
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            }
+          },
+          "to": "rotated"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "criteria",
+          "left": {
+            "kind": "countMatching",
+            "from": {
+              "kind": "matching",
+              "from": {
+                "kind": "taggedInZone",
+                "zone": {
+                  "zoneId": "zone_battlefield",
+                  "seat": {
+                    "kind": "triggeringSeat"
+                  }
+                },
+                "tag": "mountain"
+              },
+              "where": {
+                "kind": "criteria",
+                "left": {
+                  "kind": "cardIndex",
+                  "card": {
+                    "kind": "candidate"
+                  },
+                  "indexId": "idx_tapped"
+                },
+                "op": "=",
+                "right": {
+                  "kind": "literal",
+                  "value": 0
+                }
+              }
+            }
+          },
+          "op": ">=",
+          "right": {
+            "kind": "literal",
+            "value": 1
+          }
+        },
+        "cost": [
+          {
+            "kind": "setCardIndex",
+            "target": {
+              "kind": "prompt",
+              "from": {
+                "kind": "matching",
+                "from": {
+                  "kind": "taggedInZone",
+                  "zone": {
+                    "zoneId": "zone_battlefield",
+                    "seat": {
+                      "kind": "triggeringSeat"
+                    }
+                  },
+                  "tag": "mountain"
+                },
+                "where": {
+                  "kind": "criteria",
+                  "left": {
+                    "kind": "cardIndex",
+                    "card": {
+                      "kind": "candidate"
+                    },
+                    "indexId": "idx_tapped"
+                  },
+                  "op": "=",
+                  "right": {
+                    "kind": "literal",
+                    "value": 0
+                  }
+                }
+              },
+              "count": {
+                "kind": "literal",
+                "value": 1
+              },
+              "promptText": "Tap which Mountain?"
+            },
+            "indexId": "idx_tapped",
+            "op": "set",
+            "amount": {
+              "kind": "literal",
+              "value": 1
+            }
+          }
+        ],
+        "window": "win_stack",
+        "perInstance": false,
+        "label": "Tap a Mountain for {R}"
+      }
+    },
+    {
+      "id": "rs_tapForest",
+      "name": "Tap a Forest",
+      "trigger": "never_rs_tapForest",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "changePool",
+          "poolId": "pool_manaGreen",
+          "seat": {
+            "kind": "triggeringSeat"
+          },
+          "op": "add",
+          "amount": {
+            "kind": "literal",
+            "value": 1
+          }
+        },
+        {
+          "kind": "rotateCard",
+          "target": {
+            "kind": "matching",
+            "from": {
+              "kind": "taggedInZone",
+              "zone": {
+                "zoneId": "zone_battlefield",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "tag": "land"
+            },
+            "where": {
+              "kind": "criteria",
+              "left": {
+                "kind": "cardIndex",
+                "card": {
+                  "kind": "candidate"
+                },
+                "indexId": "idx_tapped"
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            }
+          },
+          "to": "rotated"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "criteria",
+          "left": {
+            "kind": "countMatching",
+            "from": {
+              "kind": "matching",
+              "from": {
+                "kind": "taggedInZone",
+                "zone": {
+                  "zoneId": "zone_battlefield",
+                  "seat": {
+                    "kind": "triggeringSeat"
+                  }
+                },
+                "tag": "forest"
+              },
+              "where": {
+                "kind": "criteria",
+                "left": {
+                  "kind": "cardIndex",
+                  "card": {
+                    "kind": "candidate"
+                  },
+                  "indexId": "idx_tapped"
+                },
+                "op": "=",
+                "right": {
+                  "kind": "literal",
+                  "value": 0
+                }
+              }
+            }
+          },
+          "op": ">=",
+          "right": {
+            "kind": "literal",
+            "value": 1
+          }
+        },
+        "cost": [
+          {
+            "kind": "setCardIndex",
+            "target": {
+              "kind": "prompt",
+              "from": {
+                "kind": "matching",
+                "from": {
+                  "kind": "taggedInZone",
+                  "zone": {
+                    "zoneId": "zone_battlefield",
+                    "seat": {
+                      "kind": "triggeringSeat"
+                    }
+                  },
+                  "tag": "forest"
+                },
+                "where": {
+                  "kind": "criteria",
+                  "left": {
+                    "kind": "cardIndex",
+                    "card": {
+                      "kind": "candidate"
+                    },
+                    "indexId": "idx_tapped"
+                  },
+                  "op": "=",
+                  "right": {
+                    "kind": "literal",
+                    "value": 0
+                  }
+                }
+              },
+              "count": {
+                "kind": "literal",
+                "value": 1
+              },
+              "promptText": "Tap which Forest?"
+            },
+            "indexId": "idx_tapped",
+            "op": "set",
+            "amount": {
+              "kind": "literal",
+              "value": 1
+            }
+          }
+        ],
+        "window": "win_stack",
+        "perInstance": false,
+        "label": "Tap a Forest for {G}"
+      }
+    },
+    {
+      "id": "rs_strike",
+      "name": "Strike",
+      "trigger": "never_strike",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "chooseSeat",
+          "promptText": "Strike — which player does this creature hit?",
+          "seat": {
+            "kind": "triggeringSeat"
+          },
+          "key": "strikeTarget"
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_life",
+          "seat": {
+            "kind": "promptSeat",
+            "key": "strikeTarget"
+          },
+          "op": "subtract",
+          "amount": {
+            "kind": "cardIndex",
+            "card": {
+              "kind": "self"
+            },
+            "indexId": "idx_power"
+          }
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "group",
+          "combinator": "and",
+          "children": [
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "cardIndex",
+                "card": {
+                  "kind": "self"
+                },
+                "indexId": "idx_ready"
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_seatNumber",
+                "seat": {
+                  "kind": "controller",
+                  "card": {
+                    "kind": "self"
+                  }
+                }
+              },
+              "op": "=",
+              "right": {
+                "kind": "pool",
+                "poolId": "pool_seatNumber",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_phase",
+                "seat": null
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": 3
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_attacks",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            }
+          ]
+        },
+        "cost": [
+          {
+            "kind": "changePool",
+            "poolId": "pool_attacks",
+            "seat": {
+              "kind": "triggeringSeat"
+            },
+            "op": "subtract",
+            "amount": {
+              "kind": "literal",
+              "value": 1
+            }
+          }
+        ],
+        "window": "win_stack",
+        "perInstance": true,
+        "label": "Strike"
+      }
+    },
+    {
+      "id": "rs_emberCannonAbility",
+      "name": "Ember Cannon",
+      "trigger": "never_cannon",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "chooseSeat",
+          "promptText": "Ember Cannon — which player takes X?",
+          "seat": {
+            "kind": "triggeringSeat"
+          },
+          "key": "cannonTarget"
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_life",
+          "seat": {
+            "kind": "promptSeat",
+            "key": "cannonTarget"
+          },
+          "op": "subtract",
+          "amount": {
+            "kind": "promptNumber",
+            "key": "cannonX"
+          }
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "group",
+          "combinator": "and",
+          "children": [
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "countMatching",
+                "from": {
+                  "kind": "taggedInZone",
+                  "zone": {
+                    "zoneId": "zone_battlefield",
+                    "seat": {
+                      "kind": "triggeringSeat"
+                    }
+                  },
+                  "tag": "cannon"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_manaRed",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 2
+              }
+            }
+          ]
+        },
+        "cost": [
+          {
+            "kind": "chooseNumber",
+            "promptText": "Ember Cannon — pay {X}{R}: how much is X?",
+            "seat": {
+              "kind": "triggeringSeat"
+            },
+            "min": {
+              "kind": "literal",
+              "value": 1
+            },
+            "max": {
+              "kind": "arith",
+              "op": "subtract",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_manaRed",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            "key": "cannonX"
+          },
+          {
+            "kind": "changePool",
+            "poolId": "pool_manaRed",
+            "seat": {
+              "kind": "triggeringSeat"
+            },
+            "op": "subtract",
+            "amount": {
+              "kind": "arith",
+              "op": "add",
+              "left": {
+                "kind": "promptNumber",
+                "key": "cannonX"
+              },
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            }
+          }
+        ],
+        "window": "win_stack",
+        "perInstance": false,
+        "label": "Ember Cannon: {X}{R}, X damage"
+      }
+    },
+    {
+      "id": "rs_boneAltarAbility",
+      "name": "Bone Altar",
+      "trigger": "never_altar",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "chooseSeat",
+          "promptText": "Bone Altar — which player takes 2?",
+          "seat": {
+            "kind": "triggeringSeat"
+          },
+          "key": "altarTarget"
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_life",
+          "seat": {
+            "kind": "promptSeat",
+            "key": "altarTarget"
+          },
+          "op": "subtract",
+          "amount": {
+            "kind": "literal",
+            "value": 2
+          }
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "group",
+          "combinator": "and",
+          "children": [
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "countMatching",
+                "from": {
+                  "kind": "taggedInZone",
+                  "zone": {
+                    "zoneId": "zone_battlefield",
+                    "seat": {
+                      "kind": "triggeringSeat"
+                    }
+                  },
+                  "tag": "altar"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "countMatching",
+                "from": {
+                  "kind": "taggedInZone",
+                  "zone": {
+                    "zoneId": "zone_battlefield",
+                    "seat": {
+                      "kind": "triggeringSeat"
+                    }
+                  },
+                  "tag": "creature"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            }
+          ]
+        },
+        "cost": [
+          {
+            "kind": "destroyCards",
+            "target": {
+              "kind": "prompt",
+              "from": {
+                "kind": "taggedInZone",
+                "zone": {
+                  "zoneId": "zone_battlefield",
+                  "seat": {
+                    "kind": "triggeringSeat"
+                  }
+                },
+                "tag": "creature"
+              },
+              "count": {
+                "kind": "literal",
+                "value": 1
+              },
+              "promptText": "Sacrifice which creature?"
+            }
+          }
+        ],
+        "window": "win_stack",
+        "perInstance": false,
+        "label": "Bone Altar: sacrifice a creature, 2 damage"
+      }
+    },
+    {
+      "id": "rs_lordPower",
+      "name": "Timber Lord (+1 power)",
+      "trigger": "never_rs_lordPower",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": {
+        "scope": {
+          "kind": "taggedInZone",
+          "zone": {
+            "zoneId": "zone_battlefield",
+            "seat": {
+              "kind": "controller",
+              "card": {
+                "kind": "self"
+              }
+            }
+          },
+          "tag": "creature"
+        },
+        "indexId": "idx_power",
+        "op": "adjust",
+        "amount": {
+          "kind": "literal",
+          "value": 1
+        },
+        "activeZones": [
+          "zone_battlefield"
+        ]
+      },
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_lordToughness",
+      "name": "Timber Lord (+1 toughness)",
+      "trigger": "never_rs_lordToughness",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": {
+        "scope": {
+          "kind": "taggedInZone",
+          "zone": {
+            "zoneId": "zone_battlefield",
+            "seat": {
+              "kind": "controller",
+              "card": {
+                "kind": "self"
+              }
+            }
+          },
+          "tag": "creature"
+        },
+        "indexId": "idx_toughness",
+        "op": "adjust",
+        "amount": {
+          "kind": "literal",
+          "value": 1
+        },
+        "activeZones": [
+          "zone_battlefield"
+        ]
+      },
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_lethalDamage",
+      "name": "Lethal Damage",
+      "trigger": "never_lethal",
+      "stateFilter": null,
+      "condition": {
+        "kind": "group",
+        "combinator": "and",
+        "children": [
+          {
+            "kind": "criteria",
+            "left": {
+              "kind": "cardIndex",
+              "card": {
+                "kind": "candidate"
+              },
+              "indexId": "idx_damage"
+            },
+            "op": ">=",
+            "right": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          {
+            "kind": "criteria",
+            "left": {
+              "kind": "cardIndex",
+              "card": {
+                "kind": "candidate"
+              },
+              "indexId": "idx_damage"
+            },
+            "op": ">=",
+            "right": {
+              "kind": "cardIndex",
+              "card": {
+                "kind": "candidate"
+              },
+              "indexId": "idx_toughness"
+            }
+          }
+        ]
+      },
+      "effects": [
+        {
+          "kind": "destroyCards",
+          "target": {
+            "kind": "matching",
+            "from": {
+              "kind": "taggedInZone",
+              "zone": {
+                "zoneId": "zone_battlefield",
+                "seat": {
+                  "kind": "all"
+                }
+              },
+              "tag": "creature"
+            },
+            "where": {
+              "kind": "group",
+              "combinator": "and",
+              "children": [
+                {
+                  "kind": "criteria",
+                  "left": {
+                    "kind": "cardIndex",
+                    "card": {
+                      "kind": "candidate"
+                    },
+                    "indexId": "idx_damage"
+                  },
+                  "op": ">=",
+                  "right": {
+                    "kind": "literal",
+                    "value": 1
+                  }
+                },
+                {
+                  "kind": "criteria",
+                  "left": {
+                    "kind": "cardIndex",
+                    "card": {
+                      "kind": "candidate"
+                    },
+                    "indexId": "idx_damage"
+                  },
+                  "op": ">=",
+                  "right": {
+                    "kind": "cardIndex",
+                    "card": {
+                      "kind": "candidate"
+                    },
+                    "indexId": "idx_toughness"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": {
+        "over": {
+          "kind": "taggedInZone",
+          "zone": {
+            "zoneId": "zone_battlefield",
+            "seat": {
+              "kind": "all"
+            }
+          },
+          "tag": "creature"
+        }
+      },
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_cast_bolt",
+      "name": "Cast Lightning Bolt",
+      "trigger": "never_cast_bolt",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "announceAction",
+          "ruleId": "rs_resolve_bolt",
+          "window": "win_stack"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "group",
+          "combinator": "and",
+          "children": [
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_manaRed",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "countMatching",
+                "from": {
+                  "kind": "taggedInZone",
+                  "zone": {
+                    "zoneId": "zone_hand",
+                    "seat": {
+                      "kind": "triggeringSeat"
+                    }
+                  },
+                  "tag": "bolt"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            }
+          ]
+        },
+        "cost": [
+          {
+            "kind": "changePool",
+            "poolId": "pool_manaRed",
+            "seat": {
+              "kind": "triggeringSeat"
+            },
+            "op": "subtract",
+            "amount": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          {
+            "kind": "moveCards",
+            "target": {
+              "kind": "prompt",
+              "from": {
+                "kind": "taggedInZone",
+                "zone": {
+                  "zoneId": "zone_hand",
+                  "seat": {
+                    "kind": "triggeringSeat"
+                  }
+                },
+                "tag": "bolt"
+              },
+              "count": {
+                "kind": "literal",
+                "value": 1
+              },
+              "promptText": "Cast Lightning Bolt — which copy?"
+            },
+            "to": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "position": "top"
+          }
+        ],
+        "window": "win_stack",
+        "perInstance": false,
+        "label": "Cast Lightning Bolt {R}"
+      }
+    },
+    {
+      "id": "rs_resolve_bolt",
+      "name": "Lightning Bolt (resolve)",
+      "trigger": "never_resolve_bolt",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "chooseSeat",
+          "promptText": "Lightning Bolt — which player takes 3?",
+          "seat": {
+            "kind": "triggeringSeat"
+          },
+          "key": "boltTarget"
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_life",
+          "seat": {
+            "kind": "promptSeat",
+            "key": "boltTarget"
+          },
+          "op": "subtract",
+          "amount": {
+            "kind": "literal",
+            "value": 3
+          }
+        },
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "topOfZone",
+            "zone": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "count": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          "to": {
+            "zoneId": "zone_graveyard",
+            "seat": {
+              "kind": "triggeringSeat"
+            }
+          },
+          "position": "top"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_cast_raider",
+      "name": "Cast Goblin Raider",
+      "trigger": "never_cast_raider",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "announceAction",
+          "ruleId": "rs_resolve_raider",
+          "window": "win_stack"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "group",
+          "combinator": "and",
+          "children": [
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_manaRed",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "countMatching",
+                "from": {
+                  "kind": "taggedInZone",
+                  "zone": {
+                    "zoneId": "zone_hand",
+                    "seat": {
+                      "kind": "triggeringSeat"
+                    }
+                  },
+                  "tag": "raider"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_phase",
+                "seat": null
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": 2
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_seatNumber",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": "=",
+              "right": {
+                "kind": "pool",
+                "poolId": "activePlayer",
+                "seat": null
+              }
+            }
+          ]
+        },
+        "cost": [
+          {
+            "kind": "changePool",
+            "poolId": "pool_manaRed",
+            "seat": {
+              "kind": "triggeringSeat"
+            },
+            "op": "subtract",
+            "amount": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          {
+            "kind": "moveCards",
+            "target": {
+              "kind": "prompt",
+              "from": {
+                "kind": "taggedInZone",
+                "zone": {
+                  "zoneId": "zone_hand",
+                  "seat": {
+                    "kind": "triggeringSeat"
+                  }
+                },
+                "tag": "raider"
+              },
+              "count": {
+                "kind": "literal",
+                "value": 1
+              },
+              "promptText": "Cast Goblin Raider — which copy?"
+            },
+            "to": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "position": "top"
+          }
+        ],
+        "window": "win_stack",
+        "perInstance": false,
+        "label": "Cast Goblin Raider {R}"
+      }
+    },
+    {
+      "id": "rs_resolve_raider",
+      "name": "Goblin Raider (resolve)",
+      "trigger": "never_resolve_raider",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "topOfZone",
+            "zone": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "count": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          "to": {
+            "zoneId": "zone_battlefield",
+            "seat": {
+              "kind": "triggeringSeat"
+            }
+          },
+          "position": "top"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_cast_warcry",
+      "name": "Cast Goblin War Cry",
+      "trigger": "never_cast_warcry",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "announceAction",
+          "ruleId": "rs_resolve_warcry",
+          "window": "win_stack"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "group",
+          "combinator": "and",
+          "children": [
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_manaRed",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 2
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "countMatching",
+                "from": {
+                  "kind": "taggedInZone",
+                  "zone": {
+                    "zoneId": "zone_hand",
+                    "seat": {
+                      "kind": "triggeringSeat"
+                    }
+                  },
+                  "tag": "warcry"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_phase",
+                "seat": null
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": 2
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_seatNumber",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": "=",
+              "right": {
+                "kind": "pool",
+                "poolId": "activePlayer",
+                "seat": null
+              }
+            }
+          ]
+        },
+        "cost": [
+          {
+            "kind": "changePool",
+            "poolId": "pool_manaRed",
+            "seat": {
+              "kind": "triggeringSeat"
+            },
+            "op": "subtract",
+            "amount": {
+              "kind": "literal",
+              "value": 2
+            }
+          },
+          {
+            "kind": "moveCards",
+            "target": {
+              "kind": "prompt",
+              "from": {
+                "kind": "taggedInZone",
+                "zone": {
+                  "zoneId": "zone_hand",
+                  "seat": {
+                    "kind": "triggeringSeat"
+                  }
+                },
+                "tag": "warcry"
+              },
+              "count": {
+                "kind": "literal",
+                "value": 1
+              },
+              "promptText": "Cast Goblin War Cry — which copy?"
+            },
+            "to": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "position": "top"
+          }
+        ],
+        "window": "win_stack",
+        "perInstance": false,
+        "label": "Cast Goblin War Cry {R}{R}"
+      }
+    },
+    {
+      "id": "rs_resolve_warcry",
+      "name": "Goblin War Cry (resolve)",
+      "trigger": "never_resolve_warcry",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "chooseSeat",
+          "promptText": "Goblin War Cry — which player takes it?",
+          "seat": {
+            "kind": "triggeringSeat"
+          },
+          "key": "warCryTarget"
+        },
+        {
+          "kind": "changePool",
+          "poolId": "pool_life",
+          "seat": {
+            "kind": "promptSeat",
+            "key": "warCryTarget"
+          },
+          "op": "subtract",
+          "amount": {
+            "kind": "countMatching",
+            "from": {
+              "kind": "taggedInZone",
+              "zone": {
+                "zoneId": "zone_battlefield",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "tag": "creature"
+            }
+          }
+        },
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "topOfZone",
+            "zone": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "count": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          "to": {
+            "zoneId": "zone_graveyard",
+            "seat": {
+              "kind": "triggeringSeat"
+            }
+          },
+          "position": "top"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_cast_cannon",
+      "name": "Cast Ember Cannon",
+      "trigger": "never_cast_cannon",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "announceAction",
+          "ruleId": "rs_resolve_cannon",
+          "window": "win_stack"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "group",
+          "combinator": "and",
+          "children": [
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_manaRed",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 2
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "countMatching",
+                "from": {
+                  "kind": "taggedInZone",
+                  "zone": {
+                    "zoneId": "zone_hand",
+                    "seat": {
+                      "kind": "triggeringSeat"
+                    }
+                  },
+                  "tag": "cannon"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_phase",
+                "seat": null
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": 2
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_seatNumber",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": "=",
+              "right": {
+                "kind": "pool",
+                "poolId": "activePlayer",
+                "seat": null
+              }
+            }
+          ]
+        },
+        "cost": [
+          {
+            "kind": "changePool",
+            "poolId": "pool_manaRed",
+            "seat": {
+              "kind": "triggeringSeat"
+            },
+            "op": "subtract",
+            "amount": {
+              "kind": "literal",
+              "value": 2
+            }
+          },
+          {
+            "kind": "moveCards",
+            "target": {
+              "kind": "prompt",
+              "from": {
+                "kind": "taggedInZone",
+                "zone": {
+                  "zoneId": "zone_hand",
+                  "seat": {
+                    "kind": "triggeringSeat"
+                  }
+                },
+                "tag": "cannon"
+              },
+              "count": {
+                "kind": "literal",
+                "value": 1
+              },
+              "promptText": "Cast Ember Cannon — which copy?"
+            },
+            "to": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "position": "top"
+          }
+        ],
+        "window": "win_stack",
+        "perInstance": false,
+        "label": "Cast Ember Cannon {R}{R}"
+      }
+    },
+    {
+      "id": "rs_resolve_cannon",
+      "name": "Ember Cannon (resolve)",
+      "trigger": "never_resolve_cannon",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "topOfZone",
+            "zone": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "count": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          "to": {
+            "zoneId": "zone_battlefield",
+            "seat": {
+              "kind": "triggeringSeat"
+            }
+          },
+          "position": "top"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_cast_storm",
+      "name": "Cast Splinter Storm",
+      "trigger": "never_cast_storm",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "announceAction",
+          "ruleId": "rs_resolve_storm",
+          "window": "win_stack"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "group",
+          "combinator": "and",
+          "children": [
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_manaRed",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "countMatching",
+                "from": {
+                  "kind": "taggedInZone",
+                  "zone": {
+                    "zoneId": "zone_hand",
+                    "seat": {
+                      "kind": "triggeringSeat"
+                    }
+                  },
+                  "tag": "storm"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            }
+          ]
+        },
+        "cost": [
+          {
+            "kind": "changePool",
+            "poolId": "pool_manaRed",
+            "seat": {
+              "kind": "triggeringSeat"
+            },
+            "op": "subtract",
+            "amount": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          {
+            "kind": "moveCards",
+            "target": {
+              "kind": "prompt",
+              "from": {
+                "kind": "taggedInZone",
+                "zone": {
+                  "zoneId": "zone_hand",
+                  "seat": {
+                    "kind": "triggeringSeat"
+                  }
+                },
+                "tag": "storm"
+              },
+              "count": {
+                "kind": "literal",
+                "value": 1
+              },
+              "promptText": "Cast Splinter Storm — which copy?"
+            },
+            "to": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "position": "top"
+          }
+        ],
+        "window": "win_stack",
+        "perInstance": false,
+        "label": "Cast Splinter Storm {R}"
+      }
+    },
+    {
+      "id": "rs_resolve_storm",
+      "name": "Splinter Storm (resolve)",
+      "trigger": "never_resolve_storm",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "chooseMode",
+          "promptText": "Splinter Storm — choose one",
+          "seat": {
+            "kind": "triggeringSeat"
+          },
+          "modes": [
+            {
+              "label": "Deal 2 damage to target player",
+              "effects": [
+                {
+                  "kind": "chooseSeat",
+                  "promptText": "Splinter Storm — which player takes 2?",
+                  "seat": {
+                    "kind": "triggeringSeat"
+                  },
+                  "key": "stormTarget"
+                },
+                {
+                  "kind": "changePool",
+                  "poolId": "pool_life",
+                  "seat": {
+                    "kind": "promptSeat",
+                    "key": "stormTarget"
+                  },
+                  "op": "subtract",
+                  "amount": {
+                    "kind": "literal",
+                    "value": 2
+                  }
+                }
+              ]
+            },
+            {
+              "label": "Destroy target creature",
+              "effects": [
+                {
+                  "kind": "destroyCards",
+                  "target": {
+                    "kind": "prompt",
+                    "from": {
+                      "kind": "taggedInZone",
+                      "zone": {
+                        "zoneId": "zone_battlefield",
+                        "seat": {
+                          "kind": "all"
+                        }
+                      },
+                      "tag": "creature"
+                    },
+                    "count": {
+                      "kind": "literal",
+                      "value": 1
+                    },
+                    "promptText": "Splinter Storm — destroy which creature?"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "topOfZone",
+            "zone": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "count": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          "to": {
+            "zoneId": "zone_graveyard",
+            "seat": {
+              "kind": "triggeringSeat"
+            }
+          },
+          "position": "top"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_cast_bear",
+      "name": "Cast Grizzly Bear",
+      "trigger": "never_cast_bear",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "announceAction",
+          "ruleId": "rs_resolve_bear",
+          "window": "win_stack"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "group",
+          "combinator": "and",
+          "children": [
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_manaGreen",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "countMatching",
+                "from": {
+                  "kind": "taggedInZone",
+                  "zone": {
+                    "zoneId": "zone_hand",
+                    "seat": {
+                      "kind": "triggeringSeat"
+                    }
+                  },
+                  "tag": "bear"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_phase",
+                "seat": null
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": 2
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_seatNumber",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": "=",
+              "right": {
+                "kind": "pool",
+                "poolId": "activePlayer",
+                "seat": null
+              }
+            }
+          ]
+        },
+        "cost": [
+          {
+            "kind": "changePool",
+            "poolId": "pool_manaGreen",
+            "seat": {
+              "kind": "triggeringSeat"
+            },
+            "op": "subtract",
+            "amount": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          {
+            "kind": "moveCards",
+            "target": {
+              "kind": "prompt",
+              "from": {
+                "kind": "taggedInZone",
+                "zone": {
+                  "zoneId": "zone_hand",
+                  "seat": {
+                    "kind": "triggeringSeat"
+                  }
+                },
+                "tag": "bear"
+              },
+              "count": {
+                "kind": "literal",
+                "value": 1
+              },
+              "promptText": "Cast Grizzly Bear — which copy?"
+            },
+            "to": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "position": "top"
+          }
+        ],
+        "window": "win_stack",
+        "perInstance": false,
+        "label": "Cast Grizzly Bear {G}"
+      }
+    },
+    {
+      "id": "rs_resolve_bear",
+      "name": "Grizzly Bear (resolve)",
+      "trigger": "never_resolve_bear",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "topOfZone",
+            "zone": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "count": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          "to": {
+            "zoneId": "zone_battlefield",
+            "seat": {
+              "kind": "triggeringSeat"
+            }
+          },
+          "position": "top"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_cast_lord",
+      "name": "Cast Timber Lord",
+      "trigger": "never_cast_lord",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "announceAction",
+          "ruleId": "rs_resolve_lord",
+          "window": "win_stack"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "group",
+          "combinator": "and",
+          "children": [
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_manaGreen",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 2
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "countMatching",
+                "from": {
+                  "kind": "taggedInZone",
+                  "zone": {
+                    "zoneId": "zone_hand",
+                    "seat": {
+                      "kind": "triggeringSeat"
+                    }
+                  },
+                  "tag": "lord"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_phase",
+                "seat": null
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": 2
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_seatNumber",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": "=",
+              "right": {
+                "kind": "pool",
+                "poolId": "activePlayer",
+                "seat": null
+              }
+            }
+          ]
+        },
+        "cost": [
+          {
+            "kind": "changePool",
+            "poolId": "pool_manaGreen",
+            "seat": {
+              "kind": "triggeringSeat"
+            },
+            "op": "subtract",
+            "amount": {
+              "kind": "literal",
+              "value": 2
+            }
+          },
+          {
+            "kind": "moveCards",
+            "target": {
+              "kind": "prompt",
+              "from": {
+                "kind": "taggedInZone",
+                "zone": {
+                  "zoneId": "zone_hand",
+                  "seat": {
+                    "kind": "triggeringSeat"
+                  }
+                },
+                "tag": "lord"
+              },
+              "count": {
+                "kind": "literal",
+                "value": 1
+              },
+              "promptText": "Cast Timber Lord — which copy?"
+            },
+            "to": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "position": "top"
+          }
+        ],
+        "window": "win_stack",
+        "perInstance": false,
+        "label": "Cast Timber Lord {G}{G}"
+      }
+    },
+    {
+      "id": "rs_resolve_lord",
+      "name": "Timber Lord (resolve)",
+      "trigger": "never_resolve_lord",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "topOfZone",
+            "zone": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "count": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          "to": {
+            "zoneId": "zone_battlefield",
+            "seat": {
+              "kind": "triggeringSeat"
+            }
+          },
+          "position": "top"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_cast_growth",
+      "name": "Cast Giant Growth",
+      "trigger": "never_cast_growth",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "announceAction",
+          "ruleId": "rs_resolve_growth",
+          "window": "win_stack"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "group",
+          "combinator": "and",
+          "children": [
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_manaGreen",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "countMatching",
+                "from": {
+                  "kind": "taggedInZone",
+                  "zone": {
+                    "zoneId": "zone_hand",
+                    "seat": {
+                      "kind": "triggeringSeat"
+                    }
+                  },
+                  "tag": "growth"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            }
+          ]
+        },
+        "cost": [
+          {
+            "kind": "changePool",
+            "poolId": "pool_manaGreen",
+            "seat": {
+              "kind": "triggeringSeat"
+            },
+            "op": "subtract",
+            "amount": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          {
+            "kind": "moveCards",
+            "target": {
+              "kind": "prompt",
+              "from": {
+                "kind": "taggedInZone",
+                "zone": {
+                  "zoneId": "zone_hand",
+                  "seat": {
+                    "kind": "triggeringSeat"
+                  }
+                },
+                "tag": "growth"
+              },
+              "count": {
+                "kind": "literal",
+                "value": 1
+              },
+              "promptText": "Cast Giant Growth — which copy?"
+            },
+            "to": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "position": "top"
+          }
+        ],
+        "window": "win_stack",
+        "perInstance": false,
+        "label": "Cast Giant Growth {G}"
+      }
+    },
+    {
+      "id": "rs_resolve_growth",
+      "name": "Giant Growth (resolve)",
+      "trigger": "never_resolve_growth",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "setTag",
+          "target": {
+            "kind": "prompt",
+            "from": {
+              "kind": "taggedInZone",
+              "zone": {
+                "zoneId": "zone_battlefield",
+                "seat": {
+                  "kind": "all"
+                }
+              },
+              "tag": "creature"
+            },
+            "count": {
+              "kind": "literal",
+              "value": 1
+            },
+            "promptText": "Giant Growth — which creature?"
+          },
+          "tag": "growing",
+          "on": true
+        },
+        {
+          "kind": "setCardIndex",
+          "target": {
+            "kind": "matching",
+            "from": {
+              "kind": "taggedInZone",
+              "zone": {
+                "zoneId": "zone_battlefield",
+                "seat": {
+                  "kind": "all"
+                }
+              },
+              "tag": "creature"
+            },
+            "where": {
+              "kind": "criteria",
+              "left": {
+                "kind": "cardTag",
+                "card": {
+                  "kind": "candidate"
+                },
+                "tag": "growing"
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": true
+              }
+            }
+          },
+          "indexId": "idx_power",
+          "op": "add",
+          "amount": {
+            "kind": "literal",
+            "value": 3
+          }
+        },
+        {
+          "kind": "setCardIndex",
+          "target": {
+            "kind": "matching",
+            "from": {
+              "kind": "taggedInZone",
+              "zone": {
+                "zoneId": "zone_battlefield",
+                "seat": {
+                  "kind": "all"
+                }
+              },
+              "tag": "creature"
+            },
+            "where": {
+              "kind": "criteria",
+              "left": {
+                "kind": "cardTag",
+                "card": {
+                  "kind": "candidate"
+                },
+                "tag": "growing"
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": true
+              }
+            }
+          },
+          "indexId": "idx_toughness",
+          "op": "add",
+          "amount": {
+            "kind": "literal",
+            "value": 3
+          }
+        },
+        {
+          "kind": "setTag",
+          "target": {
+            "kind": "matching",
+            "from": {
+              "kind": "taggedInZone",
+              "zone": {
+                "zoneId": "zone_battlefield",
+                "seat": {
+                  "kind": "all"
+                }
+              },
+              "tag": "creature"
+            },
+            "where": {
+              "kind": "criteria",
+              "left": {
+                "kind": "cardTag",
+                "card": {
+                  "kind": "candidate"
+                },
+                "tag": "growing"
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": true
+              }
+            }
+          },
+          "tag": "grown",
+          "on": true
+        },
+        {
+          "kind": "setTag",
+          "target": {
+            "kind": "matching",
+            "from": {
+              "kind": "taggedInZone",
+              "zone": {
+                "zoneId": "zone_battlefield",
+                "seat": {
+                  "kind": "all"
+                }
+              },
+              "tag": "creature"
+            },
+            "where": {
+              "kind": "criteria",
+              "left": {
+                "kind": "cardTag",
+                "card": {
+                  "kind": "candidate"
+                },
+                "tag": "growing"
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": true
+              }
+            }
+          },
+          "tag": "growing",
+          "on": false
+        },
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "topOfZone",
+            "zone": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "count": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          "to": {
+            "zoneId": "zone_graveyard",
+            "seat": {
+              "kind": "triggeringSeat"
+            }
+          },
+          "position": "top"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_cast_altar",
+      "name": "Cast Bone Altar",
+      "trigger": "never_cast_altar",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "announceAction",
+          "ruleId": "rs_resolve_altar",
+          "window": "win_stack"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "group",
+          "combinator": "and",
+          "children": [
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_manaGreen",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 2
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "countMatching",
+                "from": {
+                  "kind": "taggedInZone",
+                  "zone": {
+                    "zoneId": "zone_hand",
+                    "seat": {
+                      "kind": "triggeringSeat"
+                    }
+                  },
+                  "tag": "altar"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_phase",
+                "seat": null
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": 2
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_seatNumber",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": "=",
+              "right": {
+                "kind": "pool",
+                "poolId": "activePlayer",
+                "seat": null
+              }
+            }
+          ]
+        },
+        "cost": [
+          {
+            "kind": "changePool",
+            "poolId": "pool_manaGreen",
+            "seat": {
+              "kind": "triggeringSeat"
+            },
+            "op": "subtract",
+            "amount": {
+              "kind": "literal",
+              "value": 2
+            }
+          },
+          {
+            "kind": "moveCards",
+            "target": {
+              "kind": "prompt",
+              "from": {
+                "kind": "taggedInZone",
+                "zone": {
+                  "zoneId": "zone_hand",
+                  "seat": {
+                    "kind": "triggeringSeat"
+                  }
+                },
+                "tag": "altar"
+              },
+              "count": {
+                "kind": "literal",
+                "value": 1
+              },
+              "promptText": "Cast Bone Altar — which copy?"
+            },
+            "to": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "position": "top"
+          }
+        ],
+        "window": "win_stack",
+        "perInstance": false,
+        "label": "Cast Bone Altar {G}{G}"
+      }
+    },
+    {
+      "id": "rs_resolve_altar",
+      "name": "Bone Altar (resolve)",
+      "trigger": "never_resolve_altar",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "topOfZone",
+            "zone": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "count": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          "to": {
+            "zoneId": "zone_battlefield",
+            "seat": {
+              "kind": "triggeringSeat"
+            }
+          },
+          "position": "top"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    },
+    {
+      "id": "rs_cast_tally",
+      "name": "Cast Sylvan Tally",
+      "trigger": "never_cast_tally",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "announceAction",
+          "ruleId": "rs_resolve_tally",
+          "window": "win_stack"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": {
+        "costCheck": {
+          "kind": "group",
+          "combinator": "and",
+          "children": [
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_manaGreen",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "countMatching",
+                "from": {
+                  "kind": "taggedInZone",
+                  "zone": {
+                    "zoneId": "zone_hand",
+                    "seat": {
+                      "kind": "triggeringSeat"
+                    }
+                  },
+                  "tag": "tally"
+                }
+              },
+              "op": ">=",
+              "right": {
+                "kind": "literal",
+                "value": 1
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_phase",
+                "seat": null
+              },
+              "op": "=",
+              "right": {
+                "kind": "literal",
+                "value": 2
+              }
+            },
+            {
+              "kind": "criteria",
+              "left": {
+                "kind": "pool",
+                "poolId": "pool_seatNumber",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "op": "=",
+              "right": {
+                "kind": "pool",
+                "poolId": "activePlayer",
+                "seat": null
+              }
+            }
+          ]
+        },
+        "cost": [
+          {
+            "kind": "changePool",
+            "poolId": "pool_manaGreen",
+            "seat": {
+              "kind": "triggeringSeat"
+            },
+            "op": "subtract",
+            "amount": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          {
+            "kind": "moveCards",
+            "target": {
+              "kind": "prompt",
+              "from": {
+                "kind": "taggedInZone",
+                "zone": {
+                  "zoneId": "zone_hand",
+                  "seat": {
+                    "kind": "triggeringSeat"
+                  }
+                },
+                "tag": "tally"
+              },
+              "count": {
+                "kind": "literal",
+                "value": 1
+              },
+              "promptText": "Cast Sylvan Tally — which copy?"
+            },
+            "to": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "position": "top"
+          }
+        ],
+        "window": "win_stack",
+        "perInstance": false,
+        "label": "Cast Sylvan Tally {G}"
+      }
+    },
+    {
+      "id": "rs_resolve_tally",
+      "name": "Sylvan Tally (resolve)",
+      "trigger": "never_resolve_tally",
+      "stateFilter": null,
+      "condition": null,
+      "effects": [
+        {
+          "kind": "changePool",
+          "poolId": "pool_life",
+          "seat": {
+            "kind": "triggeringSeat"
+          },
+          "op": "add",
+          "amount": {
+            "kind": "sumIndex",
+            "from": {
+              "kind": "taggedInZone",
+              "zone": {
+                "zoneId": "zone_battlefield",
+                "seat": {
+                  "kind": "triggeringSeat"
+                }
+              },
+              "tag": "creature"
+            },
+            "indexId": "idx_power"
+          }
+        },
+        {
+          "kind": "moveCards",
+          "target": {
+            "kind": "topOfZone",
+            "zone": {
+              "zoneId": "zone_stack",
+              "seat": {
+                "kind": "triggeringSeat"
+              }
+            },
+            "count": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          "to": {
+            "zoneId": "zone_graveyard",
+            "seat": {
+              "kind": "triggeringSeat"
+            }
+          },
+          "position": "top"
+        }
+      ],
+      "priority": 0,
+      "onRejection": "continue",
+      "modifier": null,
+      "continuous": false,
+      "replaces": null,
+      "activation": null
+    }
+  ],
+  "globalRuleSetIds": [
+    "rs_setup",
+    "rs_emptyMana",
+    "rs_untapStep",
+    "rs_drawStep",
+    "rs_mainPhase",
+    "rs_combatPhase",
+    "rs_endStep",
+    "rs_growthWearsOff",
+    "rs_turnAdvance",
+    "rs_turnWrap",
+    "rs_playLand",
+    "rs_tapMountain",
+    "rs_tapForest",
+    "rs_lethalDamage"
+  ],
+  "priorityWindows": [
+    {
+      "id": "win_stack",
+      "name": "Priority",
+      "start": "active",
+      "direction": "forward",
+      "includeStart": true,
+      "passesToClose": null,
+      "collapseEmptyOffers": true
+    }
+  ],
+  "machine": {
+    "states": [
+      {
+        "id": "start",
+        "name": "Start",
+        "enterableFrom": [],
+        "exitableTo": [
+          "state_untap"
+        ],
+        "entryCriteria": null,
+        "transitionLabel": null,
+        "priority": 0,
+        "position": {
+          "x": 0,
+          "y": 0
+        }
+      },
+      {
+        "id": "state_untap",
+        "name": "Untap",
+        "enterableFrom": [
+          "start",
+          "state_endStep"
+        ],
+        "exitableTo": [
+          "state_draw"
+        ],
+        "entryCriteria": null,
+        "transitionLabel": "Untap",
+        "priority": 0,
+        "position": {
+          "x": 160,
+          "y": 0
+        }
+      },
+      {
+        "id": "state_draw",
+        "name": "Draw",
+        "enterableFrom": [
+          "state_untap"
+        ],
+        "exitableTo": [
+          "state_main"
+        ],
+        "entryCriteria": null,
+        "transitionLabel": "Draw a card",
+        "priority": 0,
+        "position": {
+          "x": 320,
+          "y": 0
+        }
+      },
+      {
+        "id": "state_main",
+        "name": "Main",
+        "enterableFrom": [
+          "state_draw"
+        ],
+        "exitableTo": [
+          "state_combat"
+        ],
+        "entryCriteria": null,
+        "transitionLabel": "Main phase",
+        "priority": 0,
+        "position": {
+          "x": 480,
+          "y": 0
+        }
+      },
+      {
+        "id": "state_combat",
+        "name": "Combat",
+        "enterableFrom": [
+          "state_main"
+        ],
+        "exitableTo": [
+          "state_endStep"
+        ],
+        "entryCriteria": null,
+        "transitionLabel": "Combat",
+        "priority": 0,
+        "position": {
+          "x": 640,
+          "y": 0
+        }
+      },
+      {
+        "id": "state_endStep",
+        "name": "End Step",
+        "enterableFrom": [
+          "state_combat"
+        ],
+        "exitableTo": [
+          "state_untap",
+          "end"
+        ],
+        "entryCriteria": null,
+        "transitionLabel": "End the turn",
+        "priority": 0,
+        "position": {
+          "x": 800,
+          "y": 0
+        }
+      },
+      {
+        "id": "end",
+        "name": "Game Over",
+        "enterableFrom": [
+          "state_endStep"
+        ],
+        "exitableTo": [],
+        "entryCriteria": null,
+        "transitionLabel": "Concede the game",
+        "priority": 0,
+        "position": {
+          "x": 960,
+          "y": 0
+        }
+      }
+    ],
+    "startStateId": "start",
+    "endStateId": "end"
+  },
+  "limits": {
+    "maxDepth": 256,
+    "maxEffects": 50000,
+    "maxSettleIterations": 64,
+    "maxPriorityRounds": 256
+  },
+  "updatedAt": "2026-07-30T00:00:00.000Z"
+}

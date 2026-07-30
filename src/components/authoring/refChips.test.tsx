@@ -278,7 +278,8 @@ describe('<CardRefChip>', () => {
     render(<LiveCard initial={{ kind: 'triggering' }} />);
 
     await open(user);
-    expect(within(screen.getByRole('dialog')).getAllByRole('radio')).toHaveLength(5);
+    // 6 rows as of v4 §4.2's `self`; the two runtime-only kinds are still not among them.
+    expect(within(screen.getByRole('dialog')).getAllByRole('radio')).toHaveLength(6);
     expect(screen.queryByRole('radio', { name: /chosen card/i })).not.toBeInTheDocument();
   });
 

@@ -136,6 +136,11 @@ function bindValueRef(ref: ValueRef, b: ReplacementBinding): ValueRef {
       return { ...ref, card: bindCardRef(ref.card, b) };
     case 'cardTag':
       return { ...ref, card: bindCardRef(ref.card, b) };
+    // v4 §4.1 — "the replaced amount plus one" is the first thing anyone writes with `arith`, and
+    // the binding is a SUBSTITUTION, so an operand left unvisited resolves UNBOUND_REF at eval.
+    // The folds are not descended into for the same documented reason `owner`/`controller` are not.
+    case 'arith':
+      return { ...ref, left: bindValueRef(ref.left, b), right: bindValueRef(ref.right, b) };
     default:
       return ref;
   }

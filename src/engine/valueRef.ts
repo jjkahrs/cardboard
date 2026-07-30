@@ -20,7 +20,11 @@ import { fail, resolveCardRef, resolveSeat, resolveZoneKeys } from './seats';
 import type { ResolutionFail } from './seats';
 // Cyclic with `modifiers.ts` by design (§5.4): a computed value is defined in terms of the refs it
 // reads. Only ever called from inside a function body, so module evaluation order is irrelevant.
-import { effectiveIndex, effectiveTags } from './modifiers';
+import { effectiveIndex, effectiveTags, guardReentrant } from './modifiers';
+// v4 §4.1 — `countMatching`/`sumIndex` fold over a selector, so a value now reaches the targeting
+// language. Cyclic with `targets.ts` (which resolves this module's `count` refs) on the same terms
+// as `modifiers.ts` above: function-body calls only.
+import { resolveTargets } from './targets';
 // v2 §4.2, §4.8, step 23 — `pending.ts` owns ActionRef/ActionSelector resolution the way `seats.ts`
 // owns SeatRef/CardRef. Cyclic with `criteria.ts`/`valueRef.ts` by design (`pending.ts`'s
 // `allOnStack` needs `evalCriteria`, which needs `resolveValueRef` from here) — function-body calls
@@ -89,6 +93,83 @@ export function resolvePoolDef(def: GameDefinition, poolId: Id): PointPool | und
 }
 
 // ---------------------------------------------------------------------------
+// v4 §4.1 — derived values (G1, G2)
+// ---------------------------------------------------------------------------
+
+const ARITH: Record<Extract<ValueRef, { kind: 'arith' }>['op'], (l: number, r: number) => number> = {
+  add: (l, r) => l + r,
+  subtract: (l, r) => l - r,
+  multiply: (l, r) => l * r,
+  min: Math.min,
+  max: Math.max,
+};
+
+/** One side of an `arith`: exactly one value, and a number. */
+function operand(
+  ref: ValueRef,
+  state: PlayState,
+  ctx: TriggerContext,
+  def: GameDefinition,
+  depth: number,
+  side: 'left' | 'right'
+): { ok: true; value: number } | ResolutionFail {
+  const res = resolveValueRef(ref, state, ctx, def, depth);
+  if (!res.ok) return res;
+  // A `pool` over `all` seats resolves to one value PER SEAT, and "HP of each player plus 1" has no
+  // single answer. Same arity guard, same reason code, as `targets.ts`'s `resolveCount`.
+  if (res.values.length !== 1) {
+    return fail('INVALID_SEAT', `Arithmetic ${side} operand resolved to ${res.values.length} values; expected exactly one.`);
+  }
+  const value = res.values[0];
+  // Never coerced. `modifiers.ts`'s `adjust` refuses a boolean the same way, and `quantified`'s
+  // `sum` above refuses it for the same reason: a boolean has no defined sum or product.
+  if (typeof value !== 'number') {
+    return fail('TYPE_MISMATCH', `Arithmetic ${side} operand resolved to a boolean; arithmetic needs numbers.`);
+  }
+  return { ok: true, value };
+}
+
+/** The zero fold — an empty board counts 0 and totals 0, rather than refusing to resolve. */
+const emptyFold = (): ValueResolution => ({ ok: true, values: [0], quantifier: 'every' });
+
+function foldOverTargets(
+  ref: Extract<ValueRef, { kind: 'countMatching' | 'sumIndex' }>,
+  state: PlayState,
+  ctx: TriggerContext,
+  def: GameDefinition
+): ValueResolution {
+  const res = resolveTargets(ref.from, state, ctx, def);
+  // NO_TARGETS is "none", not a failure: "damage equal to the number of creatures you control" has
+  // to read 0 on an empty board. Every other failure (a deleted zone, an unbound ref) still
+  // propagates — a dangling read must not come back as a plausible number (§5.9).
+  if (!res.ok) return res.reason === 'NO_TARGETS' ? emptyFold() : res;
+  // v4 §3 decision 4, the shape `modifiers.ts:194` already handles for a modifier's `prompt` scope:
+  // a prompt selector resolves to CANDIDATES, never a selection, and a read never asks a question.
+  // `matching` propagates the prompt variant outward, so this catches a prompt at any depth.
+  if (res.kind !== 'cards') return emptyFold();
+
+  if (ref.kind === 'countMatching') {
+    return { ok: true, values: [res.cardIds.length], quantifier: 'every' };
+  }
+
+  let total = 0;
+  for (const id of res.cardIds) {
+    // ponytail: a card that does not declare the index contributes nothing rather than failing —
+    // the selector defines the set, so "total power of your creatures" must survive a land sitting
+    // in the same zone. An indexId naming nothing at all is caught at author/import time by
+    // `schema.ts`'s referential pass, which is where a typo belongs.
+    if (state.cards[id]?.indexValues[ref.indexId] === undefined) continue;
+    // §5.4 read site — the whole point of G2. `card.indexValues` would be blind to every modifier.
+    const value = effectiveIndex(state, def, id, ref.indexId);
+    if (typeof value !== 'number') {
+      return fail('TYPE_MISMATCH', `Ref "sumIndex": index "${ref.indexId}" on card "${id}" is a boolean; a total needs numbers.`);
+    }
+    total += value;
+  }
+  return { ok: true, values: [total], quantifier: 'every' };
+}
+
+// ---------------------------------------------------------------------------
 // resolveValueRef — §4.2, §5.9 rows 3b/11/12/13
 // ---------------------------------------------------------------------------
 
@@ -96,7 +177,9 @@ export function resolveValueRef(
   ref: ValueRef,
   state: PlayState,
   ctx: TriggerContext,
-  def: GameDefinition
+  def: GameDefinition,
+  /** v4 §4.1 — `arith` nesting only. Every caller outside this module starts a fresh expression. */
+  depth = 0
 ): ValueResolution {
   switch (ref.kind) {
     case 'literal':
@@ -218,5 +301,27 @@ export function resolveValueRef(
       }
       return { ok: true, values: [value], quantifier: 'every' };
     }
+
+    // v4 §4.1 (G1). Depth is counted here rather than in the schema because the ceiling is the
+    // definition's own `maxDepth` (§5.5's "the designer needs a knob, not a bug report"), and a
+    // depth-256 expression is a hand-edited file, not something the picker can build.
+    case 'arith': {
+      if (depth >= def.limits.maxDepth) {
+        return fail('RULE_LOOP', `Arithmetic value nested deeper than limit ${def.limits.maxDepth}.`);
+      }
+      const left = operand(ref.left, state, ctx, def, depth + 1, 'left');
+      if (!left.ok) return left;
+      const right = operand(ref.right, state, ctx, def, depth + 1, 'right');
+      if (!right.ok) return right;
+      return { ok: true, values: [ARITH[ref.op](left.value, right.value)], quantifier: 'every' };
+    }
+
+    // v4 §4.1 (G2). Both folds close the `valueRef -> resolveTargets -> evalCriteria -> resolveValueRef`
+    // cycle on ordinary authored input ("creatures get +1/+1 while the total power of your creatures
+    // is 5 or more"), so both go through §5.4's shared re-entrancy guard: a node re-entered while it
+    // is still resolving answers zero instead of recursing, and that answer is never memoized.
+    case 'countMatching':
+    case 'sumIndex':
+      return guardReentrant(ref, emptyFold(), () => foldOverTargets(ref, state, ctx, def));
   }
 }

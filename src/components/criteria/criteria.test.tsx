@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { describeValueRef } from '../../engine/prose';
 import type { CriteriaGroup, GameDefinition, ValueRef } from '../../engine/types';
 import type { RefContext } from '../authoring/refs';
-import { ATTACKERS, BATTLEFIELD, FIRST_BLOOD, HAND, HP, POWER, duel } from '../../test/fixtures/duel';
+import { ATTACKERS, BATTLEFIELD, DECK, FIRST_BLOOD, HAND, HP, POWER, duel } from '../../test/fixtures/duel';
 import { empty } from '../../test/fixtures/empty';
 import { CriteriaGroupEditor } from './CriteriaGroupEditor';
 import { isDangling } from './isDangling';
@@ -360,6 +360,101 @@ describe('<ValueRefPicker>', () => {
       await user.click(screen.getByRole('radio', { name: /the replaced amount/i }));
 
       expect(onChange).toHaveBeenLastCalledWith({ kind: 'replacedAmount' });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // v4 §4.1, §4.7 — the three derived kinds. §8's last risk is an arm that exists in the engine and
+  // in no picker, which makes it authorable only by hand-editing an imported file.
+  // ---------------------------------------------------------------------------
+
+  describe('v4 §4.1 — the three derived kinds', () => {
+    const activeDeck = { zoneId: DECK, seat: { kind: 'active' } };
+    /**
+     * These arms are the first to nest a chip inside a chip's own popover, so two dialogs are open
+     * at once and `getByRole('dialog')` is ambiguous. `ChipPopover` renders inline rather than
+     * through a portal, so the innermost is last in document order.
+     */
+    const innerDialog = () => screen.getAllByRole('dialog').slice(-1)[0];
+
+    it('combines two values, keeping the one already chosen as the left operand', async () => {
+      const user = userEvent.setup();
+      const onChange = vi.fn();
+      const pool: ValueRef = { kind: 'pool', poolId: HP, seat: { kind: 'active' } };
+      render(<LiveValueRef initial={pool} onChange={onChange} />);
+
+      await openChip(user);
+      await user.click(screen.getByRole('radio', { name: /two values combined/i }));
+      expect(onChange).toHaveBeenLastCalledWith({ kind: 'arith', op: 'add', left: pool, right: literal(0) });
+
+      await user.selectOptions(screen.getByLabelText('Operation'), 'multiply');
+      expect(onChange).toHaveBeenLastCalledWith({ kind: 'arith', op: 'multiply', left: pool, right: literal(0) });
+
+      // The operands are pickers of their own, which is what makes the row recursive: this edits the
+      // RIGHT one through a nested chip and leaves the left untouched.
+      await user.click(screen.getByRole('button', { name: /right value/i }));
+      await user.click(within(innerDialog()).getByRole('radio', { name: /players still in the game/i }));
+      expect(onChange).toHaveBeenLastCalledWith({
+        kind: 'arith',
+        op: 'multiply',
+        left: pool,
+        right: { kind: 'activeSeatCount' },
+      });
+    });
+
+    it('counts matching cards through an embedded target chip', async () => {
+      const user = userEvent.setup();
+      const onChange = vi.fn();
+      render(<LiveValueRef initial={literal(0)} onChange={onChange} />);
+
+      await openChip(user);
+      await user.click(screen.getByRole('radio', { name: /how many cards match/i }));
+      expect(onChange).toHaveBeenLastCalledWith({
+        kind: 'countMatching',
+        from: { kind: 'allInZone', zone: activeDeck },
+      });
+
+      // The selector is the ordinary `TargetSelectorChip`, so a filter is authorable here without a
+      // second targeting UI — and the `where` region comes with it rather than being unreachable.
+      await user.click(screen.getByRole('button', { name: /cards to count/i }));
+      await user.click(within(innerDialog()).getByRole('radio', { name: /cards matching a filter/i }));
+      expect(onChange).toHaveBeenLastCalledWith({
+        kind: 'countMatching',
+        from: {
+          kind: 'matching',
+          from: { kind: 'allInZone', zone: activeDeck },
+          where: { kind: 'group', combinator: 'and', children: [] },
+        },
+      });
+      expect(screen.getByRole('group', { name: 'where' })).toBeInTheDocument();
+    });
+
+    it('totals a card index over a card set, naming both the index and the set', async () => {
+      const user = userEvent.setup();
+      const onChange = vi.fn();
+      render(<LiveValueRef initial={literal(0)} onChange={onChange} />);
+
+      await openChip(user);
+      await user.click(screen.getByRole('radio', { name: /an index totalled across cards/i }));
+      expect(onChange).toHaveBeenLastCalledWith({
+        kind: 'sumIndex',
+        from: { kind: 'allInZone', zone: activeDeck },
+        indexId: POWER,
+      });
+      expect(screen.getByRole('button', { name: /left side/i })).toHaveTextContent(
+        "the total Power of all cards in the active player's Deck"
+      );
+    });
+
+    it('disables the two folds when the game has no zones to point at', async () => {
+      const user = userEvent.setup();
+      render(<LiveValueRef initial={literal(0)} definition={empty} />);
+
+      await openChip(user);
+      expect(screen.getByRole('radio', { name: /how many cards match/i })).toBeDisabled();
+      expect(screen.getByRole('radio', { name: /an index totalled across cards/i })).toBeDisabled();
+      // `arith` needs nothing declared — two literals are always available.
+      expect(screen.getByRole('radio', { name: /two values combined/i })).toBeEnabled();
     });
   });
 });

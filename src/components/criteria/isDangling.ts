@@ -3,6 +3,7 @@ import type {
   CriteriaNode,
   GameDefinition,
   SeatRef,
+  TargetSelector,
   ValueRef,
   ZoneRef,
 } from '../../engine/types';
@@ -71,6 +72,19 @@ export function isDangling(ref: ValueRef, def: GameDefinition): boolean {
     case 'actionField':
     case 'promptNumber':
       return false;
+    // v4 §4.1 — both sub-trees are collapsed into the chip's one-line label when the popover is
+    // shut, so a pool deleted from under `arith.right` or a zone deleted from under a fold's
+    // selector is invisible until play unless the descent happens here. Same argument, and the same
+    // answer, as `danglingCriteria` below.
+    case 'arith':
+      return isDangling(ref.left, def) || isDangling(ref.right, def);
+    case 'countMatching':
+      return danglingTarget(ref.from, def);
+    case 'sumIndex':
+      return (
+        !allIndexes(def).some(({ index }) => index.id === ref.indexId) ||
+        danglingTarget(ref.from, def)
+      );
   }
 }
 
@@ -84,3 +98,36 @@ export const danglingCriteria = (node: CriteriaNode, def: GameDefinition): boole
   node.kind === 'group'
     ? node.children.some((child) => danglingCriteria(child, def))
     : isDangling(node.left, def) || isDangling(node.right, def);
+
+/**
+ * Points at something deleted — what turns the target chip red instead of silently breaking at play.
+ *
+ * Lives here rather than in `targetSelector.ts` (which re-exports it, so no call site moved) because
+ * v4 §4.1 gave `ValueRef` two arms that hold a `TargetSelector`: with it there, `isDangling` above
+ * had to import it, and `isDangling.ts -> targetSelector.ts -> zoneRef.ts -> isDangling.ts` is a
+ * cycle whose middle link is an `export const` alias — evaluated, not hoisted, so it snapshots
+ * `undefined`. Every dependency this function has was already in this file.
+ */
+export function danglingTarget(selector: TargetSelector, definition: GameDefinition): boolean {
+  switch (selector.kind) {
+    case 'triggeringCard':
+      return false;
+    case 'prompt':
+      return danglingTarget(selector.from, definition);
+    // §4.4's attachment selectors name a card, not a zone — but the CardRef they name can still
+    // carry a deleted zone through `zoneTop`, so the descent is `danglingCard`'s, not a zone check.
+    case 'attachedTo':
+      return danglingCard(selector.host, definition);
+    case 'hostOf':
+      return danglingCard(selector.card, definition);
+    // §4.4's predicate selector wraps another one AND holds a criteria tree; either half can dangle,
+    // and the tree is collapsed to a summary on the chip, so nothing else would show it.
+    case 'matching':
+      return (
+        danglingTarget(selector.from, definition) ||
+        danglingCriteria(selector.where, definition)
+      );
+    default:
+      return danglingZone(selector.zone, definition);
+  }
+}

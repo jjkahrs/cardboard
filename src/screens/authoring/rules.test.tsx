@@ -418,6 +418,36 @@ describe('the four rule-mode panels', () => {
     expect(screen.getByText('— no card indexes yet')).toBeInTheDocument();
   });
 
+  // v4 §4.4, §4.7 — the per-object switch. Without a picker entry the object form is authorable only
+  // by hand-editing JSON, which §8 lists as a risk of its own.
+  it('turns a continuous rule per-object, and back, from the continuous panel', async () => {
+    const { user } = await openEditor();
+    await pick(user, 'continuous condition');
+    expect(only().continuous).toBe(true);
+
+    const perObject = screen.getByRole('checkbox', { name: /For each card matching/ });
+    await user.click(perObject);
+    // Defaults to every card in the game's first zone — a selector that points at something real.
+    expect(only().continuous).toEqual({
+      over: { kind: 'allInZone', zone: { zoneId: 'z1', seat: { kind: 'active' } } },
+    });
+    accepted();
+
+    // The condition now offers `candidate`, which is the whole point of the object form.
+    await user.click(screen.getByRole('button', { name: 'Add a condition' }));
+    expect(screen.getByRole('button', { name: 'Which cards this rule arms for' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('checkbox', { name: /For each card matching/ }));
+    expect(only().continuous).toBe(true);
+  });
+
+  it('disables the per-object switch, with the reason, when the game has no zones', async () => {
+    const { user } = await openEditor({ zones: [] });
+    await pick(user, 'continuous condition');
+    expect(screen.getByRole('checkbox', { name: /For each card matching/ })).toBeDisabled();
+    expect(screen.getByText('— no zones yet')).toBeInTheDocument();
+  });
+
   it('drops the trigger select entirely for a continuous rule (§4.5 ignores it)', async () => {
     const { user } = await openEditor();
     expect(screen.getByRole('combobox', { name: 'Trigger' })).toBeInTheDocument();
@@ -622,10 +652,26 @@ describe('the four rule-mode panels', () => {
       accepted();
     });
 
-    it('refuses a cost effect that can suspend — the draft could then never be discarded (§5.8)', async () => {
-      // ponytail: the shared `EffectList`/`EffectPicker` offer every kind (their contract has no
-      // filter and step 45 does not own them), so this boundary is held by the store's refinement
-      // and reported, not prevented. Filter the picker when `EffectPicker` is next opened.
+    // v4 §4.5 — the cost picker now filters, which is the gap step 45 left with a `ponytail:` note.
+    // It filters exactly the three kinds §4.5.0(c) still refuses, and no more: a cost that PAUSES is
+    // supported now, so disabling everything that pauses would take "pay {X}" and "discard a card"
+    // away again.
+    it('disables only the three kinds a cost still cannot hold, in the picker itself (v4 §4.5)', async () => {
+      const { user } = await openActivation();
+      await user.click(screen.getByRole('button', { name: 'Add a cost effect' }));
+      const picker = within(screen.getByRole('dialog'));
+
+      for (const label of ['Choose a mode', 'Sealed choice', 'Open a priority window']) {
+        expect(picker.getByRole('button', { name: label })).toBeDisabled();
+      }
+      // Freezable, and therefore offered — each of these was a hard refusal before v4 §4.5.
+      for (const label of ['Choose a number', 'Choose a player', 'Destroy', 'Move']) {
+        expect(picker.getByRole('button', { name: label })).toBeEnabled();
+      }
+      expect(picker.getAllByText('a cost cannot pause here')).toHaveLength(3);
+    });
+
+    it('accepts an interactive cost effect the store used to refuse (v4 §4.5)', async () => {
       const { user } = await openActivation();
 
       await user.click(screen.getByRole('button', { name: 'Add a cost effect' }));
@@ -633,8 +679,8 @@ describe('the four rule-mode panels', () => {
         within(screen.getByRole('dialog')).getByRole('button', { name: 'Choose a number' })
       );
 
-      expect(only().activation?.cost).toEqual([]);
-      expect(screen.getByRole('alert')).toHaveTextContent(/may suspend/);
+      expect(only().activation?.cost.map((e) => e.kind)).toEqual(['chooseNumber']);
+      accepted();
     });
   });
 });

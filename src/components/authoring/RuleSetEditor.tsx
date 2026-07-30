@@ -14,6 +14,7 @@ import { FormErrors, InlineNumber, InlineSelect, SelectField } from '../ui/field
 import { effectLabel } from './effectKinds';
 import { EffectList } from './EffectList';
 import { RulesProsePreview } from './RulesProsePreview';
+import { defaultSelector } from './targetSelector';
 import { CriteriaSubRow, TargetSelectorChip, TargetSelectorSubRow } from './TargetSelectorChip';
 
 /** Only these two triggers can be narrowed to one state; for the rest `stateFilter` is ignored (§4.7). */
@@ -58,6 +59,8 @@ const REPLACEABLE_KINDS: Effect['kind'][] = [
   'setCardIndex',
 ];
 
+/** v4 §4.4 — `continuous` is `boolean | { over }`, and every truthy shape is the continuous mode:
+ *  `false` is the only not-continuous value, so this truthiness test needs no widening. */
 const modeOf = (rule: RuleSet): RuleMode =>
   rule.continuous
     ? 'continuous'
@@ -146,6 +149,11 @@ export function RuleSetEditor({
   const modifier = rule.modifier;
   const replaces = rule.replaces;
   const activation = rule.activation;
+  // v4 §4.4, §4.7 — the object form of `continuous`, or null for the boolean form.
+  const perObject = typeof rule.continuous === 'object' ? rule.continuous : null;
+  // `null` when the game has no zone to sweep — the "disabled with the reason" rule the mode radios
+  // and `CardRefChip` already follow, rather than writing a selector pointing at nothing.
+  const defaultOver = defaultSelector('allInZone', definition);
 
   // §5.4 a modifier does its whole job with no effects at all, and §5.7 an empty replacement is
   // "instead, nothing happens" — the prevention case. Only the other three read `effects` as the
@@ -215,7 +223,46 @@ export function RuleSetEditor({
         {/* §4.5 — `trigger` is IGNORED for a continuous rule, so the select is gone rather than
             disabled: a select that does nothing is a worse lie than no select. */}
         {mode === 'continuous' && (
-          <span className="cb-hint">whenever the condition below becomes true</span>
+          <>
+            <span className="cb-hint">whenever the condition below becomes true</span>
+            {/* v4 §4.7 — the per-object switch. A checkbox rather than a sixth radio row: it is not
+                a fifth thing a rule can BE, it is whether this continuous rule arms once or once per
+                card, and the condition below reads `candidate` either way it is written. */}
+            <span className="cb-rule__meta">
+              <label className="cb-radio">
+                <input
+                  type="checkbox"
+                  checked={perObject !== null}
+                  disabled={perObject === null && defaultOver === null}
+                  onChange={(e) =>
+                    onChange({
+                      continuous: e.target.checked ? { over: defaultOver ?? { kind: 'triggeringCard' } } : true,
+                    })
+                  }
+                />
+                For each card matching
+              </label>
+              {perObject === null && defaultOver === null ? (
+                <span className="cb-hint"> — no zones yet</span>
+              ) : (
+                perObject !== null && (
+                  <TargetSelectorChip
+                    selector={perObject.over}
+                    definition={definition}
+                    ariaLabel="Which cards this rule arms for"
+                    onChange={(over) => onChange({ continuous: { over } })}
+                  />
+                )
+              )}
+            </span>
+            {perObject !== null && (
+              <TargetSelectorSubRow
+                selector={perObject.over}
+                definition={definition}
+                onChange={(over) => onChange({ continuous: { over } })}
+              />
+            )}
+          </>
         )}
 
         {modifier !== null && (
@@ -381,10 +428,14 @@ export function RuleSetEditor({
               />
             </div>
 
-            {/* §5.8 — a bare `Effect[]`, which is precisely why `EffectList` takes one. */}
+            {/* §5.8 — a bare `Effect[]`, which is precisely why `EffectList` takes one. `inCost`
+                disables the three kinds v4 §4.5 still refuses in a cost, in the picker AND in each
+                row's kind switcher, instead of letting the store's refinement report them after the
+                click — the gap step 45 left with a `ponytail:` note. */}
             <EffectList
               effects={activation.cost}
               definition={definition}
+              inCost
               ruleId={rule.id}
               label="Cost"
               addLabel="Add a cost effect"
@@ -433,6 +484,10 @@ export function RuleSetEditor({
           <CriteriaGroupEditor
             node={asGroup(rule.condition)}
             definition={definition}
+            // v4 §4.4 — a per-object rule's condition is evaluated once per card in `over` with
+            // `candidate` bound to it, exactly as a `matching` selector's `where` is, so this is the
+            // second place `CardRefChip` may offer that ref. Boolean form: unchanged, no candidate.
+            context={perObject !== null ? 'candidate' : undefined}
             onChange={(condition) => onChange({ condition })}
             onDelete={() => onChange({ condition: null })}
           />

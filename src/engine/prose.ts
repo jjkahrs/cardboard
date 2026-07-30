@@ -106,6 +106,10 @@ function seatNoun(def: GameDefinition, seat: SeatRef): string {
       return `the owner of ${describeCardRef(def, seat.card)}`;
     case 'controller':
       return `the controller of ${describeCardRef(def, seat.card)}`;
+    // v4 §4.3 (G3) — the seat twin of `promptNumber`'s prose, and phrased the same way: the KEY is
+    // what an author recognises, because it is what the `chooseSeat` above it was named.
+    case 'promptSeat':
+      return `the player chosen for "${seat.key}"`;
   }
 }
 
@@ -145,6 +149,12 @@ function describeCardRef(def: GameDefinition, ref: CardRef): string {
     // v2 §4.2, §5.7 — bound only inside a replacement rule's `replaces.match`.
     case 'replacedTarget':
       return 'the replaced target';
+    // v4 §4.2 (G4). "this card itself" rather than plain "this card", which `triggering` already
+    // owns: on a card face the two are usually the same object and would read identically, and the
+    // one time they differ (an equipment reacting to an event about another card) is exactly the
+    // time a designer needs the sentence to distinguish them.
+    case 'self':
+      return 'this card itself';
   }
 }
 
@@ -214,6 +224,22 @@ export function describeValueRef(ref: ValueRef, def: GameDefinition): string {
     // v2 §4.2, §8 step 28 — the chooseNumber design-slip closure.
     case 'promptNumber':
       return `the number chosen for "${ref.key}"`;
+    // v4 §4.1 (G1). Parenthesised so a nested expression stays unambiguous on a card face:
+    // "((Power of this card plus 1) times 2)" reads correctly at any depth without precedence rules.
+    case 'arith': {
+      const l = describeValueRef(ref.left, def);
+      const r = describeValueRef(ref.right, def);
+      if (ref.op === 'min') return `the lesser of ${l} and ${r}`;
+      if (ref.op === 'max') return `the greater of ${l} and ${r}`;
+      const word = ref.op === 'add' ? 'plus' : ref.op === 'subtract' ? 'minus' : 'times';
+      return `(${l} ${word} ${r})`;
+    }
+    // v4 §4.1 (G2) — `describeTarget` already renders the selector, so "the number of all cards in
+    // Battlefield where Power of the card is above 2" comes out of one existing sentence fragment.
+    case 'countMatching':
+      return `the number of ${describeTarget(ref.from, def)}`;
+    case 'sumIndex':
+      return `the total ${indexName(def, ref.indexId)} of ${describeTarget(ref.from, def)}`;
   }
 }
 
@@ -334,6 +360,10 @@ export function describeEffect(effect: Effect, def: GameDefinition): string {
       return `have ${seatNoun(def, effect.seat)} choose one of: ${effect.modes.map((m) => m.label).join(', ')}`;
     case 'chooseNumber':
       return `have ${seatNoun(def, effect.seat)} choose a number from ${describeValueRef(effect.min, def)} to ${describeValueRef(effect.max, def)}`;
+    // v4 §4.3 (G3) — names the key, because the key is how the rest of the sentence refers back to
+    // the answer ("… deal 3 damage to the player chosen for \"victim\"").
+    case 'chooseSeat':
+      return `have ${seatNoun(def, effect.seat)} choose a player, remembered as "${effect.key}"`;
   }
 }
 
@@ -366,11 +396,20 @@ function triggerPhrase(rule: RuleSet, def: GameDefinition): string {
 // below picks at most one of these before falling back to the ordinary trigger sentence.
 // ---------------------------------------------------------------------------
 
-/** §5.6 — `trigger` is ignored; the condition is what the rule is "whenever" of. */
+/**
+ * §5.6 — `trigger` is ignored; the condition is what the rule is "whenever" of.
+ *
+ * v4 §4.4 — the object form says which cards it is "each" of, because a per-object rule that reads
+ * as though it fired once for the table is the exact misunderstanding G6 exists to end.
+ */
 function describeContinuousRule(rule: RuleSet, def: GameDefinition): string {
   const condition = rule.condition ? describeCriteria(rule.condition, def) : 'true';
   const effects = rule.effects.map((e) => describeEffect(e, def)).join('; ');
-  return `Whenever ${condition} becomes true: ${effects}.`;
+  const each =
+    typeof rule.continuous === 'object'
+      ? `, for each of ${describeTarget(rule.continuous.over, def)}`
+      : '';
+  return `Whenever ${condition} becomes true${each}: ${effects}.`;
 }
 
 /** §5.4 — a continuously-applying value modifier; never fires an effect, so `rule.effects` is unread. */

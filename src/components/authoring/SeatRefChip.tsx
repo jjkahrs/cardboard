@@ -25,6 +25,8 @@ const ROWS: { row: SeatRow; label: string }[] = [
   { row: 'every', label: 'Every player' },
   { row: 'some', label: 'Any player' },
   { row: 'sum', label: 'All players, summed' },
+  /** v4 §4.3 (G3) — "target player": whoever a `chooseSeat` effect earlier in the rule picked. */
+  { row: 'promptSeat', label: 'The player chosen earlier' },
 ];
 
 /** `{kind:'all'}` with no quantifier means `every` (§4.1), so it checks the same row. */
@@ -45,6 +47,8 @@ const seatFor = (row: SeatRow, current: SeatRef): SeatRef => {
     case 'some':
     case 'sum':
       return { kind: 'all', quantifier: row };
+    case 'promptSeat':
+      return { kind: 'promptSeat', key: current.kind === 'promptSeat' ? current.key : '' };
     default:
       return { kind: row };
   }
@@ -119,6 +123,7 @@ function SeatRefFields({
   depth?: number;
 }) {
   const name = useId();
+  const keyId = useId();
 
   return (
     <>
@@ -176,6 +181,21 @@ function SeatRefFields({
             />
           </fieldset>
         </>
+      )}
+
+      {/* v4 §4.3 — the key is the whole ref: it has to match the `chooseSeat` that asked, and there
+          is nothing declared to offer in a select (keys are free-form, like `chooseNumber.key`). */}
+      {seat.kind === 'promptSeat' && (
+        <div className="cb-field">
+          <label htmlFor={keyId}>Remembered as</label>
+          <input
+            id={keyId}
+            className="cb-input"
+            value={seat.key}
+            onChange={(e) => onChange({ kind: 'promptSeat', key: e.target.value })}
+          />
+          <span className="cb-hint">Must match the key on the "Choose a player" effect above.</span>
+        </div>
       )}
 
       {(seat.kind === 'owner' || seat.kind === 'controller') && (

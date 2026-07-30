@@ -8,6 +8,12 @@ import { defaultZoneRef } from './zoneRef';
 
 const KINDS: { kind: CardRef['kind']; label: string }[] = [
   { kind: 'triggering', label: 'This card' },
+  /**
+   * v4 §4.2 (G4). Offered directly under `triggering` because the two are the pair an author has to
+   * choose between, and the hint is the whole distinction: `triggering` is whichever card the event
+   * was about, `self` is the card the rule is printed on.
+   */
+  { kind: 'self', label: 'The card carrying this rule' },
   { kind: 'host', label: 'The card this is attached to' },
   { kind: 'zoneTop', label: 'The top card of a zone' },
   { kind: 'candidate', label: 'The card under test' },

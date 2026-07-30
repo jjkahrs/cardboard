@@ -1132,11 +1132,13 @@ function applyEffectInner(effect: Effect, ec: EffectContext): EffectResult {
     // has "persist the answer" — there is nothing left for this arm to do on the normal top-level
     // path, and `runEffect` never calls `applyEffect` for this kind there.
     //
-    // This arm IS reached from one place: a `sealedChoice` authored inside a `chooseMode` branch (see
-    // that case below), which runs its effects synchronously via a recursive `applyEffect` call with
-    // no frame to suspend. Failing here, loudly and by name, is correct — not a workaround — because
-    // a sealed choice genuinely cannot open without the frame-level machinery only a rule's own
-    // top-level effect list has access to.
+    // It USED to be reached from one place: a `sealedChoice` authored inside a `chooseMode` branch,
+    // which ran its effects synchronously via a recursive `applyEffect` call with no frame to
+    // suspend. v4 §4.6 removed that recursion — a branch effect now goes through `runEffect` like
+    // any other, so a `sealedChoice` in a branch gets the real frame-level machinery and this arm is
+    // no longer on any path the engine itself takes. Failing here, loudly and by name, stays correct
+    // — not a workaround — for a direct `applyEffect` call with no `rule` frame behind it, because a
+    // sealed choice genuinely cannot open without a frame to park on.
     case 'sealedChoice':
       return reject(
         ec,
@@ -1147,15 +1149,33 @@ function applyEffectInner(effect: Effect, ec: EffectContext): EffectResult {
       );
 
     // -----------------------------------------------------------------------
-    // v2 §4.5, §5.11 (via §5.5's suspension discipline), step 28 — `dispatch.ts`'s `runEffect` raises
-    // the `chooseOption` interaction and holds the cursor (§3.3's raise-before-mutate); this arm runs
-    // only once answered, with the chosen mode's index in `ec.ctx.promptAnswers[CHOSEN_PROMPT_KEY]` —
-    // the SAME handoff `targets.ts`'s `prompt` selector already uses for a card-target answer.
+    // v2 §4.5, §5.11 (via §5.5's suspension discipline), step 28; v4 §4.6 (G8) — `dispatch.ts`'s
+    // `runEffect` raises the `chooseOption` interaction and holds the cursor (§3.3's
+    // raise-before-mutate); this arm runs only once answered, with the chosen mode's index in
+    // `ec.ctx.promptAnswers[CHOSEN_PROMPT_KEY]` — the SAME handoff `targets.ts`'s `prompt` selector
+    // already uses for a card-target answer.
+    //
+    // **This arm validates and logs the choice; it does NOT run the branch.** v4 §4.6 moved that to
+    // `runEffect`, which pushes a level onto the `rule` frame's own `branch` path and then feeds the
+    // branch's effects through the ordinary one-effect-per-`step()` cursor. It had to move: the
+    // branch cursor is frame-level scheduling state, which this module is forbidden to touch (file
+    // header: "never dispatches"), and a frame-level cursor is the only thing that lets a branch
+    // effect raise a FRESH interaction and be re-entered where it left off. The inline `for` loop
+    // that used to live here could not — its position lived on the JS call stack, which is neither
+    // serializable nor rewindable (`dispatch.ts` header).
+    //
+    // ponytail: the contract is "the caller schedules the branch", enforced by there being exactly
+    // one caller. `runEffect` is it; `activation.ts` refuses a modal cost in two places
+    // (`schema.ts`'s zod refinement and its own runtime re-check, v4 §4.5.0(c)) before `applyCost`
+    // could become a second. A future caller that applies a `chooseMode` outside a `rule` frame gets
+    // the log line and no branch — give it the `sealedChoice` treatment below (a loud refusal by
+    // name) if one ever appears.
     case 'chooseMode': {
       const answer = ec.ctx.promptAnswers[CHOSEN_PROMPT_KEY];
       if (answer === undefined) {
-        // Reached only from a nested context (a chooseMode branch containing another chooseMode) —
-        // `dispatch.ts` never calls this arm before an answer exists at the top level.
+        // `dispatch.ts` never calls this arm before an answer exists — it raises the interaction and
+        // holds the cursor instead, at every branch depth (v4 §4.6). Kept as the backstop for a
+        // direct `applyEffect` call, which is the only way to reach it now.
         return reject(ec, effect, 'AWAITING_PROMPT', `chooseMode "${effect.promptText}": no answer bound.`);
       }
       const index = Number(answer[0]);
@@ -1164,18 +1184,6 @@ function applyEffectInner(effect: Effect, ec: EffectContext): EffectResult {
         return reject(ec, effect, 'TYPE_MISMATCH', `chooseMode "${effect.promptText}": answer "${answer[0]}" does not name a mode.`);
       }
       emit(ec, effect, 'info', `Mode "${mode.label}" chosen.`, null, 'prompt');
-      // ponytail: the chosen branch's effects run synchronously, inline, in order — correct for the
-      // AC's own scenario (a mode of plain mutating effects) but a branch effect that itself needs a
-      // FRESH Interaction (a target prompt, a nested chooseMode/chooseNumber/sealedChoice) fails
-      // AWAITING_PROMPT rather than suspending re-entrantly, because there is no frame slot tracking
-      // "which branch effect was mid-flight" the way a rule frame's own cursor does. Upgrade this to
-      // a frame-level effects queue on `RuleFrame` if a branch ever needs to suspend for real.
-      // `effectIndex: undefined` — a branch effect is not the announced action's frozen target at
-      // THIS effect's index; leaving it defined would let two branch effects alias one frozen key.
-      for (const sub of mode.effects) {
-        const result = applyEffect(sub, { ...ec, effectIndex: undefined });
-        if (!result.ok) return result;
-      }
       return { ok: true };
     }
 
@@ -1190,6 +1198,21 @@ function applyEffectInner(effect: Effect, ec: EffectContext): EffectResult {
         return reject(ec, effect, 'AWAITING_PROMPT', `chooseNumber "${effect.promptText}": no answer bound.`);
       }
       emit(ec, effect, 'info', `Number chosen for "${effect.key}": ${answer[0]}.`, null, 'prompt');
+      return { ok: true };
+    }
+
+    // -----------------------------------------------------------------------
+    // v4 §4.3 (G3) — "target player", the same raise/hold split as `chooseNumber` directly above and
+    // for the same reason: `dispatch.ts` raised the `chooseSeat` interaction, `answerSeat` answered
+    // it, and `runEffect` persisted the answer under `effect.key` in the RULE FRAME's
+    // `ctx.promptAnswers` (not the per-call `ec.ctx` copy) so a LATER effect's
+    // `SeatRef{kind:'promptSeat', key}` reads it. This arm only confirms and logs.
+    case 'chooseSeat': {
+      const answer = ec.ctx.promptAnswers[CHOSEN_PROMPT_KEY];
+      if (answer === undefined) {
+        return reject(ec, effect, 'AWAITING_PROMPT', `chooseSeat "${effect.promptText}": no answer bound.`);
+      }
+      emit(ec, effect, 'info', `Player chosen for "${effect.key}": seat ${answer[0]}.`, null, 'prompt');
       return { ok: true };
     }
   }

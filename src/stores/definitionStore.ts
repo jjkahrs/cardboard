@@ -126,6 +126,8 @@ function walkSeatRef(s: SeatRef, p: string, w: Walk): void {
     case 'triggeringSeat':
     case 'seat':
     case 'all':
+    // v4 §4.3 — `promptSeat.key` is free-form like `chooseSeat.key` itself; no authored id.
+    case 'promptSeat':
       return;
   }
   return unwalked(s);
@@ -144,6 +146,8 @@ function walkCardRef(c: CardRef, p: string, w: Walk): void {
     case 'host':
     case 'candidate':
     case 'replacedTarget':
+    // v4 §4.2 — `self` is `ctx.sourceCardId`, a runtime binding like `host`; no authored id either.
+    case 'self':
       return;
   }
   return unwalked(c);
@@ -192,6 +196,19 @@ function walkValueRef(v: ValueRef, p: string, w: Walk): void {
     // v2 §4.2 — the `ActionRef` inside can still carry one, per `walkActionRef` above.
     case 'actionField':
       return walkActionRef(v.action);
+    // v4 §4.1 — `arith` is the first ValueRef holding other ValueRefs, and the two folds the first
+    // holding a TargetSelector. A pool named only from inside `arith.left`, or an index named only
+    // from a `countMatching`'s `where`, is delete-protected exactly like one named directly.
+    case 'arith':
+      walkValueRef(v.left, `${p}.left`, w);
+      walkValueRef(v.right, `${p}.right`, w);
+      return;
+    case 'countMatching':
+      return walkSelector(v.from, `${p}.from`, w);
+    case 'sumIndex':
+      walkSelector(v.from, `${p}.from`, w);
+      hit(w, 'cardIndex', v.indexId, `${p}.indexId`);
+      return;
   }
   return unwalked(v);
 }
@@ -325,6 +342,9 @@ function walkEffect(e: Effect, p: string, w: Walk): void {
       walkValueRef(e.min, `${p}.min`, w);
       walkValueRef(e.max, `${p}.max`, w);
       return;
+    // v4 §4.3 — `key` names nothing declared; only who-is-asked can carry an id.
+    case 'chooseSeat':
+      return walkSeatRef(e.seat, `${p}.seat`, w);
   }
   return unwalked(e);
 }
@@ -364,6 +384,11 @@ function walkRefs(d: GameDefinition, visit: Visit): void {
       hit(w, 'cardIndex', rs.modifier.indexId, `${m}.indexId`);
       walkValueRef(rs.modifier.amount, `${m}.amount`, w);
       rs.modifier.activeZones.forEach((id, j) => hit(w, 'zone', id, `${m}.activeZones.${j}`));
+    }
+    // v4 §4.4 — `continuous`'s object form holds a TargetSelector, so a zone reachable only from a
+    // per-object rule's `over` is delete-protected exactly like a modifier's `scope`.
+    if (typeof rs.continuous === 'object') {
+      walkSelector(rs.continuous.over, `ruleSets.${i}.continuous.over`, w);
     }
     // v2 §4.5, §5.7 — `replaces.match` may read `replacedAmount`/`replacedTarget`, which carry no
     // id of their own, but a criterion built from ordinary refs dangles exactly like `condition` does.

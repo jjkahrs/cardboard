@@ -61,10 +61,23 @@ function seatLabel(seat: SeatRef | null): string {
       return `(seat ${seat.index})`;
     case 'all':
       return seat.quantifier === 'some' ? '(any)' : seat.quantifier === 'sum' ? '(total)' : '(all)';
+    // v4 §4.3 — the key, not just the kind: two `promptSeat` refs in one rule mean different seats,
+    // and a log line that read `(promptSeat)` twice would hide which answer each side read.
+    case 'promptSeat':
+      return `(chosen "${seat.key}")`;
     default:
       return `(${seat.kind})`;
   }
 }
+
+/** v4 §4.1 — a log label wants the operator, not the prose word `describeValueRef` renders. */
+const ARITH_SYMBOL: Record<Extract<ValueRef, { kind: 'arith' }>['op'], string> = {
+  add: '+',
+  subtract: '-',
+  multiply: '*',
+  min: 'min',
+  max: 'max',
+};
 
 function cardLabel(card: CardRef): string {
   switch (card.kind) {
@@ -85,6 +98,10 @@ function cardLabel(card: CardRef): string {
     // v2 §4.2, §5.7 — bound only inside a replacement rule's `replaces.match`.
     case 'replacedTarget':
       return 'replaced target';
+    // v4 §4.2 — distinct from `triggering card` on purpose: the whole point of the ref is that the
+    // two are different cards, and a log line that named both "triggering card" would prove nothing.
+    case 'self':
+      return 'self';
   }
 }
 
@@ -117,6 +134,15 @@ function labelOf(ref: ValueRef, def: GameDefinition): string {
     // v2 §4.2, §8 step 28 — the chooseNumber design-slip closure.
     case 'promptNumber':
       return `number "${ref.key}"`;
+    // v4 §4.1 — the log label is the EXPRESSION, not its total: `sideText` appends "= 7" from the
+    // resolved values, so "(Power(triggering card) + 1) = 7" names both halves of a derived read on
+    // one line, which is the whole reason §5.9 logs a label per side.
+    case 'arith':
+      return `(${labelOf(ref.left, def)} ${ARITH_SYMBOL[ref.op]} ${labelOf(ref.right, def)})`;
+    case 'countMatching':
+      return 'count(matching cards)';
+    case 'sumIndex':
+      return `total ${ref.indexId}(matching cards)`;
   }
 }
 

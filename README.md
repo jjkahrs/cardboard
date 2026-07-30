@@ -64,10 +64,17 @@ in `vite.config.ts` (`base: './'` for `file://`) and rebuild.
   download icon data. Run `npm run icons` only when changing which icons ship.
 - **Play sessions are not persisted.** Refreshing the page during a playtest ends it; the game
   definition itself is saved continuously as you edit.
-- **`samples/` holds importable games.** `samples/texas-holdem.json` is a six-seat Texas Hold'em
-  table — import it from the game list. It is generated from `src/samples/holdem.ts` by
+- **`samples/` holds the games "New game" starts from.** Both are offered as templates in the
+  chooser "New game" opens, and both can equally be imported as files from the game list.
+  `samples/texas-holdem.json` is a six-seat Texas Hold'em
+  table. It is generated from `src/samples/holdem.ts` by
   `src/test/holdem.test.ts`, so `npm test` regenerates it; that file's header documents what the
   rules engine can and cannot enforce for poker (hand ranking and pot splitting are human-judged).
+  `samples/magic.json` is a two-seat Magic-alike ("Sparkbloom Duel") generated the same way from
+  `src/samples/mtg.ts` by `src/test/mtg.test.ts`; its header is the fullest account in the repo of
+  where the rule language's edges are, since every card in it sits against one.
 - Design docs live in `docs/` — `REQUIREMENTS.md`, `TECHNICAL_DESIGN.md`,
   `TECHNICAL_DESIGN_V2.md` (the v2 rules engine: modifiers, replacements, activations, priority
-  windows), and `TECHNICAL_DESIGN_V3.md` (importing an exported game into the editor).
+  windows), `TECHNICAL_DESIGN_V3.md` (importing an exported game into the editor), and
+  `TECHNICAL_DESIGN_V4.md` (derived values, self reference, target player, per-object continuous
+  rules, interactive costs).

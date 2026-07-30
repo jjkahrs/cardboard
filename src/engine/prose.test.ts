@@ -336,6 +336,12 @@ const EVERY_EFFECT: Record<Effect['kind'], Effect> = {
     max: { kind: 'literal', value: 5 },
     key: 'chosenNumber',
   },
+  chooseSeat: {
+    kind: 'chooseSeat',
+    promptText: 'Choose a player',
+    seat: { kind: 'active' },
+    key: 'victim',
+  },
 };
 
 describe('describeEffect — exhaustive over Effect["kind"]', () => {
@@ -399,6 +405,53 @@ describe('the phase-1 vocabulary — §4.1, §4.2, §4.4', () => {
     expect(describeValueRef({ kind: 'pool', poolId: 'hp', seat: { kind: 'controller', card: { kind: 'triggering' } } }, def)).toBe(
       'HP of the controller of this card'
     );
+  });
+
+  // v4 §4.1 — the three derived kinds. A card face renders from `describeValueRef`, so an arm that
+  // reads badly is as visible to a designer as one that is missing (§4.7).
+  it('v4: arith parenthesises, and min/max read as a phrase rather than an operator', () => {
+    const power = { kind: 'cardIndex', card: { kind: 'triggering' }, indexId: 'power' } as const;
+    expect(describeValueRef({ kind: 'arith', op: 'add', left: power, right: { kind: 'literal', value: 1 } }, def)).toBe(
+      '(Power of this card plus 1)'
+    );
+    expect(
+      describeValueRef(
+        {
+          kind: 'arith',
+          op: 'multiply',
+          left: { kind: 'arith', op: 'subtract', left: power, right: { kind: 'literal', value: 1 } },
+          right: { kind: 'literal', value: 2 },
+        },
+        def
+      )
+    ).toBe('((Power of this card minus 1) times 2)');
+    expect(describeValueRef({ kind: 'arith', op: 'min', left: power, right: { kind: 'literal', value: 3 } }, def)).toBe(
+      'the lesser of Power of this card and 3'
+    );
+    expect(describeValueRef({ kind: 'arith', op: 'max', left: power, right: { kind: 'literal', value: 3 } }, def)).toBe(
+      'the greater of Power of this card and 3'
+    );
+  });
+
+  it('v4: both folds reuse the target sentence rather than a second phrasing', () => {
+    const creatures: TargetSelector = {
+      kind: 'matching',
+      from: { kind: 'allInZone', zone: { zoneId: 'bf', seat: null } },
+      where: {
+        kind: 'criteria',
+        left: { kind: 'cardTag', card: { kind: 'candidate' }, tag: 'creature' },
+        op: '=',
+        right: { kind: 'literal', value: true },
+      },
+    };
+    expect(describeValueRef({ kind: 'countMatching', from: creatures }, def)).toBe(
+      'the number of all cards in Battlefield where whether the card is tagged "creature" is true'
+    );
+    expect(describeValueRef({ kind: 'sumIndex', from: creatures, indexId: 'power' }, def)).toBe(
+      'the total Power of all cards in Battlefield where whether the card is tagged "creature" is true'
+    );
+    // A deleted index still renders the placeholder rather than the raw id, like every other arm.
+    expect(describeValueRef({ kind: 'sumIndex', from: creatures, indexId: 'gone' }, def)).toContain('[deleted index]');
   });
 
   it('activeSeatCount and cardTag', () => {
@@ -607,6 +660,19 @@ describe('generateRulesProse — the four new RuleSet panels', () => {
     const condition: CriteriaNode = { kind: 'criteria', left: { kind: 'pool', poolId: 'score', seat: null }, op: '>=', right: { kind: 'literal', value: 10 } };
     const prose = generateRulesProse([{ ...baseRule, continuous: true, condition }], def);
     expect(prose).toBe('Whenever Score is at least 10 becomes true: add 1 to Score.');
+  });
+
+  // v4 §4.4 — the per-object form says which cards it is "each" of. A sentence that read the same as
+  // the boolean form above would hide the one difference that matters about the rule.
+  it('the per-object form names the cards it arms for', () => {
+    const condition: CriteriaNode = { kind: 'criteria', left: { kind: 'cardIndex', card: { kind: 'candidate' }, indexId: 'power' }, op: '>=', right: { kind: 'literal', value: 2 } };
+    const prose = generateRulesProse(
+      [{ ...baseRule, continuous: { over: { kind: 'allInZone' as const, zone: { zoneId: 'bf', seat: null } } }, condition }],
+      def
+    );
+    expect(prose).toBe(
+      'Whenever Power of the card is at least 2 becomes true, for each of all cards in Battlefield: add 1 to Score.'
+    );
   });
 
   it('modifier — set vs adjust, and the active-zones clause', () => {

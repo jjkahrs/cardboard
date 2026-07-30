@@ -1,6 +1,10 @@
 import type { GameDefinition, TargetSelector } from '../../engine/types';
-import { danglingCard, danglingCriteria } from '../criteria/isDangling';
-import { defaultZoneRef, isDanglingZone } from './zoneRef';
+import { defaultZoneRef } from './zoneRef';
+
+/** One implementation, in `isDangling.ts` — v4 §4.1 put a TargetSelector inside a ValueRef, and the
+ *  dangling check has to run in both directions from one place. Re-exported so every call site that
+ *  has always imported it from this module is untouched. */
+export { danglingTarget } from '../criteria/isDangling';
 
 export const TARGET_KINDS: { kind: TargetSelector['kind']; label: string }[] = [
   { kind: 'triggeringCard', label: 'This card' },
@@ -16,31 +20,6 @@ export const TARGET_KINDS: { kind: TargetSelector['kind']; label: string }[] = [
 
 /** Whether this selector suspends the rule to ask the player a question (§5.4). */
 export const prompts = (selector: TargetSelector): boolean => selector.kind === 'prompt';
-
-/** Points at something deleted — what turns the chip red instead of silently breaking at play. */
-export function danglingTarget(selector: TargetSelector, definition: GameDefinition): boolean {
-  switch (selector.kind) {
-    case 'triggeringCard':
-      return false;
-    case 'prompt':
-      return danglingTarget(selector.from, definition);
-    // §4.4's attachment selectors name a card, not a zone — but the CardRef they name can still
-    // carry a deleted zone through `zoneTop`, so the descent is `danglingCard`'s, not a zone check.
-    case 'attachedTo':
-      return danglingCard(selector.host, definition);
-    case 'hostOf':
-      return danglingCard(selector.card, definition);
-    // §4.4's predicate selector wraps another one AND holds a criteria tree; either half can dangle,
-    // and the tree is collapsed to a summary on the chip, so nothing else would show it.
-    case 'matching':
-      return (
-        danglingTarget(selector.from, definition) ||
-        danglingCriteria(selector.where, definition)
-      );
-    default:
-      return isDanglingZone(selector.zone, definition);
-  }
-}
 
 /**
  * A starting selector of `kind` that points at something real, or `null` when nothing exists to

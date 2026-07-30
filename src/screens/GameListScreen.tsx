@@ -1,15 +1,25 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { createEmptyDefinition } from '../stores/definitionStore';
-import { deleteGame, getAllGames, getGame, putGame, setLastOpenedGameId } from '../stores/persistence';
+import {
+  deleteGame,
+  getAllGames,
+  getGame,
+  importJson,
+  putGame,
+  setLastOpenedGameId,
+} from '../stores/persistence';
 import { downloadDefinition, newGameId, readDefinitionFile } from './gameFile';
+import { NewGameDialog } from './NewGameDialog';
 import { useFileDrop } from './useFileDrop';
+import type { GameTemplate } from './templates';
 import type { GameDefinition } from '../engine/types';
 
 /**
  * `/` — every game in IndexedDB (§6.1).
  *
- * New / Import / Open / Duplicate / Delete / Export. Import runs the four gates in `schema.ts`
+ * New (blank or from a bundled sample — see `templates.ts`) / Import / Open / Duplicate / Delete /
+ * Export. Import and templates both run the four gates in `schema.ts`
  * (§7.2) and only touches IndexedDB on `ok: true`, so a rejected file leaves the browser's games
  * byte-identical without this screen having to be careful about it.
  */
@@ -20,6 +30,8 @@ export function GameListScreen() {
   const [problems, setProblems] = useState<string[]>([]);
   /** Id awaiting a second click. Inline, because window.confirm blocks the whole tab. */
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  /** The "New game" chooser is open. */
+  const [picking, setPicking] = useState(false);
   const navigate = useNavigate();
 
   const refresh = useCallback(async () => {
@@ -39,11 +51,30 @@ export function GameListScreen() {
     void navigate(`/game/${id}/pools`);
   };
 
-  const createGame = async () => {
-    const id = newGameId();
-    const definition = createEmptyDefinition(id, 'Untitled game', new Date().toISOString());
+  /**
+   * `null` is the blank game. A template is the bundled sample run through the same `importJson`
+   * gates a picked file goes through, so a sample that has rotted lands in `problems` here instead
+   * of writing a half-valid game.
+   */
+  const createGame = async (template: GameTemplate | null) => {
+    setProblems([]);
+    setPicking(false);
+    let definition: GameDefinition;
+    if (template === null) {
+      definition = createEmptyDefinition(newGameId(), 'Untitled game', new Date().toISOString());
+    } else {
+      const result = importJson(await template.load());
+      if (!result.ok) {
+        setProblems(result.errors);
+        return;
+      }
+      // A fresh id every time, unlike the file import below: the sample's own id would collide with
+      // itself the second time someone starts from the same template, and there is nothing to
+      // round-trip an id for — nobody exported this.
+      definition = { ...result.definition, id: newGameId() };
+    }
     await putGame(definition);
-    open(id);
+    open(definition.id);
   };
 
   const duplicate = async (source: GameDefinition) => {
@@ -120,10 +151,17 @@ export function GameListScreen() {
             onChange={onFilePicked}
           />
         </label>
-        <button type="button" className="cb-btn" onClick={() => void createGame()}>
+        <button type="button" className="cb-btn" onClick={() => setPicking(true)}>
           New game
         </button>
       </header>
+
+      {picking && (
+        <NewGameDialog
+          onPick={(template) => void createGame(template)}
+          onCancel={() => setPicking(false)}
+        />
+      )}
 
       {dragging && (
         <p className="cb-dropzone" role="status">
@@ -143,7 +181,7 @@ export function GameListScreen() {
       {games === null ? (
         <p>Loading…</p>
       ) : games.length === 0 ? (
-        <p>No games yet. Start one with “New game”.</p>
+        <p>No games yet. Start one with “New game” — blank, or from a sample game.</p>
       ) : (
         <ul className="cb-list">
           {games.map((game) => (

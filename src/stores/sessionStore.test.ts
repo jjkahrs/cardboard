@@ -140,6 +140,53 @@ const midStackPromptRule: RuleSet = {
 };
 
 /**
+ * v4 §4.6 (G8) — a MODAL branch parked mid-flight. Same discipline as `midStackPromptRule` above and
+ * the same shape, one level down: the prompt is branch effect 1 of 3, branch effect 0 has fired an
+ * event that is still sitting in `pending`, and branch effect 2 plus the rule's own trailing effect
+ * are both still owed. What is new is that the continuation now includes `RuleFrame.branch` — a field
+ * rewind has to restore like any other, which is the risk §8 names for this row.
+ */
+const modalBranchRule: RuleSet = {
+  id: 'rs_modal',
+  name: 'Modal',
+  trigger: 'doModal',
+  stateFilter: null,
+  condition: null,
+  effects: [
+    {
+      kind: 'chooseMode',
+      promptText: 'Pick a mode',
+      seat: { kind: 'seat', index: 0 },
+      modes: [
+        {
+          label: 'Targeted',
+          effects: [
+            { kind: 'fireEvent', name: 'doShuffle' },
+            {
+              kind: 'destroyCards',
+              target: {
+                kind: 'prompt',
+                from: { kind: 'allInZone', zone: { zoneId: BATTLEFIELD, seat: null } },
+                count: { kind: 'literal', value: 1 },
+                promptText: 'Choose one to destroy (modal)',
+              },
+            },
+            { kind: 'flipCard', target: { kind: 'allInZone', zone: { zoneId: BATTLEFIELD, seat: null } }, to: 'faceDown' },
+          ],
+        },
+      ],
+    },
+    { kind: 'shuffleZone', zone: { zoneId: DECK, seat: { kind: 'active' } } },
+  ],
+  priority: 0,
+  onRejection: 'continue',
+  modifier: null,
+  continuous: false,
+  replaces: null,
+  activation: null,
+};
+
+/**
  * v2 §5.11, §9.5 edge case 13 — a global rule reachable only via `fireEvent`, same discipline as
  * `promptRule`/`midStackPromptRule` above. Two seats, so `{kind:'all'}` resolves to exactly the pair
  * the rewind-across-an-open-sealed-choice test needs.
@@ -178,9 +225,9 @@ const testDef: GameDefinition = {
   zones: [handZone, deckZone, battlefieldZone],
   templates: [blankTemplate],
   decks: [deck],
-  customEvents: ['doShuffle', 'doPrompt', 'doMidPrompt', 'doStrike'],
-  ruleSets: [shuffleRule, promptRule, midStackPromptRule, strikeRule],
-  globalRuleSetIds: ['rs_shuffle', 'rs_prompt', 'rs_midprompt', 'rs_strike'],
+  customEvents: ['doShuffle', 'doPrompt', 'doMidPrompt', 'doStrike', 'doModal'],
+  ruleSets: [shuffleRule, promptRule, midStackPromptRule, strikeRule, modalBranchRule],
+  globalRuleSetIds: ['rs_shuffle', 'rs_prompt', 'rs_midprompt', 'rs_strike', 'rs_modal'],
   priorityWindows: [],
   machine: {
     states: [
@@ -470,6 +517,74 @@ describe('rewind — across a suspension parked MID stack (§5.10, v2-only)', ()
     expect(session().state.interaction).toBeNull();
     expect(session().state.stack).toEqual([]);
     expect(session().state.pending).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v4 §4.6 (G8), §8's first risk — rewind across a suspension parked inside a MODAL BRANCH. The branch
+// queue is new scheduling state on the `rule` frame, and the invariant it could have broken is the one
+// rewind is built on: one user action = one transaction = one `LogEntry` = one `HistoryFrame`.
+// `dispatch.test.ts` proves the branch resumes; only this file can prove it rewinds.
+// ---------------------------------------------------------------------------
+
+describe('rewind — across a suspension parked inside a modal branch (v4 §4.6)', () => {
+  it('restores the branch path along with stack, pending, interaction and budget; resuming matches a session that never rewound', () => {
+    const [a, b] = cardsIn(DECK, 0, 2);
+    useSessionStore.getState().dispatch({ kind: 'moveCard', cardId: a, to: { zoneId: BATTLEFIELD, seat: null }, position: 'top' });
+    useSessionStore.getState().dispatch({ kind: 'moveCard', cardId: b, to: { zoneId: BATTLEFIELD, seat: null }, position: 'top' });
+    const beforeModal = session().log.length;
+
+    // Three dispatches, three entries, three history frames — asserted rather than assumed, because
+    // "one action, one transaction" is exactly what a frame-level queue could have broken by
+    // suspending somewhere the store did not expect.
+    useSessionStore.getState().dispatch({ kind: 'fireEvent', name: 'doModal', seat: null });
+    expect(session().state.interaction?.kind).toBe('chooseOption');
+    useSessionStore.getState().dispatch({ kind: 'answerOption', optionId: '0' });
+    expect(session().log.length).toBe(beforeModal + 2);
+    expect(session().history.length).toBe(session().log.length);
+
+    // Parked on branch effect 1 of 3, with branch effect 0's fired `doShuffle` still in `pending` and
+    // branch effect 2 (plus the rule's own trailing shuffle) still owed.
+    const suspended = structuredClone(session().state);
+    const ruleFrameOf = (s: PlayState) =>
+      s.stack.find((f): f is Extract<Frame, { kind: 'rule' }> => f.kind === 'rule');
+    expect(interaction()?.promptText).toBe('Choose one to destroy (modal)');
+    expect(suspended.pending.map((f) => f.kind)).toEqual(['event']);
+    expect(ruleFrameOf(suspended)?.cursor).toBe(0); // still ON the chooseMode
+    expect(ruleFrameOf(suspended)?.branch).toEqual([{ mode: 0, cursor: 1 }]);
+    // Branch effect 2 has demonstrably not run — otherwise the restoration below proves nothing.
+    expect(Object.values(suspended.cards).some((c) => c.faceDown)).toBe(false);
+
+    const modalAt = session().log.length;
+    useSessionStore.getState().dispatch({ kind: 'answerPrompt', chosen: [interaction()!.candidates[0]] });
+    expect(interaction()).toBeNull();
+    expect(session().state.stack).toEqual([]);
+    expect(session().log.length).toBe(modalAt + 1); // the resume is ONE entry, not one per step()
+    const finishedState = session().state;
+    const finishedLog = session().log;
+
+    // Rewind TO the suspending entry: the whole continuation comes back, branch path included.
+    useSessionStore.getState().rewind(modalAt);
+    const back = session().state;
+    expect(back.interaction).toEqual(suspended.interaction);
+    expect(back.stack).toEqual(suspended.stack);
+    expect(back.pending).toEqual(suspended.pending);
+    expect(back.budget).toEqual(suspended.budget);
+    expect(ruleFrameOf(back)?.branch).toEqual([{ mode: 0, cursor: 1 }]);
+    expect(back.stack).toHaveLength(2);
+
+    // Live, not a corpse: answering again finishes the branch and the rule, identically.
+    useSessionStore.getState().dispatch({ kind: 'answerPrompt', chosen: [interaction()!.candidates[0]] });
+    expect(interaction()).toBeNull();
+    expect(canonicalJson(session().state)).toBe(canonicalJson(finishedState));
+    expect(canonicalJson(session().log)).toBe(canonicalJson(finishedLog));
+
+    // Rewind PAST it: `branch` is gone with the rest of the continuation, no special case.
+    useSessionStore.getState().rewind(beforeModal);
+    expect(session().state.stack).toEqual([]);
+    expect(session().state.pending).toEqual([]);
+    expect(session().state.interaction).toBeNull();
+    expect(Object.values(session().state.cards).some((c) => c.faceDown)).toBe(false);
   });
 });
 
@@ -854,6 +969,83 @@ describe('rewind — activation (AC: SP8, §9.4(e) case 3)', () => {
     // No partial-restore state is reachable from any rewind point: there is only ONE new index this
     // activation could ever be rewound to either side of.
     expect(session().history).toHaveLength(before);
+  });
+
+  // v4 §4.5 (AC SP18) — the same claim, now that a cost can SUSPEND and therefore spans two entries.
+  // The spend has moved out of the `activate` transaction and into the ANSWER transaction, so "rewind
+  // restores the spent total exactly" has two boundaries to hold at instead of one, and the interesting
+  // one is the middle: rewinding to the suspended point must give back a board where nothing is spent
+  // and the question is still open.
+  const rsPromptingCost: RuleSet = {
+    ...rsAbilitySession,
+    id: 'rs_ability_prompt_cost',
+    trigger: 'never_ability_prompt_cost',
+    activation: {
+      costCheck: null,
+      cost: [
+        { kind: 'changePool', poolId: ACT_POOL_ID, seat: { kind: 'triggeringSeat' }, op: 'subtract', amount: { kind: 'literal', value: 2 } },
+        {
+          kind: 'moveCards',
+          target: {
+            kind: 'prompt',
+            from: { kind: 'allInZone', zone: { zoneId: DECK, seat: { kind: 'seat', index: 0 } } },
+            count: { kind: 'literal', value: 1 },
+            promptText: 'Exile a card from your deck',
+          },
+          to: { zoneId: BATTLEFIELD, seat: null },
+          position: 'top',
+        },
+      ],
+      window: null,
+      perInstance: false,
+      label: 'Ability',
+    },
+  };
+
+  const promptingCostDef: GameDefinition = {
+    ...activationDef,
+    id: 'test-session-def-activation-prompt',
+    ruleSets: [...activationDef.ruleSets, rsPromptingCost],
+  };
+
+  // AC: SP18
+  it('an interactive cost is two entries, and rewinding to either boundary restores the spend exactly', () => {
+    useSessionStore.getState().startSession(promptingCostDef, SEED);
+    const before = session().log.length;
+    const deckKey = zoneKey(DECK, 0);
+    const chosen = session().state.zones[deckKey].cardIds[0];
+    const deckBefore = [...session().state.zones[deckKey].cardIds];
+
+    useSessionStore.getState().dispatch({ kind: 'activate', ruleId: rsPromptingCost.id, cardId: null, seat: 0 });
+
+    // Entry 1 — the question, and NOTHING else. The pool spend sits at cost index 0, ahead of the
+    // prompting effect, and is still unspent.
+    expect(session().state.interaction?.kind).toBe('chooseCards');
+    expect(session().state.playerPools[ACT_POOL_ID][0]).toBe(5);
+    expect(session().log).toHaveLength(before + 1);
+
+    useSessionStore.getState().dispatch({ kind: 'answerPrompt', chosen: [chosen] });
+
+    // Entry 2 — the whole cost, plus the ability's own effect, in one transaction.
+    expect(session().state.playerPools[ACT_POOL_ID][0]).toBe(3);
+    expect(session().state.playerPools[MARKER_POOL_ID][0]).toBe(1);
+    expect(session().state.zones[BATTLEFIELD].cardIds).toEqual([chosen]);
+    expect(session().log).toHaveLength(before + 2);
+    expect(session().history).toHaveLength(before + 2);
+
+    // Rewind to the SUSPENDED boundary: unspent, unmoved, and still asking.
+    useSessionStore.getState().rewind(before + 1);
+    expect(session().state.playerPools[ACT_POOL_ID][0]).toBe(5);
+    expect(session().state.playerPools[MARKER_POOL_ID][0]).toBe(0);
+    expect(session().state.zones[deckKey].cardIds).toEqual(deckBefore);
+    expect(session().state.interaction?.kind).toBe('chooseCards');
+    expect(session().state.stack.map((f) => f.kind)).toEqual(['activation']);
+
+    // And past the activation entirely: no frame, no question, nothing spent.
+    useSessionStore.getState().rewind(before);
+    expect(session().state.playerPools[ACT_POOL_ID][0]).toBe(5);
+    expect(session().state.interaction).toBeNull();
+    expect(session().state.stack).toEqual([]);
   });
 });
 

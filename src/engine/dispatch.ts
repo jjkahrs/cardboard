@@ -63,8 +63,9 @@ import { actionTargetKey, advanceResolve } from './pending';
 // v2 §4.6, §4.7, §5.5 — step 24. `priority.ts` owns the `priority` frame's body and the
 // `passPriority` action; this module only wires both into `advance()`/`applyAction`.
 import { advancePriority, passPriority } from './priority';
-// v2 §4.12, §5.8 — step 25. `activation.ts` owns the `activate` action's body.
-import { activateRule } from './activation';
+// v2 §4.12, §5.8 — step 25. `activation.ts` owns the `activate` action's body; v4 §4.5 adds the
+// `activation` frame's, for a cost that has to stop and ask something.
+import { activateRule, advanceActivation } from './activation';
 import { applyTransition, findAutoTransition } from './stateMachine';
 import { CHOSEN_PROMPT_KEY, resolveTargets } from './targets';
 import { resolveSeat, resolveValueRef, zoneKey } from './valueRef';
@@ -113,6 +114,73 @@ type SettleFrame = Extract<Frame, { kind: 'settle' }>;
  * — duplicate log lines, or a condition re-evaluated against a world its own effects have changed.
  */
 const UNRESOLVED = -1;
+
+// ---------------------------------------------------------------------------
+// v4 §4.6 (G8) — the modal branch queue. One level per `chooseMode` whose chosen branch is
+// mid-flight on the frame; see `RuleFrame.branch`'s own comment in types.ts for why it is a PATH
+// rather than a copied `Effect[]`.
+// ---------------------------------------------------------------------------
+
+/** The effect list a `rule` frame is ACTUALLY executing, and the position in it. */
+interface Slot {
+  effects: readonly Effect[];
+  index: number;
+  /** True while any branch level is open — the one flag three collision-sensitive decisions read. */
+  inBranch: boolean;
+}
+
+/**
+ * Walk `frame.branch` down to the innermost live effect list. `rule.effects` at `frame.cursor` when
+ * no branch is open, which is every frame that never met a `chooseMode`.
+ *
+ * `null` when the recorded path no longer names a `chooseMode` with that mode. Unreachable while a
+ * `GameDefinition` is immutable for a session's lifetime (it is — `step()` takes it as a parameter
+ * and never writes to it) and while `runEffect` only ever pushes a level for a mode it just
+ * validated. Reported rather than guessed at, because the plausible guess — fall back to the
+ * enclosing cursor — re-runs the host `chooseMode` forever.
+ */
+function slotOf(frame: RuleFrame, rule: RuleSet): Slot | null {
+  let effects: readonly Effect[] = rule.effects;
+  let index = frame.cursor;
+  for (const level of frame.branch ?? []) {
+    const host = effects[index];
+    if (host?.kind !== 'chooseMode') return null;
+    const mode = host.modes[level.mode];
+    if (!mode) return null;
+    effects = mode.effects;
+    index = level.cursor;
+  }
+  return { effects, index, inBranch: (frame.branch?.length ?? 0) > 0 };
+}
+
+/**
+ * Advance the cursor that is actually driving execution — the innermost branch level's, or the
+ * frame's own.
+ *
+ * Every "this effect is finished with, move on" site goes through here, which is the whole reason a
+ * branch effect needs no special handling anywhere else: a completed effect, a skipped one, a
+ * cancelled prompt and an unresolvable choice all advance the SAME cursor whether the effect came
+ * from `rule.effects` or from a mode's branch (v4 §4.6).
+ */
+function bumpCursor(frame: RuleFrame): void {
+  const inner = frame.branch?.at(-1);
+  if (inner) inner.cursor += 1;
+  else frame.cursor += 1;
+}
+
+/**
+ * The prompt id for the effect at `slot`, unique per branch POSITION.
+ *
+ * `promptIdOf`'s `${logSeq}:${ruleId}:${effectIndex}` is unique per top-level effect, and re-entry
+ * recognises "already answered" by recomputing it — but every effect in a branch shares one
+ * `frame.cursor`, so without the path suffix the first branch effect's answer would satisfy the
+ * second's check and the second prompt would never be raised. `#<mode>.<cursor>` per level; no plain
+ * promptId and no reserved key (`@chosen`, `@actionTarget:<i>`, `@costTarget:<i>`) contains a `#`.
+ */
+function slotPromptId(state: PlayState, ruleId: Id, frame: RuleFrame): string {
+  const base = promptIdOf(state, ruleId, frame.cursor);
+  return (frame.branch ?? []).reduce((id, level) => `${id}#${level.mode}.${level.cursor}`, base);
+}
 
 // ---------------------------------------------------------------------------
 // Contexts
@@ -408,7 +476,102 @@ function promptLabel(interaction: Interaction): string {
 }
 
 /**
- * v2 §4.5, §5.5, §5.11, steps 28/29 — the raise half of `chooseMode`/`chooseNumber`/`sealedChoice`'s
+ * v4 §4.5.0(a) — the frame an answer resumes INTO, and the one place that decides which kinds those
+ * are.
+ *
+ * Every one of the five answer arms in `applyAction` used to narrow `top(state)` to `kind === 'rule'`
+ * itself, five times over. A suspended activation COST is held by an `activation` frame instead (a
+ * `rule` frame exists only for the ability's own effects, and is not pushed until the cost is paid),
+ * so all five have to accept either — and both carry the three fields they need: `ctx` to write the
+ * answer into, plus `ruleId`/`depth` for the log line. Widening once here is what keeps the fifth
+ * copy from being the one that gets forgotten.
+ */
+type AnswerFrame = Extract<Frame, { kind: 'rule' | 'activation' }>;
+
+function answerFrame(state: PlayState): AnswerFrame | null {
+  const head = top(state);
+  return head !== undefined && (head.kind === 'rule' || head.kind === 'activation') ? head : null;
+}
+
+/** Write the answer where the suspended frame will find it on re-entry, clear, log, resume. */
+function recordAnswer(
+  state: PlayState,
+  head: AnswerFrame,
+  promptId: string,
+  answer: Id[],
+  lines: LogLine[],
+  message: string
+): StepResult {
+  head.ctx.promptAnswers[promptId] = answer;
+  clear(state);
+  log(lines, { level: 'info', kind: 'prompt', depth: head.depth, ruleId: head.ruleId, message });
+  return MORE;
+}
+
+/**
+ * v4 §4.5 — resolve and raise ONE `chooseNumber`/`chooseSeat` interaction, with no frame in sight.
+ *
+ * Two callers now need this: `raiseChoice` below, from a `rule` frame's cursor, and `activation.ts`'s
+ * cost freeze pass, from an `activation` frame. The resolution rules are identical in both (exactly
+ * one seat asked; integral bounds), and what DIFFERS is only what a failure means — skip this one
+ * effect per `onRejection`, or refuse the whole cost — so the failure is returned rather than acted
+ * on, and the caller logs it at its own depth/ruleId. The alternative was a second copy of the
+ * min/max resolution in `activation.ts`, which is the drift §3.3 keeps single-definition helpers for.
+ */
+export function raiseValueChoice(
+  effect: Extract<Effect, { kind: 'chooseNumber' | 'chooseSeat' }>,
+  promptId: string,
+  state: PlayState,
+  def: GameDefinition,
+  ctx: TriggerContext
+): { ok: true; seat: number } | { ok: false; reason: RejectReason; message: string } {
+  const bad = (reason: RejectReason, message: string) => ({ ok: false as const, reason, message });
+  const seats = resolveSeat(effect.seat, state, ctx);
+  if (!seats.ok) return bad(seats.reason, `${effect.kind} "${effect.promptText}": ${seats.message}`);
+  if (seats.seats.length !== 1) {
+    return bad(
+      'INVALID_SEAT',
+      `${effect.kind} "${effect.promptText}": seat ref resolved to ${seats.seats.length} seats; expected exactly one.`
+    );
+  }
+  const seat = seats.seats[0];
+
+  if (effect.kind === 'chooseSeat') {
+    // v4 §4.3 (G3) — candidates are the LIVE ring: `seatOrder`, never 0..playerCount-1, so an
+    // eliminated seat is not offered (§4.1's named trap). An empty ring cannot happen while a rule is
+    // running, but a one-seat ring can — "target player" with only yourself left is a legal, if
+    // pointless, question.
+    if (state.seatOrder.length === 0) {
+      return bad('NO_TARGETS', `chooseSeat "${effect.promptText}": no seats remain to choose from.`);
+    }
+    raise(state, { kind: 'chooseSeat', promptId, promptText: effect.promptText, seat, candidates: [...state.seatOrder] });
+    return { ok: true, seat };
+  }
+
+  const min = resolveValueRef(effect.min, state, ctx, def);
+  if (!min.ok) return bad(min.reason, `chooseNumber "${effect.promptText}": min — ${min.message}`);
+  if (min.values.length !== 1 || typeof min.values[0] !== 'number') {
+    return bad('TYPE_MISMATCH', `chooseNumber "${effect.promptText}": min did not resolve to a single number.`);
+  }
+  const max = resolveValueRef(effect.max, state, ctx, def);
+  if (!max.ok) return bad(max.reason, `chooseNumber "${effect.promptText}": max — ${max.message}`);
+  if (max.values.length !== 1 || typeof max.values[0] !== 'number') {
+    return bad('TYPE_MISMATCH', `chooseNumber "${effect.promptText}": max did not resolve to a single number.`);
+  }
+  raise(state, {
+    kind: 'chooseNumber',
+    promptId,
+    promptText: effect.promptText,
+    seat,
+    min: min.values[0],
+    max: max.values[0],
+  });
+  return { ok: true, seat };
+}
+
+/**
+ * v2 §4.5, §5.5, §5.11, steps 28/29 (v4 §4.3 adds `chooseSeat`) — the raise half of
+ * `chooseMode`/`chooseNumber`/`chooseSeat`/`sealedChoice`'s
  * suspension. Parallels the `TargetSelector`-prompt block in `runEffect` below: resolve whatever the
  * interaction needs, raise it (or push the `sealed` frame and raise), log, and leave the cursor
  * untouched (§3.3 — raise before mutate). A resolution failure (a bad seat ref, a non-numeric
@@ -418,7 +581,7 @@ function promptLabel(interaction: Interaction): string {
 function raiseChoice(
   frame: RuleFrame,
   rule: RuleSet,
-  effect: Extract<Effect, { kind: 'chooseMode' | 'chooseNumber' | 'sealedChoice' }>,
+  effect: Extract<Effect, { kind: 'chooseMode' | 'chooseNumber' | 'chooseSeat' | 'sealedChoice' }>,
   promptId: string,
   state: PlayState,
   def: GameDefinition,
@@ -433,8 +596,11 @@ function raiseChoice(
       effectKind: effect.kind,
       message,
     });
+    // v4 §4.6 — `bumpCursor`, not `frame.cursor += 1`: an unresolvable choice inside a modal branch
+    // skips that branch effect, exactly as it skips a top-level one. `abort` still aborts the whole
+    // frame, branch and all — see `runEffect`'s own rejection path for why that is the same rule.
     if (rule.onRejection === 'abort') frame.aborted = true;
-    else frame.cursor += 1;
+    else bumpCursor(frame);
     return MORE;
   };
 
@@ -468,6 +634,20 @@ function raiseChoice(
     return SUSPENDED;
   }
 
+  if (effect.kind === 'chooseNumber' || effect.kind === 'chooseSeat') {
+    const raised = raiseValueChoice(effect, promptId, state, def, frame.ctx);
+    if (!raised.ok) return fail(raised.reason, raised.message);
+    log(lines, {
+      level: 'info',
+      kind: 'prompt',
+      depth: frame.depth,
+      ruleId: rule.id,
+      effectKind: effect.kind,
+      message: `Prompt "${effect.promptText}" (seat ${raised.seat}): raised.`,
+    });
+    return SUSPENDED;
+  }
+
   const seats = resolveSeat(effect.seat, state, frame.ctx);
   if (!seats.ok) return fail(seats.reason, `${effect.kind} "${effect.promptText}": ${seats.message}`);
   if (seats.seats.length !== 1) {
@@ -478,34 +658,13 @@ function raiseChoice(
   }
   const seat = seats.seats[0];
 
-  if (effect.kind === 'chooseMode') {
-    raise(state, {
-      kind: 'chooseOption',
-      promptId,
-      promptText: effect.promptText,
-      seat,
-      options: effect.modes.map((m, idx) => ({ id: String(idx), label: m.label })),
-    });
-  } else {
-    const min = resolveValueRef(effect.min, state, frame.ctx, def);
-    if (!min.ok) return fail(min.reason, `chooseNumber "${effect.promptText}": min — ${min.message}`);
-    if (min.values.length !== 1 || typeof min.values[0] !== 'number') {
-      return fail('TYPE_MISMATCH', `chooseNumber "${effect.promptText}": min did not resolve to a single number.`);
-    }
-    const max = resolveValueRef(effect.max, state, frame.ctx, def);
-    if (!max.ok) return fail(max.reason, `chooseNumber "${effect.promptText}": max — ${max.message}`);
-    if (max.values.length !== 1 || typeof max.values[0] !== 'number') {
-      return fail('TYPE_MISMATCH', `chooseNumber "${effect.promptText}": max did not resolve to a single number.`);
-    }
-    raise(state, {
-      kind: 'chooseNumber',
-      promptId,
-      promptText: effect.promptText,
-      seat,
-      min: min.values[0],
-      max: max.values[0],
-    });
-  }
+  raise(state, {
+    kind: 'chooseOption',
+    promptId,
+    promptText: effect.promptText,
+    seat,
+    options: effect.modes.map((m, idx) => ({ id: String(idx), label: m.label })),
+  });
   log(lines, {
     level: 'info',
     kind: 'prompt',
@@ -518,24 +677,31 @@ function raiseChoice(
 }
 
 /**
- * ONE effect — the one at `frame.cursor` — then the cursor moves. v1 ran the whole remaining list
+ * ONE effect — the one at `slot` — then the cursor moves. v1 ran the whole remaining list
  * per `step()`; v2 runs one (§3.2). Observable state is identical, only the number of `step()`
  * calls changes, and the store loops until `done`.
  *
  * The cursor is advanced by exactly one of three exits: the effect completed, the effect was
  * skipped, or the frame was aborted. A SUSPENDED return advances nothing — see below.
+ *
+ * v4 §4.6 (G8) — "the cursor" is `slot`'s, which is the innermost open modal branch's when there is
+ * one. A branch effect is otherwise treated as *the same thing* as a top-level effect: it raises its
+ * own interactions here, suspends by leaving its own cursor alone, and resumes into the next effect
+ * of its own list. Two differences, both about not aliasing a frozen selection made elsewhere — see
+ * `inBranch`'s two uses below.
  */
 function runEffect(
   frame: RuleFrame,
   rule: RuleSet,
+  slot: Slot,
   state: PlayState,
   def: GameDefinition,
   lines: LogLine[]
 ): StepResult {
-  const i = frame.cursor;
-  const effect = rule.effects[i];
+  const i = slot.index;
+  const effect = slot.effects[i];
   const selector = promptTarget(effect);
-  const promptId = promptIdOf(state, rule.id, i);
+  const promptId = slotPromptId(state, rule.id, frame);
   let chosen: Id[] | undefined;
 
   if (selector) {
@@ -545,7 +711,13 @@ function runEffect(
     // this, a rule whose OWN top-level effect target is (or wraps) a `prompt` would ask a SECOND,
     // live prompt at resolve time regardless of what was frozen at announce time — exactly the
     // silent re-aiming §4.8 exists to prevent, just delayed instead of skipped.
-    chosen = frame.ctx.promptAnswers[promptId] ?? frame.ctx.promptAnswers[actionTargetKey(i)];
+    //
+    // v4 §4.6 — the frozen-target fallback is read ONLY outside a branch. `@actionTarget:<i>` is
+    // keyed by position in the ANNOUNCED rule's `rule.effects`, and a branch effect's `i` indexes a
+    // mode's own list; consulting it there would hand a branch effect whatever the announced rule's
+    // i-th effect froze. (`@costTarget:<i>` cannot reach here at all — `activation.ts` is the only
+    // reader of that key — but it is keyed the same way and the same reasoning covers it.)
+    chosen = frame.ctx.promptAnswers[promptId] ?? (slot.inBranch ? undefined : frame.ctx.promptAnswers[actionTargetKey(i)]);
     if (chosen === undefined) {
       // §3.3 hard rule: raise BEFORE any mutation. This effect executes twice — once to raise, once
       // to complete — so it must be re-entrant by construction.
@@ -575,7 +747,7 @@ function runEffect(
           } Prompt skipped.`,
         });
         if (rule.onRejection === 'abort') frame.aborted = true;
-        else frame.cursor += 1;
+        else bumpCursor(frame);
         return MORE;
       }
       raise(state, {
@@ -602,12 +774,19 @@ function runEffect(
     }
   }
 
-  // v2 §4.5, §5.11, steps 28/29 — `chooseMode`/`chooseNumber`/`sealedChoice` all suspend WITHOUT a
+  // v2 §4.5, §5.11, steps 28/29 (v4 §4.3 adds `chooseSeat`) — `chooseMode`/`chooseNumber`/
+  // `chooseSeat`/`sealedChoice` all suspend WITHOUT a
   // `target: TargetSelector` (`selector` above is null for every one of them), so they get their own
   // raise-before-mutate dance here, parallel to the block above. `promptId` is the SAME formula
   // either way, which is what lets re-entry (after the answer/reveal lands) recognise "already
   // resolved" through the SAME `frame.ctx.promptAnswers[promptId]` check `chooseCards` uses.
-  if (!selector && (effect.kind === 'chooseMode' || effect.kind === 'chooseNumber' || effect.kind === 'sealedChoice')) {
+  if (
+    !selector &&
+    (effect.kind === 'chooseMode' ||
+      effect.kind === 'chooseNumber' ||
+      effect.kind === 'chooseSeat' ||
+      effect.kind === 'sealedChoice')
+  ) {
     chosen = frame.ctx.promptAnswers[promptId];
     if (chosen === undefined) {
       return raiseChoice(frame, rule, effect, promptId, state, def, lines);
@@ -615,15 +794,17 @@ function runEffect(
     if (effect.kind === 'sealedChoice') {
       // `submitSealed` already did EVERYTHING — recorded, revealed, logged, cleared the interaction,
       // popped the `sealed` frame, and wrote this very marker. Nothing is left to apply; `effects.ts`
-      // is deliberately never reached for this kind from the top level (see its own comment).
-      frame.cursor += 1;
+      // is deliberately never reached for this kind from the top level (see its own comment) — nor,
+      // since v4 §4.6, from inside a modal branch either.
+      bumpCursor(frame);
       return MORE;
     }
-    if (effect.kind === 'chooseNumber') {
+    if (effect.kind === 'chooseNumber' || effect.kind === 'chooseSeat') {
       // Persist under the AUTHORED key too, not just `promptId` — `promptId` only proves resumption;
-      // this is what makes a LATER effect's `ValueRef{kind:'promptNumber', key}` resolve (the design
-      // slip closed in this step). `frame.ctx` is the real, rewound object — unlike the `effectCtx`
-      // copy built below for the CURRENT effect only — so this write outlives this one application.
+      // this is what makes a LATER effect's `ValueRef{kind:'promptNumber', key}` (or v4 §4.3's
+      // `SeatRef{kind:'promptSeat', key}`) resolve. `frame.ctx` is the real, rewound object — unlike
+      // the `effectCtx` copy built below for the CURRENT effect only — so this write outlives this
+      // one application.
       frame.ctx.promptAnswers[effect.key] = [...chosen];
     }
   }
@@ -646,7 +827,13 @@ function runEffect(
     effect,
     // Override is ACTION-scoped (§5.9 rows 1b/5c): it is a property of the tester's own move,
     // never of rule execution, so a rule-driven effect is always evaluated without it.
-    makeEc(state, def, lines, effectCtx, frame.depth, frame.id, false, rule.id, effect.kind, i)
+    //
+    // v4 §4.6 — `effectIndex` is UNDEFINED for a branch effect, which is the second half of the
+    // frozen-target isolation above and the half that reaches `effects.ts`: it is what makes
+    // `resolveEffectTargets`'s `@actionTarget:<i>` lookup structurally unable to fire, so two branch
+    // effects at different positions cannot alias one frozen announce key. Same discipline
+    // `activation.ts`'s `applyCost` uses for a cost effect, and for the same reason.
+    makeEc(state, def, lines, effectCtx, frame.depth, frame.id, false, rule.id, effect.kind, slot.inBranch ? undefined : i)
   );
   // v2 §4.8's carried-over fix — `announceAction` can now suspend INTERNALLY (raising its own
   // interaction before it has frozen anything, mirroring the raise-before-mutate rule above) rather
@@ -667,19 +854,36 @@ function runEffect(
       message: `${effect.kind}: ${result.detail ?? result.reason}`,
     });
     // abort stops the REMAINING effects. Already-applied effects stay — abort is not rollback (§5.3).
+    //
+    // v4 §4.6 — `onRejection` inside a modal branch is the SAME policy it is outside one, deliberately:
+    // it is a property of the RULE ("on a failed effect, abort me / carry on"), not of the effect
+    // list an effect happens to sit in. So `abort` aborts the whole frame — the rest of the branch
+    // AND the rest of the rule, since `advanceRule` pops an aborted frame and the branch path dies
+    // with it — while `continue` (below) skips just the failed effect and runs the next one in the
+    // branch. Deciding otherwise would mean a branch-local abort, i.e. two rejection policies to
+    // author against with nothing in `RuleSet` to distinguish them.
     if (rule.onRejection === 'abort') {
       log(lines, {
         level: 'info',
         kind: 'skip',
         depth: frame.depth,
         ruleId: rule.id,
-        message: `RuleSet "${rule.name}" aborted after effect ${i + 1} of ${rule.effects.length}.`,
+        message: `RuleSet "${rule.name}" aborted after ${slot.inBranch ? 'modal-branch ' : ''}effect ${i + 1} of ${slot.effects.length}.`,
       });
       frame.aborted = true;
       return MORE;
     }
+  } else if (effect.kind === 'chooseMode' && chosen !== undefined) {
+    // v4 §4.6 (G8) — THE change. `effects.ts` has validated the answer and logged the chosen mode;
+    // its effects now become queued work on this frame, one per `step()`, through the very cursor
+    // machinery that already makes a top-level effect suspendable. The frame's OWN cursor stays on
+    // the `chooseMode` (so `slotOf` can re-derive the path) and is advanced past it by
+    // `advanceRule`'s branch-exhausted arm once the level pops.
+    if (!frame.branch) frame.branch = [];
+    frame.branch.push({ mode: Number(chosen[0]), cursor: 0 });
+    return MORE;
   }
-  frame.cursor += 1;
+  bumpCursor(frame);
   return MORE;
 }
 
@@ -804,7 +1008,33 @@ function advanceRule(
     return MORE;
   }
 
-  return runEffect(frame, rule, state, def, lines);
+  // v4 §4.6 (G8) — which list is being executed: `rule.effects` normally, or the innermost open
+  // modal branch. `frame.cursor` stays parked ON the `chooseMode` for as long as its branch runs,
+  // which is why the end-of-rule check above cannot fire mid-branch.
+  const slot = slotOf(frame, rule);
+  if (!slot) {
+    log(lines, {
+      level: 'error',
+      kind: 'skip',
+      depth: frame.depth,
+      ruleId: rule.id,
+      message: `RuleSet "${rule.name}": modal branch path ${JSON.stringify(frame.branch)} no longer names a chooseMode mode. Aborted.`,
+    });
+    frame.branch = undefined;
+    frame.aborted = true;
+    return MORE;
+  }
+  if (slot.index >= slot.effects.length) {
+    // The branch ran out. Pop the level and let the ENCLOSING cursor move past its `chooseMode` —
+    // `bumpCursor` after the pop targets exactly that, whether the enclosing list is another branch
+    // or `rule.effects` itself. (Unreachable with no branch open: the check above already popped.)
+    frame.branch?.pop();
+    if (frame.branch?.length === 0) frame.branch = undefined;
+    bumpCursor(frame);
+    return MORE;
+  }
+
+  return runEffect(frame, rule, slot, state, def, lines);
 }
 
 /**
@@ -939,6 +1169,10 @@ function advance(state: PlayState, def: GameDefinition, lines: LogLine[]): StepR
         message: `Sealed choice "${frame.choiceId}": frame reached advance() with no open Interaction — popped defensively.`,
       });
       return MORE;
+    // v4 §4.5 — step 6. `activation.ts` owns the body: one more pass at the cost, which either raises
+    // the next question it needs, pays the whole thing, or refuses it.
+    case 'activation':
+      return advanceActivation(frame, state, def, lines);
   }
 }
 
@@ -1141,20 +1375,18 @@ function applyAction(
       const verdict = validateAnswer(pending, action.chosen);
       if (!verdict.ok) return reject(verdict.reason, verdict.detail ?? verdict.reason, SUSPENDED);
 
-      const head = top(state);
-      if (head?.kind !== 'rule') {
+      const head = answerFrame(state);
+      if (!head) {
         return reject('INVALID_ANSWER', 'Prompt answer ignored: the suspended effect is gone.', SUSPENDED);
       }
-      head.ctx.promptAnswers[pending.promptId] = [...action.chosen];
-      clear(state);
-      log(lines, {
-        level: 'info',
-        kind: 'prompt',
-        depth: head.depth,
-        ruleId: head.ruleId,
-        message: `Prompt ${promptLabel(pending)} answered: ${action.chosen.join(', ')}.`,
-      });
-      return MORE;
+      return recordAnswer(
+        state,
+        head,
+        pending.promptId,
+        [...action.chosen],
+        lines,
+        `Prompt ${promptLabel(pending)} answered: ${action.chosen.join(', ')}.`
+      );
     }
 
     case 'cancelPrompt': {
@@ -1167,11 +1399,33 @@ function applyAction(
         kind: 'prompt',
         message: `Prompt ${promptLabel(pending)}: canceled by tester.`,
       });
+      // v4 §4.5.0(a), AC SP18(c) — a cancelled COST spends nothing, and that is structural rather
+      // than a rollback: the apply pass has not started, so not one cost effect has run and there is
+      // nothing to take back. `onRejection` is not consulted — it governs a rule's own EFFECTS, and
+      // none of them exist yet (the `rule` frame is pushed only once the cost is paid) — and resuming
+      // at the same cost effect would only re-raise the very prompt that was just declined. So the
+      // frame is popped and the activation is simply abandoned. MORE, not DONE: the `priority` frame
+      // this activation was responding to (when there was one) is now the head again, with its cursor
+      // and pass count exactly as this activation found them, so `advancePriority` re-offers the SAME
+      // seat the same choices — declining to pay is not passing.
+      if (head?.kind === 'activation') {
+        pop(state);
+        log(lines, {
+          level: 'reject',
+          kind: 'skip',
+          depth: head.depth,
+          ruleId: head.ruleId,
+          message: `Activate "${indexOf(def).rules.get(head.ruleId)?.name ?? head.ruleId}": cost canceled — nothing spent.`,
+        });
+        return MORE;
+      }
       // Not an override, and not flagged as one. The RuleSet then continues or aborts per
       // onRejection (§5.9 row 8b) — resuming at the SAME cursor would just re-raise the prompt.
+      // v4 §4.6 — `bumpCursor` so cancelling a prompt raised by a MODAL BRANCH effect skips that
+      // branch effect and runs the next one, rather than skipping the whole `chooseMode`.
       if (head?.kind === 'rule') {
         const rule = indexOf(def).rules.get(head.ruleId);
-        if (rule && rule.onRejection === 'continue') head.cursor += 1;
+        if (rule && rule.onRejection === 'continue') bumpCursor(head);
         else head.aborted = true;
       }
       return MORE;
@@ -1194,20 +1448,18 @@ function applyAction(
       if (!pending) return reject('INVALID_ANSWER', 'Answer ignored: no prompt is pending.');
       const verdict = validateOptionAnswer(pending, action.optionId);
       if (!verdict.ok) return reject(verdict.reason, verdict.detail ?? verdict.reason, SUSPENDED);
-      const head = top(state);
-      if (head?.kind !== 'rule') {
+      const head = answerFrame(state);
+      if (!head) {
         return reject('INVALID_ANSWER', 'Answer ignored: the suspended effect is gone.', SUSPENDED);
       }
-      head.ctx.promptAnswers[pending.promptId] = [action.optionId];
-      clear(state);
-      log(lines, {
-        level: 'info',
-        kind: 'prompt',
-        depth: head.depth,
-        ruleId: head.ruleId,
-        message: `Prompt ${promptLabel(pending)} answered: ${action.optionId}.`,
-      });
-      return MORE;
+      return recordAnswer(
+        state,
+        head,
+        pending.promptId,
+        [action.optionId],
+        lines,
+        `Prompt ${promptLabel(pending)} answered: ${action.optionId}.`
+      );
     }
 
     case 'answerNumber': {
@@ -1215,44 +1467,40 @@ function applyAction(
       if (!pending) return reject('INVALID_ANSWER', 'Answer ignored: no prompt is pending.');
       const verdict = validateNumberAnswer(pending, action.value);
       if (!verdict.ok) return reject(verdict.reason, verdict.detail ?? verdict.reason, SUSPENDED);
-      const head = top(state);
-      if (head?.kind !== 'rule') {
+      const head = answerFrame(state);
+      if (!head) {
         return reject('INVALID_ANSWER', 'Answer ignored: the suspended effect is gone.', SUSPENDED);
       }
-      head.ctx.promptAnswers[pending.promptId] = [String(action.value)];
-      clear(state);
-      log(lines, {
-        level: 'info',
-        kind: 'prompt',
-        depth: head.depth,
-        ruleId: head.ruleId,
-        message: `Prompt ${promptLabel(pending)} answered: ${action.value}.`,
-      });
-      return MORE;
+      return recordAnswer(
+        state,
+        head,
+        pending.promptId,
+        [String(action.value)],
+        lines,
+        `Prompt ${promptLabel(pending)} answered: ${action.value}.`
+      );
     }
 
-    // Nothing in this wave RAISES a `chooseSeat` interaction (§4.5's Effect union has no producer of
-    // one) — this arm is correct, generic machinery exercised only defensively today, same status
-    // `priority`/`sealed` had before their own raising primitives landed.
+    // v4 §4.3 (G3) — reachable at last: the `chooseSeat` effect is the producer this arm waited two
+    // waves for, and it needed no change to serve it. The answer lands under `pending.promptId` for
+    // resumption; `runEffect` copies it to the authored `key` so `SeatRef{kind:'promptSeat'}` reads it.
     case 'answerSeat': {
       const pending = state.interaction;
       if (!pending) return reject('INVALID_ANSWER', 'Answer ignored: no prompt is pending.');
       const verdict = validateSeatAnswer(pending, action.seat);
       if (!verdict.ok) return reject(verdict.reason, verdict.detail ?? verdict.reason, SUSPENDED);
-      const head = top(state);
-      if (head?.kind !== 'rule') {
+      const head = answerFrame(state);
+      if (!head) {
         return reject('INVALID_ANSWER', 'Answer ignored: the suspended effect is gone.', SUSPENDED);
       }
-      head.ctx.promptAnswers[pending.promptId] = [String(action.seat)];
-      clear(state);
-      log(lines, {
-        level: 'info',
-        kind: 'prompt',
-        depth: head.depth,
-        ruleId: head.ruleId,
-        message: `Prompt ${promptLabel(pending)} answered: seat ${action.seat}.`,
-      });
-      return MORE;
+      return recordAnswer(
+        state,
+        head,
+        pending.promptId,
+        [String(action.seat)],
+        lines,
+        `Prompt ${promptLabel(pending)} answered: seat ${action.seat}.`
+      );
     }
 
     // -----------------------------------------------------------------------

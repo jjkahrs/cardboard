@@ -486,3 +486,107 @@ describe('resolveCardRef — replacedTarget', () => {
     expect(result).toMatchObject({ ok: false, reason: 'UNBOUND_REF' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// v4 §4.2 (G4) — CardRef{kind:'self'}. The end-to-end proof (that `dispatch.ts` stamps
+// `sourceCardId` per binding, so `self` is right inside triggers/activations/modifiers) is
+// `dispatch.test.ts`'s; this is the resolver, where the three outcomes are one line each.
+// ---------------------------------------------------------------------------
+
+describe('resolveCardRef — self (v4 §4.2)', () => {
+  const withCard = (): { state: PlayState; id: string } => {
+    const state = createPlayState(table(2), 'self');
+    return { state, id: state.zones['zone_deck#0'].cardIds[0] };
+  };
+
+  it('resolves to the card carrying the rule, NOT to the card an event was about', () => {
+    const { state, id } = withCard();
+    const other = state.zones['zone_deck#1'].cardIds[0];
+    // The shape that matters: an event about someone else's card, a rule printed on mine.
+    const res = resolveCardRef({ kind: 'self' }, state, {
+      ...ctx,
+      sourceCardId: id,
+      triggeringCardId: other,
+    });
+    expect(res).toMatchObject({ ok: true });
+    expect(res.ok && res.card.id).toBe(id);
+    // ...and `triggering` on the same ctx answers the other question, which is the whole point.
+    const trig = resolveCardRef({ kind: 'triggering' }, state, {
+      ...ctx,
+      sourceCardId: id,
+      triggeringCardId: other,
+    });
+    expect(trig.ok && trig.card.id).toBe(other);
+  });
+
+  it('is UNBOUND_REF in a game-level rule, which has no card to mean', () => {
+    const { state } = withCard();
+    expect(resolveCardRef({ kind: 'self' }, state, ctx)).toMatchObject({
+      ok: false,
+      reason: 'UNBOUND_REF',
+    });
+  });
+
+  it('is TARGET_GONE, not UNBOUND_REF, when the source card has been destroyed mid-rule', () => {
+    const { state, id } = withCard();
+    delete state.cards[id];
+    expect(resolveCardRef({ kind: 'self' }, state, { ...ctx, sourceCardId: id })).toMatchObject({
+      ok: false,
+      reason: 'TARGET_GONE',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v4 §4.3 (G3) — SeatRef{kind:'promptSeat'}, the reader half. `dispatch.test.ts` owns the round trip
+// that writes the answer; these are the reads, including the ones no answer can produce but a
+// rewound or hand-poked session could.
+// ---------------------------------------------------------------------------
+
+describe('resolveSeat — promptSeat (v4 §4.3)', () => {
+  const chosen = (key: string): SeatRef => ({ kind: 'promptSeat', key });
+  const answered = (key: string, answer: string): TriggerContext => ({
+    ...ctx,
+    promptAnswers: { [key]: [answer] },
+  });
+
+  it('is UNBOUND_REF before any chooseSeat has answered under that key — never a fallback to active', () => {
+    const state = makeState(3, 1);
+    expect(resolveSeat(chosen('victim'), state, ctx)).toMatchObject({
+      ok: false,
+      reason: 'UNBOUND_REF',
+    });
+    // The wrong key is just as unbound as no key at all.
+    expect(resolveSeat(chosen('victim'), state, answered('other', '2'))).toMatchObject({
+      ok: false,
+      reason: 'UNBOUND_REF',
+    });
+  });
+
+  it('resolves to the answered seat', () => {
+    const state = makeState(3, 1);
+    const res = resolveSeat(chosen('victim'), state, answered('victim', '2'));
+    expect(res).toMatchObject({ ok: true, quantifier: 'every' });
+    expect(res.ok && res.seats).toEqual([2]);
+  });
+
+  it('is INVALID_SEAT for a stored answer that is not a seat — a blank must not read as seat 0', () => {
+    const state = makeState(3, 1);
+    for (const answer of ['', ' ', 'two', '1.5', '-1', '3']) {
+      expect(resolveSeat(chosen('victim'), state, answered('victim', answer))).toMatchObject({
+        ok: false,
+        reason: 'INVALID_SEAT',
+      });
+    }
+  });
+
+  it('is SEAT_ELIMINATED once the chosen seat is ousted between the answer and the read (§5.12)', () => {
+    const def = table(3);
+    const state = createPlayState(def, 'promptSeat');
+    eliminate(state, def, seat(2));
+    expect(resolveSeat(chosen('victim'), state, answered('victim', '2'))).toMatchObject({
+      ok: false,
+      reason: 'SEAT_ELIMINATED',
+    });
+  });
+});
