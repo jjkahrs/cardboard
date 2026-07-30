@@ -497,9 +497,13 @@ describe('AC: R4 — loop guard', () => {
    * the counters and the halt; HANG_MS stays purely as a hang detector, which still fails instantly
    * on a genuine infinite loop (it never terminates) and never on a loaded machine.
    */
-  // Unchanged from v1 at 2s. v2's raised maxEffects (50 000, was 10 000) makes fanOut the slowest
-  // case at ~520ms, so this keeps ~4x headroom — a hang detector, not a performance budget.
-  const HANG_MS = 2000;
+  // A hang detector, not a performance budget: a genuine infinite loop never terminates, so ANY
+  // finite bound catches it and the exact number only decides how much unrelated slowness is
+  // tolerated. Was 2s (~4x headroom over fanOut's ~520ms), which held for a plain `vitest run` but
+  // not under `--coverage`: v8 instrumentation pushes fanOut past 2.5s and made `npm run coverage`
+  // fail every time, on the one assertion the comment above promises will never flake on a loaded
+  // machine. Raised to keep that promise under instrumentation too.
+  const HANG_MS = 15_000;
 
   it('selfLoop halts with exactly maxDepth fire lines and one RULE_LOOP error', () => {
     const run = timed(selfLoop, ECHO);
@@ -2391,5 +2395,130 @@ describe('§5.9 — log verbosity (step 30)', () => {
     // Only EMISSION differs.
     expect(atLevel1.lines.some((l) => l.kind === 'criteria')).toBe(false);
     expect(atLevel3.lines.filter((l) => l.kind === 'criteria')).toHaveLength(2); // one per candidate
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §4.5/§4.6 — a choice effect whose `seat` ref does not name exactly one seat.
+//
+// Every prompt-raising test above uses a well-formed single-seat ref, so the resolution guards that
+// sit in front of `raise()` were never executed. They are the arms an author reaches by writing
+// "each player chooses a number" — a plausible thing to write and a thing this engine deliberately
+// refuses rather than asking N questions behind one interaction slot. §3.3's raise-before-mutate
+// means the refusal must also leave the cursor and the state exactly as they were.
+// ---------------------------------------------------------------------------
+
+describe('§4.5 — a choice effect whose seat ref resolves to more than one seat', () => {
+  const allSeats = { kind: 'all' as const };
+
+  const choiceEffects: [string, Effect][] = [
+    ['chooseNumber', { kind: 'chooseNumber', promptText: 'How many?', seat: allSeats, min: { kind: 'literal', value: 0 }, max: { kind: 'literal', value: 3 }, key: 'x' }],
+    ['chooseSeat', { kind: 'chooseSeat', promptText: 'Which player?', seat: allSeats, key: 's' }],
+    ['chooseMode', { kind: 'chooseMode', promptText: 'Which mode?', seat: allSeats, modes: [{ label: 'a', effects: [] }, { label: 'b', effects: [] }] }],
+  ];
+
+  it.each(choiceEffects)('%s refuses INVALID_SEAT instead of raising, and never suspends', (_kind, effect) => {
+    const def = mini({
+      ruleSets: [bump('rs_choice', 'e', { effects: [effect] })],
+      globalRuleSetIds: ['rs_choice'],
+    });
+    const state = createPlayState(def, 'seed-multiseat');
+
+    const { lines, result } = driveEvent(state, def, 'e', null);
+
+    expect(result.suspended).toBe(false);
+    expect(state.interaction).toBeNull();
+    const refused = lines.find((l) => l.effectKind === effect.kind && l.message.includes('resolved to 2 seats'));
+    expect(refused?.message).toContain('expected exactly one');
+    // `onRejection: 'continue'` — the refusal skips this one effect, it does not abort the rule.
+    expect(idle(state)).toEqual(IDLE);
+  });
+
+  it('a sealedChoice over an unresolvable seat ref is refused the same way', () => {
+    const effect: Effect = {
+      kind: 'sealedChoice',
+      choiceId: 'c1',
+      // `promptSeat` with nothing answered under that key — §4.1's UNBOUND_REF discipline.
+      seats: { kind: 'promptSeat', key: 'never_answered' },
+      options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }],
+    };
+    const def = mini({
+      ruleSets: [bump('rs_sealed', 'e', { effects: [effect] })],
+      globalRuleSetIds: ['rs_sealed'],
+    });
+    const state = createPlayState(def, 'seed-sealed-unbound');
+
+    const { lines, result } = driveEvent(state, def, 'e', null);
+
+    expect(result.suspended).toBe(false);
+    expect(state.interaction).toBeNull();
+    expect(lines.some((l) => l.message.includes('sealedChoice "c1"'))).toBe(true);
+    expect(idle(state)).toEqual(IDLE);
+  });
+
+  it("aborts the whole rule instead of skipping when onRejection is 'abort'", () => {
+    const effect: Effect = { kind: 'chooseSeat', promptText: 'Which player?', seat: allSeats, key: 's' };
+    const def = mini({
+      ruleSets: [
+        bump('rs_abort', 'e', {
+          onRejection: 'abort',
+          // The pool bump sits AFTER the unresolvable choice, so "aborted" vs "skipped" is visible.
+          effects: [effect, { kind: 'changePool', poolId: N, seat: null, op: 'add', amount: { kind: 'literal', value: 1 } }],
+        }),
+      ],
+      globalRuleSetIds: ['rs_abort'],
+    });
+    const state = createPlayState(def, 'seed-abort');
+
+    driveEvent(state, def, 'e', null);
+
+    expect(state.pools[N]).toBe(0); // the following effect never ran
+    expect(idle(state)).toEqual(IDLE);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §5.6 — more than one auto-transition eligible at the same settle point.
+//
+// The tiebreak (exitableTo order) is covered in `stateMachine.test.ts`, but the WARN line dispatch
+// emits when it has to make that choice was not: a designer whose machine is quietly ambiguous only
+// finds out from this line, so its absence would be silent.
+// ---------------------------------------------------------------------------
+
+describe('§5.6 — an ambiguous auto-transition warns while it takes the first', () => {
+  it('names every eligible target and which one it took', () => {
+    const alwaysTrue: CriteriaNode = { kind: 'criteria', left: { kind: 'literal', value: 0 }, op: '>=', right: { kind: 'literal', value: 0 } };
+    const node = (id: Id, over: Partial<MachineState>): MachineState => ({
+      id, name: id, enterableFrom: [], exitableTo: [], entryCriteria: null, transitionLabel: null, priority: 0, position: { x: 0, y: 0 }, ...over,
+    });
+    const A = 'state_a';
+    const B = 'state_b';
+    const C = 'state_c';
+    // A can exit to BOTH B and C, and both are entry-eligible — the ambiguity is in the definition,
+    // not in the runtime state, which is exactly the case a designer cannot see without the warning.
+    const ambiguous = mini({
+      machine: {
+        states: [
+          START_NODE,
+          END_NODE,
+          node(A, { exitableTo: [B, C] }),
+          node(B, { enterableFrom: [A], entryCriteria: alwaysTrue }),
+          node(C, { enterableFrom: [A], entryCriteria: alwaysTrue }),
+        ],
+        startStateId: START_STATE_ID,
+        endStateId: END_STATE_ID,
+      },
+    });
+    const state = createPlayState(ambiguous, 'seed-ambiguous');
+    state.currentStateId = A;
+
+    const { lines } = driveEvent(state, ambiguous, 'e', null);
+
+    const warn = lines.find((l) => l.level === 'warn' && l.kind === 'transition');
+    expect(warn?.message).toContain('2 transitions eligible');
+    expect(warn?.message).toContain(B);
+    expect(warn?.message).toContain(C);
+    expect(warn?.message).toContain('exitableTo order');
+    expect(state.currentStateId).toBe(B); // first in `exitableTo`, not last-wins
   });
 });

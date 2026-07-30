@@ -20,16 +20,21 @@ import {
   type CriteriaNode,
   type EngineInput,
   type GameDefinition,
+  type Id,
   type LogLine,
   type PlayAction,
   type PlayState,
   type PriorityWindow,
   type PlayZone,
   type RuleSet,
+  type SeatId,
   type SeatRef,
   type StepResult,
+  type TriggerContext,
 } from './types';
+import { ACTIVE_PLAYER_POOL_ID } from './types';
 import { step } from './dispatch';
+import { advancePriority, passPriority, resolveWindowOrder } from './priority';
 import { createPlayState } from './setup';
 import { resolveSeat } from './seats';
 import { END_NODE, FIXTURE_UPDATED_AT, START_NODE } from '../test/fixtures/empty';
@@ -657,5 +662,227 @@ describe('§9.4(b) seat-elimination determinism — mid-window vs. between-trans
     const beforeElim0A = resolveSeat(relativeFrom(0, -1), stateA, triggeringCtx);
     const beforeElim0B = resolveSeat(relativeFrom(0, -1), stateB, triggeringCtx);
     expect(beforeElim0A).toEqual(beforeElim0B);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §4.6 — `resolveWindowOrder`'s failure arms, and the two `start` modes the driver-level tests above
+// never reach.
+//
+// Everything above drives whole transactions, which can only ever exercise the arms a WELL-FORMED
+// definition takes: `start: 'active'` with a live active player, and `controllerOfAction` with a
+// controller actually attached. The rejections are what a designer hits while authoring — a window
+// on `triggeringSeat` opened from a rule with no triggering seat, a `controllerOfAction` window
+// authored onto a standalone `openPriority`, a start seat ousted between push and open — so they get
+// direct unit coverage here rather than a contrived multi-transaction setup.
+// ---------------------------------------------------------------------------
+
+describe('§4.6 — resolveWindowOrder start modes and their rejections', () => {
+  const ctxWith = (seat: SeatId | null): TriggerContext => ({
+    triggeringCardId: null,
+    zoneKey: null,
+    triggeringSeat: seat,
+    promptAnswers: {},
+    sourceCardId: null,
+  });
+
+  /** A settled 3-seat state; `resolveWindowOrder` reads only `seatOrder` and the activePlayer pool. */
+  function threeSeats(): PlayState {
+    return createPlayState(defNoResponder(3, winMtg()), 'seed-order');
+  }
+
+  const winTriggering = (over: Partial<PriorityWindow> = {}): PriorityWindow =>
+    winMtg({ start: 'triggeringSeat', ...over });
+
+  it("start 'triggeringSeat' walks the ring from the triggering seat", () => {
+    const state = threeSeats();
+    const res = resolveWindowOrder(winTriggering(), state, ctxWith(1), null);
+    expect(res).toEqual({ ok: true, order: [1, 2, 0] });
+  });
+
+  it("start 'triggeringSeat' respects direction and includeStart like every other mode", () => {
+    const state = threeSeats();
+    const res = resolveWindowOrder(
+      winTriggering({ direction: 'backward', includeStart: false }),
+      state,
+      ctxWith(1),
+      null
+    );
+    expect(res).toEqual({ ok: true, order: [0, 2] });
+  });
+
+  it("start 'triggeringSeat' is UNBOUND_REF when nothing bound a triggering seat", () => {
+    const state = threeSeats();
+    const res = resolveWindowOrder(winTriggering(), state, ctxWith(null), null);
+    expect(res).toMatchObject({ ok: false, reason: 'UNBOUND_REF' });
+  });
+
+  it("start 'triggeringSeat' is SEAT_ELIMINATED when that seat has been ousted", () => {
+    const state = threeSeats();
+    state.seatOrder = state.seatOrder.filter((s) => s !== 1);
+    state.eliminated.push(1);
+    const res = resolveWindowOrder(winTriggering(), state, ctxWith(1), null);
+    expect(res).toMatchObject({ ok: false, reason: 'SEAT_ELIMINATED' });
+  });
+
+  it("start 'controllerOfAction' is MISSING_REFERENT with no action attached — it does not guess a seat", () => {
+    const state = threeSeats();
+    const res = resolveWindowOrder(winBlock(), state, ctxWith(0), null);
+    expect(res).toMatchObject({ ok: false, reason: 'MISSING_REFERENT' });
+  });
+
+  it("start 'controllerOfAction' is SEAT_ELIMINATED when the controller has been ousted", () => {
+    const state = threeSeats();
+    state.seatOrder = state.seatOrder.filter((s) => s !== 2);
+    state.eliminated.push(2);
+    const res = resolveWindowOrder(winBlock(), state, ctxWith(0), 2);
+    expect(res).toMatchObject({ ok: false, reason: 'SEAT_ELIMINATED' });
+  });
+
+  it("start 'active' is INVALID_SEAT when activePlayer names no live seat", () => {
+    const state = threeSeats();
+    state.pools[ACTIVE_PLAYER_POOL_ID] = 99;
+    const res = resolveWindowOrder(winMtg(), state, ctxWith(0), null);
+    expect(res).toMatchObject({ ok: false, reason: 'INVALID_SEAT' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The defensive arms of the frame body and the pass action. Each is unreachable from a well-formed
+// definition BY DESIGN (delete-protection keeps a live window from being deleted; nothing pops the
+// frame holding `state.interaction`) — but each is a named, non-throwing failure rather than a
+// crash, and that promise is only worth something if it is tested.
+// ---------------------------------------------------------------------------
+
+describe('§5.5 — defensive arms: a dangling window, and passing with nothing to pass on', () => {
+  /** Drives to a fresh, not-yet-advanced `priority` frame and hands it back with its state. */
+  function atOpenWindow(): { state: PlayState; d: GameDefinition; lines: LogLine[] } {
+    const d = defOneResponder(2, winMtg());
+    const state = createPlayState(d, 'seed-defensive');
+    state.playerPools[CAN_RESPOND][0] = true;
+    const lines: LogLine[] = [];
+    stepUntilPriority(state, d, lines, { kind: 'fireEvent', name: 'doAnnounce', seat: 0 });
+    return { state, d, lines };
+  }
+
+  it('a priority frame whose window is gone from the definition pops with an error line, and does not throw', () => {
+    const { state, d } = atOpenWindow();
+    const frame = priorityFrame(state);
+    const depth = state.stack.length;
+
+    const lines: LogLine[] = [];
+    const result = advancePriority(frame, state, { ...d, priorityWindows: [] }, lines);
+
+    expect(result).toMatchObject({ done: false, suspended: false });
+    expect(state.stack).toHaveLength(depth - 1); // popped, not left spinning
+    expect(lines[0].level).toBe('error');
+    expect(lines[0].message).toContain(`Priority window "${WIN_MTG}" no longer exists`);
+  });
+
+  it('passPriority with no interaction open is rejected and ends the transaction', () => {
+    const d = defOneResponder(2, winMtg());
+    const state = createPlayState(d, 'seed-nopass');
+    const lines: LogLine[] = [];
+
+    const result = passPriority(state, d, lines);
+
+    expect(result).toMatchObject({ done: true, suspended: false });
+    expect(lines[0].level).toBe('reject');
+    expect(lines[0].message).toContain('no priority interaction is open');
+  });
+
+  it('passPriority with a priority interaction but no priority frame stays suspended rather than corrupting the stack', () => {
+    const { state, d, lines } = atOpenWindow();
+    // Advance once to actually raise the interaction, then remove the frame underneath it — the
+    // combination nothing in the engine produces, which is exactly why the guard exists.
+    advancePriority(priorityFrame(state), state, d, lines);
+    expect(state.interaction?.kind).toBe('priority');
+    state.stack = state.stack.filter((f) => f.kind !== 'priority');
+
+    const out: LogLine[] = [];
+    const result = passPriority(state, d, out);
+
+    expect(result).toMatchObject({ done: true, suspended: true });
+    expect(out[0].level).toBe('error');
+    expect(out[0].message).toContain('the priority window is gone');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §4.5/§4.6 — `openPriority`: a window with NO pending action attached.
+//
+// Every window above is opened by `announceAction`, so it always has a controller to resolve against
+// and always has an action to feed `resolveOnClose`. The standalone form is the other half of §4.6,
+// and it is where a `controllerOfAction` window has nothing to mean.
+// ---------------------------------------------------------------------------
+
+describe('§4.5 — openPriority with no action attached', () => {
+  const RS_OPEN = 'rs_open';
+
+  function defOpen(windows: PriorityWindow[], windowId: Id): GameDefinition {
+    return def(
+      2,
+      [{ ...baseRule, id: RS_OPEN, name: 'Open', trigger: 'doAnnounce', effects: [{ kind: 'openPriority', window: windowId }] }],
+      windows
+    );
+  }
+
+  it('rejects a `controllerOfAction` window rather than opening one with a guessed start seat', () => {
+    const d = defOpen([winBlock()], WIN_BLOCK);
+    const state = createPlayState(d, 'seed-open-reject');
+
+    const run = drive(state, d, { kind: 'fireEvent', name: 'doAnnounce', seat: 0 });
+
+    expect(run.result.done).toBe(true);
+    expect(state.stack.some((f) => f.kind === 'priority')).toBe(false); // nothing was pushed
+    // `reject()` logs at ERROR level — an unopenable window is a definition fault, not a rule that
+    // merely declined to apply.
+    const rejected = run.lines.find((l) => l.message.includes('controllerOfAction'));
+    expect(rejected?.level).toBe('error');
+    expect(rejected?.message).toContain('requires an announced action; none is attached');
+  });
+
+  it('opens and closes a standalone window without trying to resolve an action on the way out', () => {
+    const d = defOpen([winMtg()], WIN_MTG);
+    const state = createPlayState(d, 'seed-open-ok');
+
+    const run = drive(state, d, { kind: 'fireEvent', name: 'doAnnounce', seat: 0 });
+
+    expect(run.result.done).toBe(true);
+    expect(run.lines.some((l) => l.message.includes('Priority window "MTG Priority" opened'))).toBe(true);
+    // No responder anywhere, so the round collapses; with `actionId === null` the close must NOT push
+    // a `resolve` frame, and the transaction ends with an empty stack rather than a stuck one.
+    expect(state.stack).toHaveLength(0);
+    expect(state.actionStack).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §5.8 — activating out of turn while a window is open.
+//
+// `activateRule`'s seat gate only has something to compare against when a `priority` interaction is
+// live, so it is unreachable from `activation.test.ts`'s windowless fixtures and belongs here.
+// ---------------------------------------------------------------------------
+
+describe('§5.8 — a seat that is not the one being offered priority cannot activate', () => {
+  it('rejects NOT_ACTIVATABLE and names which seat actually holds priority', () => {
+    const d = defOneResponder(2, winMtg());
+    const state = createPlayState(d, 'seed-wrong-seat');
+    state.playerPools[CAN_RESPOND][0] = true;
+    state.playerPools[CAN_RESPOND][1] = true; // seat 1 COULD respond — the refusal is about turn, not legality
+
+    drive(state, d, { kind: 'fireEvent', name: 'doAnnounce', seat: 0 });
+    const offered = state.interaction;
+    if (offered?.kind !== 'priority') throw new Error('expected a priority interaction');
+    expect(offered.seat).toBe(0);
+
+    const run = drive(state, d, { kind: 'activate', ruleId: RS_RESPOND, cardId: null, seat: 1 });
+
+    const rejected = run.lines.find((l) => l.message.includes('not currently offered priority'));
+    expect(rejected?.message).toContain('seat 1');
+    expect(rejected?.message).toContain('(seat 0 is)');
+    // The window is untouched — seat 0 still holds the offer it was given.
+    expect(state.interaction).toMatchObject({ kind: 'priority', seat: 0 });
+    expect(state.actionStack).toHaveLength(1); // no response was announced
   });
 });

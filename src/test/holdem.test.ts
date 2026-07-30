@@ -3,11 +3,12 @@
  * setup, and EMITTED to `samples/texas-holdem.json`.
  *
  * The emit lives here rather than in a `scripts/*.mjs` generator because the definition is authored
- * in TypeScript and this repo has no TS runner outside vitest. `npm test` is therefore also how the
- * sample is regenerated: change `holdem.ts`, run the tests, commit the JSON that falls out.
+ * in TypeScript and this repo has no TS runner outside vitest. A plain `npm test` only ASSERTS the
+ * committed JSON still matches (writing on every run dirtied the working tree); `npm run samples`
+ * regenerates. Same `WRITE_*` env gate `parity.test.ts` already uses.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -258,9 +259,18 @@ describe('the board and the button', () => {
 });
 
 describe('the emitted sample file', () => {
-  it('writes samples/texas-holdem.json', () => {
-    mkdirSync(join(process.cwd(), 'samples'), { recursive: true });
-    writeFileSync(SAMPLE_PATH, `${exportJson(holdem)}\n`, 'utf8');
-    expect(importJson(exportJson(holdem)).ok).toBe(true);
+  it('matches samples/texas-holdem.json (WRITE_SAMPLES=1 to regenerate)', () => {
+    const json = `${exportJson(holdem)}\n`;
+    if (process.env.WRITE_SAMPLES) {
+      mkdirSync(join(process.cwd(), 'samples'), { recursive: true });
+      writeFileSync(SAMPLE_PATH, json, 'utf8');
+    } else {
+      // Drift guard, not a regeneration — a test run must leave the working tree clean.
+      expect(
+        readFileSync(SAMPLE_PATH, 'utf8'),
+        'samples/texas-holdem.json is stale — run `npm run samples`'
+      ).toBe(json);
+    }
+    expect(importJson(json).ok).toBe(true);
   });
 });

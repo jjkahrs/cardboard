@@ -4,8 +4,8 @@
  *
  * The emit lives here rather than in a `scripts/*.mjs` generator for the reason `holdem.test.ts`
  * gives: the definition is authored in TypeScript and this repo has no TS runner outside vitest.
- * `npm test` is therefore also how the sample is regenerated — change `mtg.ts`, run the tests, commit
- * the JSON that falls out.
+ * A plain `npm test` only ASSERTS the committed JSON still matches (writing on every run dirtied the
+ * working tree); `npm run samples` regenerates. Same `WRITE_*` env gate `parity.test.ts` already uses.
  *
  * MTG12 is an acceptance criterion about PLAYING, so nearly everything below drives the real
  * dispatcher: a definition that validates but cannot be played would prove nothing. Each of v4's
@@ -13,7 +13,7 @@
  * reason §6 asked for this sample rather than a demo.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -721,9 +721,15 @@ describe('the v4 primitives the pool exists to prove', () => {
 });
 
 describe('the emitted sample file', () => {
-  it('writes samples/magic.json', () => {
-    mkdirSync(join(process.cwd(), 'samples'), { recursive: true });
-    writeFileSync(SAMPLE_PATH, `${exportJson(mtg)}\n`, 'utf8');
-    expect(importJson(exportJson(mtg)).ok).toBe(true);
+  it('matches samples/magic.json (WRITE_SAMPLES=1 to regenerate)', () => {
+    const json = `${exportJson(mtg)}\n`;
+    if (process.env.WRITE_SAMPLES) {
+      mkdirSync(join(process.cwd(), 'samples'), { recursive: true });
+      writeFileSync(SAMPLE_PATH, json, 'utf8');
+    } else {
+      // Drift guard, not a regeneration — a test run must leave the working tree clean.
+      expect(readFileSync(SAMPLE_PATH, 'utf8'), 'samples/magic.json is stale — run `npm run samples`').toBe(json);
+    }
+    expect(importJson(json).ok).toBe(true);
   });
 });

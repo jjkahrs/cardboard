@@ -23,6 +23,12 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+      // Every exhaustive `switch` in the engine groups the no-op kinds and annotates WHY each one is
+      // a no-op (see `walkSeatRef`/`walkCardRef` in definitionStore.ts). `no-fallthrough` exempts
+      // empty cases by default but NOT ones with a comment between the labels, so the house style
+      // was an error and the fix would have been to delete the comments. The rule still reports the
+      // bug it exists for — a case with statements falling into the next one.
+      'no-fallthrough': ['error', { allowEmptyCase: true }],
     },
   },
 

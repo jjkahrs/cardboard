@@ -25,6 +25,7 @@ import type {
   InsertPosition,
   LogLine,
   PlayState,
+  TargetSelector,
   TriggerContext,
 } from './types';
 import {
@@ -35,6 +36,7 @@ import {
   DECK,
   DISCARD,
   duel,
+  FIRST_BLOOD,
   GRUNT,
   HAND,
   HP,
@@ -1579,5 +1581,169 @@ describe('openPriority — wiring (§8 step 24)', () => {
       expect(frame.cursor).toBe(0);
       expect(frame.consecutivePasses).toBe(0);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §5.3's other half — the CONSTRAINT arm of every target-bearing kind.
+//
+// The suite above is thorough about the SHORTFALL arm (fewer cards than asked for is ordinary play)
+// and about each kind's success path. The rejection arm of each kind — "refuse the whole batch,
+// mutate nothing" — was almost entirely untested, one uncovered pair per effect kind. The file
+// header calls this asymmetry the easy one to collapse, so each row below asserts BOTH halves of it:
+// the reject reason, and that the state is byte-identical afterwards.
+// ---------------------------------------------------------------------------
+
+/** A structural snapshot — anything a partially-applied effect would disturb. */
+const snapshot = (state: PlayState) =>
+  JSON.stringify({ cards: state.cards, zones: state.zones, pools: state.pools, playerPools: state.playerPools });
+
+const promptFor = (from: TargetSelector): TargetSelector => ({
+  kind: 'prompt',
+  from,
+  count: lit(1),
+  promptText: 'Pick a card',
+});
+
+const allOnField: TargetSelector = { kind: 'allInZone', zone: { zoneId: BATTLEFIELD, seat: null } };
+
+/** One of every effect kind that carries a `TargetSelector`, built around the selector given. */
+const targetBearing = (target: TargetSelector): [string, Effect][] => [
+  ['moveCards', { kind: 'moveCards', target, to: { zoneId: DISCARD, seat: seat(0) }, position: 'top' }],
+  ['setCardIndex', { kind: 'setCardIndex', target, indexId: POWER, op: 'add', amount: lit(1) }],
+  ['flipCard', { kind: 'flipCard', target, to: 'faceDown' }],
+  ['rotateCard', { kind: 'rotateCard', target, to: 'rotated' }],
+  ['destroyCards', { kind: 'destroyCards', target }],
+  ['setTag', { kind: 'setTag', target, tag: 'marked', on: true }],
+  ['attach', { kind: 'attach', target, host: { kind: 'triggering' } }],
+  ['detach', { kind: 'detach', target }],
+  ['setController', { kind: 'setController', target, seat: seat(1) }],
+];
+
+describe('§5.3 — an unanswered prompt rejects the whole effect, for every target-bearing kind', () => {
+  it.each(targetBearing(promptFor(allOnField)))(
+    '%s rejects AWAITING_PROMPT and mutates nothing',
+    (_kind, effect) => {
+      deal(h.state, FIELD, 3);
+      const before = snapshot(h.state);
+
+      const result = applyEffect(effect, h.ec);
+
+      expect(result).toMatchObject({ ok: false, reason: 'AWAITING_PROMPT' });
+      expect(snapshot(h.state)).toBe(before);
+    }
+  );
+});
+
+describe('§5.3 — one dead target voids the whole LIVE batch, for every target-bearing kind', () => {
+  // The atomicity half of the asymmetry, and deliberately the LIVE path: `resolveTargets` fails the
+  // whole batch on one dead id. The FROZEN path (an announced action) is the lenient one — it skips
+  // the dead member and shrinks the batch — and is covered in `pending.test.ts`, not here. The
+  // per-kind `!state.cards[id]` loops downstream of both are belt-and-braces duplicates of the
+  // frozen filter's own check and are not reachable from either path in one pass.
+  it.each(targetBearing(allOnField))('%s rejects TARGET_GONE and mutates nothing', (_kind, effect) => {
+    const ids = deal(h.state, FIELD, 3);
+    // The middle card is gone from `state.cards` but still listed in the zone — exactly the state an
+    // earlier effect in the same RuleSet leaves behind. Plan-then-mutate means NEITHER survivor is
+    // touched, not "two of three applied".
+    delete h.state.cards[ids[1]];
+    const before = snapshot(h.state);
+
+    const result = applyEffect(effect, h.ec);
+
+    expect(result).toMatchObject({ ok: false, reason: 'TARGET_GONE' });
+    expect(snapshot(h.state)).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The scalar rejections — a ref that resolves to the wrong SHAPE rather than to a dead card.
+// ---------------------------------------------------------------------------
+
+describe('§5.9 — a zone or amount ref that resolves to the wrong number or type of value', () => {
+  it('rejects a zone ref that resolves to more than one seat, rather than picking one', () => {
+    const before = snapshot(h.state);
+    const result = applyEffect(
+      { kind: 'drawCards', from: { zoneId: DECK, seat: { kind: 'all' } }, to: { zoneId: HAND, seat: seat(0) }, count: lit(1) },
+      h.ec
+    );
+
+    expect(result).toMatchObject({ ok: false, reason: 'INVALID_SEAT' });
+    expect(messages(h.lines)).toContain('expected exactly one');
+    expect(snapshot(h.state)).toBe(before);
+  });
+
+  it('rejects an amount ref that resolves to more than one value', () => {
+    const before = snapshot(h.state);
+    const result = applyEffect(
+      {
+        kind: 'drawCards',
+        from: { zoneId: DECK, seat: seat(0) },
+        to: { zoneId: HAND, seat: seat(0) },
+        count: { kind: 'pool', poolId: HP, seat: { kind: 'all' } },
+      },
+      h.ec
+    );
+
+    expect(result).toMatchObject({ ok: false, reason: 'TYPE_MISMATCH' });
+    expect(messages(h.lines)).toContain('expected exactly one');
+    expect(snapshot(h.state)).toBe(before);
+  });
+
+  it('rejects a draw count that resolves to a boolean rather than coercing it', () => {
+    const result = applyEffect(
+      {
+        kind: 'drawCards',
+        from: { zoneId: DECK, seat: seat(0) },
+        to: { zoneId: HAND, seat: seat(0) },
+        count: { kind: 'pool', poolId: FIRST_BLOOD, seat: null },
+      },
+      h.ec
+    );
+
+    expect(result).toMatchObject({ ok: false, reason: 'TYPE_MISMATCH' });
+    expect(messages(h.lines)).toContain('boolean');
+  });
+
+  it('rejects a createCard count that resolves to a boolean', () => {
+    const result = applyEffect(
+      {
+        kind: 'createCard',
+        templateId: GRUNT,
+        zone: { zoneId: BATTLEFIELD, seat: null },
+        position: 'top',
+        count: { kind: 'pool', poolId: FIRST_BLOOD, seat: null },
+      },
+      h.ec
+    );
+
+    expect(result).toMatchObject({ ok: false, reason: 'TYPE_MISMATCH' });
+    expect(messages(h.lines)).toContain('boolean');
+  });
+
+  it('refuses to write an integer op onto a pool currently holding a boolean', () => {
+    // Only reachable by corrupting the runtime value out from under the declared `GameValue` — the
+    // point is that the write REFUSES rather than producing `true + 1`.
+    h.state.playerPools[HP][0] = true as unknown as number;
+
+    const result = applyEffect({ kind: 'changePool', poolId: HP, seat: seat(0), op: 'add', amount: lit(1) }, h.ec);
+
+    expect(result.ok).toBe(false);
+    expect(messages(h.lines)).toContain('declared an integer');
+    expect(h.state.playerPools[HP][0]).toBe(true);
+  });
+
+  it('rejects setCardIndex when the instance carries no value for that index', () => {
+    const [id] = deal(h.state, FIELD, 1);
+    h.state.cards[id].templateId = GRUNT;
+    delete h.state.cards[id].indexValues[POWER];
+
+    const result = applyEffect(
+      { kind: 'setCardIndex', target: allOnField, indexId: POWER, op: 'add', amount: lit(1) },
+      h.ec
+    );
+
+    expect(result).toMatchObject({ ok: false, reason: 'MISSING_REFERENT' });
+    expect(messages(h.lines)).toContain('index has no value on this instance');
   });
 });

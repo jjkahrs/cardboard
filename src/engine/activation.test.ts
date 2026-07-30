@@ -800,3 +800,118 @@ describe('v4 §4.5 — a cost paid as a response inside a priority window', () =
     expect(state.playerPools[ATTACKERS][0]).toBe(1); // and the ability ran
   });
 });
+
+// ---------------------------------------------------------------------------
+// The definition changing UNDER a suspended activation.
+//
+// Not a hypothetical in this app: a suspended playtest and the authoring screens share one
+// `definitionStore`, so a tester can answer a cost prompt after having edited the very rule that
+// asked. Delete-protection stops the common cases, but every one of these arms is written as a
+// named, non-throwing failure, and that promise is only worth something if it is exercised.
+// ---------------------------------------------------------------------------
+
+describe('§5.8 — a cost suspended mid-question, resumed against a changed definition', () => {
+  const OTHER = 'hand_other';
+
+  /** cost = [pool −2, moveCards(prompt over seat 0's hand)] — suspends on the prompt, spends nothing. */
+  const promptingCost: Effect[] = [
+    { kind: 'changePool', poolId: POOL, seat: triggeringSeat, op: 'subtract', amount: lit(2) },
+    {
+      kind: 'moveCards',
+      target: {
+        kind: 'prompt',
+        from: { kind: 'allInZone', zone: { zoneId: HAND, seat: { kind: 'seat', index: 0 } } },
+        count: lit(1),
+        promptText: 'Discard a card',
+      },
+      to: { zoneId: BATTLEFIELD, seat: null },
+      position: 'top',
+    },
+  ];
+
+  /** Suspends an activation on its cost prompt and hands back the state plus the def it started under. */
+  function suspended(): { state: PlayState; gameDef: GameDefinition } {
+    const gameDef = def([rsAbility({ costCheck: null, cost: promptingCost })], null);
+    const state = emptyBoard(gameDef);
+    place(state, gameDef, HAND0, BLANK, TARGET_CARD);
+    place(state, gameDef, HAND0, BLANK, OTHER);
+    state.playerPools[POOL][0] = 2;
+
+    const { result } = dispatchActivate(state, gameDef, 0);
+    expect(result.suspended).toBe(true);
+    expect(state.stack.map((f) => f.kind)).toEqual(['activation']);
+    return { state, gameDef };
+  }
+
+  /** Answers the open prompt against `gameDef` — deliberately allowed to differ from the one that asked. */
+  function answerAgainst(state: PlayState, gameDef: GameDefinition, chosen: string[]): LogLine[] {
+    const lines: LogLine[] = [];
+    let result = step(state, { kind: 'action', action: { kind: 'answerPrompt', chosen }, override: false }, lines, gameDef);
+    let n = 0;
+    while (!result.done) {
+      if (++n > 100_000) throw new Error('answer driver runaway');
+      result = step(state, CONTINUE, lines, gameDef);
+    }
+    return lines;
+  }
+
+  it('pops and says so when the rule has been deleted outright', () => {
+    const { state } = suspended();
+    const without: GameDefinition = { ...def([], null) };
+
+    const lines = answerAgainst(state, without, [OTHER]);
+
+    expect(lines.some((l) => l.level === 'error' && l.message.includes('no longer exists in this definition'))).toBe(true);
+    expect(state.stack).toHaveLength(0); // popped, not left spinning
+    expect(state.playerPools[POOL][0]).toBe(2); // nothing spent
+  });
+
+  it('rejects NOT_ACTIVATABLE when the rule survives but is no longer activatable', () => {
+    const { state } = suspended();
+    const disarmed = def([{ ...rsAbility({ costCheck: null, cost: promptingCost }), activation: null }], null);
+
+    const lines = answerAgainst(state, disarmed, [OTHER]);
+
+    expect(lines.some((l) => l.message.includes('no longer an activatable rule'))).toBe(true);
+    expect(state.stack).toHaveLength(0);
+    expect(state.playerPools[POOL][0]).toBe(2);
+  });
+
+  it('rejects COST_UNPAYABLE when the edited cost can no longer be frozen, with nothing spent', () => {
+    const { state } = suspended();
+    // The same layer-(ii) re-check §9.5 edge case 12 covers on the un-suspended path, now on resume:
+    // the frame is popped and the whole cost is discarded rather than half-applied.
+    const smuggled = def(
+      [rsAbility({ costCheck: null, cost: [{ kind: 'chooseMode', promptText: 'X', seat: triggeringSeat, modes: [] }] })],
+      null
+    );
+
+    const lines = answerAgainst(state, smuggled, [OTHER]);
+
+    expect(lines.some((l) => l.message.startsWith('COST_UNPAYABLE'))).toBe(true);
+    expect(state.stack).toHaveLength(0);
+    expect(state.playerPools[POOL][0]).toBe(2);
+    expect(state.zones[HAND0].cardIds).toEqual([TARGET_CARD, OTHER]);
+  });
+});
+
+describe('§5.8 — activating something that is not an activatable rule', () => {
+  it('rejects NOT_ACTIVATABLE for a rule id that does not exist at all', () => {
+    const gameDef = def([rsAbility()], 1);
+    const state = board(gameDef, 0);
+
+    const { lines } = dispatchActivate(state, gameDef, 0, null, false, 'rs_nonexistent');
+
+    expect(lines.some((l) => l.message.includes('not an activatable rule'))).toBe(true);
+  });
+
+  it('rejects NOT_ACTIVATABLE for a real rule that carries no `activation`', () => {
+    const inert: RuleSet = { ...baseRule, id: 'rs_inert', name: 'Inert', trigger: 'never', effects: [] };
+    const gameDef = def([rsAbility(), inert], 1);
+    const state = board(gameDef, 0);
+
+    const { lines } = dispatchActivate(state, gameDef, 0, null, false, 'rs_inert');
+
+    expect(lines.some((l) => l.message.includes('not an activatable rule'))).toBe(true);
+  });
+});
