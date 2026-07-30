@@ -622,7 +622,7 @@ export const StateMachineSchema = z.object({
 const GameDefinitionShape = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION),
   id: IdSchema,
-  name: z.string(),
+  name: z.string().min(1, 'Game name can’t be empty'),
   playerCount: z.number().int().min(1),
   pools: z.array(PointPoolSchema),
   zones: z.array(PlayZoneSchema),

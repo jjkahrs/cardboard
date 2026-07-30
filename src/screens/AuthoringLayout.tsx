@@ -3,7 +3,7 @@ import { Link, NavLink, Outlet, useParams } from 'react-router-dom';
 import { validateDefinition } from '../engine/schema';
 import type { GameDefinition } from '../engine/types';
 import { GAME_LEVEL, SURFACES, bucketErrors } from './surfaces';
-import { useDefinitionStore } from '../stores/definitionStore';
+import { useDefinitionStore, type EditResult } from '../stores/definitionStore';
 import { createAutosave, getGame, setLastOpenedGameId } from '../stores/persistence';
 import { downloadDefinition, readDefinitionFile } from './gameFile';
 import { ReplaceGame, type PendingReplace } from './ReplaceGame';
@@ -20,6 +20,7 @@ export function AuthoringLayout() {
   const { gameId } = useParams();
   const definition = useDefinitionStore((s) => s.definition);
   const setDefinition = useDefinitionStore((s) => s.setDefinition);
+  const setName = useDefinitionStore((s) => s.setName);
   const [status, setStatus] = useState<'loading' | 'ready' | 'missing' | 'invalid'>('loading');
   const [loadErrors, setLoadErrors] = useState<string[]>([]);
 
@@ -172,6 +173,7 @@ export function AuthoringLayout() {
       <Rail
         definition={definition}
         errors={errors}
+        onRename={setName}
         replace={{
           pending,
           problems: replaceErrors,
@@ -197,20 +199,91 @@ export function AuthoringLayout() {
 export function Rail({
   definition,
   errors,
+  onRename,
   replace,
 }: {
   definition: GameDefinition;
   errors: Record<string, string[]>;
+  /** Omitted when the rail is rendered without a store behind it — tests, and nothing else. */
+  onRename?: (name: string) => EditResult;
   /** Omitted when the rail is rendered without a game to replace — tests, and nothing else. */
   replace?: Omit<React.ComponentProps<typeof ReplaceGame>, 'gameName'>;
 }) {
   const gameErrors = errors[GAME_LEVEL] ?? [];
 
+  // Same shape as EntityList's inline rename, minus the per-row id: the title IS the control, so
+  // there is nowhere sensible to hang a separate Rename button in a rail this narrow.
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [renameError, setRenameError] = useState<string | null>(null);
+
+  const commitRename = () => {
+    if (onRename === undefined) return;
+    const result = onRename(draft.trim());
+    if (!result.ok) {
+      // Stay open: closing would discard what they typed and silently keep the old name. The
+      // `name: ` path prefix that every validation error carries is noise next to the one field
+      // it could possibly be about.
+      setRenameError(result.errors[0].replace(/^name: /, ''));
+      return;
+    }
+    setRenaming(false);
+    setRenameError(null);
+  };
+
   return (
     <nav className="cb-rail" aria-label="Authoring">
       {/* No "← Games" here: the header toolbar carries the way home on every route (AppFrame), and
           two links to `/` a few centimetres apart is one link too many. */}
-      <h2 className="cb-rail__title">{definition.name}</h2>
+      {renaming ? (
+        <div className="cb-rail__title cb-rail__rename">
+          <input
+            className="cb-input"
+            aria-label="Game name"
+            aria-invalid={renameError !== null}
+            autoFocus
+            // Selected on focus so typing replaces "Untitled game" rather than appending.
+            onFocus={(e) => e.target.select()}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitRename();
+              if (e.key === 'Escape') setRenaming(false);
+            }}
+          />
+          <button type="button" className="cb-btn" onClick={commitRename}>
+            Save
+          </button>
+          <button
+            type="button"
+            className="cb-btn"
+            data-variant="ghost"
+            onClick={() => setRenaming(false)}
+          >
+            Cancel
+          </button>
+          {renameError !== null && <span className="cb-error">{renameError}</span>}
+        </div>
+      ) : (
+        <h2 className="cb-rail__title">
+          {onRename === undefined ? (
+            definition.name
+          ) : (
+            <button
+              type="button"
+              className="cb-rail__title-edit"
+              aria-label={`Rename ${definition.name}`}
+              onClick={() => {
+                setDraft(definition.name);
+                setRenameError(null);
+                setRenaming(true);
+              }}
+            >
+              {definition.name}
+            </button>
+          )}
+        </h2>
+      )}
       {gameErrors.length > 0 && (
         <p className="cb-error" role="status">
           {gameErrors[0]}

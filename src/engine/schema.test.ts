@@ -163,6 +163,14 @@ describe('the definition fixture', () => {
   it('is valid', () => {
     expect(validateDefinition(valid)).toEqual([]);
   });
+
+  // The rail renames through this same gate, so a blank name has to fail here rather than in the
+  // one screen that happens to ask — an imported file can carry one too.
+  it('rejects a blank game name, naming the field', () => {
+    expect(validateDefinition({ ...valid, name: '' })).toEqual([
+      expect.stringMatching(/^name: .*empty/),
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------

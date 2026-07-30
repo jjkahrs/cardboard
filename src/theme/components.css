@@ -275,6 +275,19 @@
   overflow-wrap: anywhere;
 }
 
+/* The rail is one narrow column, so the field takes the full width and Save/Cancel wrap under it
+   rather than spilling out over the screen beside it. */
+.cb-rail__rename {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cb-s1);
+}
+
+.cb-rail__rename .cb-input {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
 .cb-rail__link {
   display: flex;
   align-items: center;
@@ -477,7 +490,10 @@
   margin-block-end: var(--cb-s3);
 }
 
-.cb-entity-list__name {
+/* The rail title doubles as its own rename trigger, so it takes the same transparent-button
+   reset — a chrome-styled button where a heading was reads as an action, not as the heading. */
+.cb-entity-list__name,
+.cb-rail__title-edit {
   flex: 1;
   padding: 0;
   background: none;

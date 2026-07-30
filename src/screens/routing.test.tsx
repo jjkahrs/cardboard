@@ -409,6 +409,49 @@ describe('the authoring rail', () => {
     await waitFor(async () => expect((await getGame('g1'))?.name).toBe('Renamed'));
   });
 
+  it('renames the game from the rail title, and persists it', async () => {
+    const user = userEvent.setup();
+    await seed({ id: 'g1', name: 'Duel of Wits' });
+    const { unmount } = at('/game/g1/pools');
+
+    await user.click(await screen.findByRole('button', { name: 'Rename Duel of Wits' }));
+    await user.clear(screen.getByRole('textbox', { name: 'Game name' }));
+    await user.type(screen.getByRole('textbox', { name: 'Game name' }), 'Skirmish{Enter}');
+
+    expect(await screen.findByRole('heading', { name: 'Skirmish' })).toBeInTheDocument();
+    unmount();
+    await waitFor(async () => expect((await getGame('g1'))?.name).toBe('Skirmish'));
+  });
+
+  it('refuses a blank name, keeping the editor open and the old name stored', async () => {
+    const user = userEvent.setup();
+    await seed({ id: 'g1', name: 'Duel of Wits' });
+    const { unmount } = at('/game/g1/pools');
+
+    await user.click(await screen.findByRole('button', { name: 'Rename Duel of Wits' }));
+    await user.clear(screen.getByRole('textbox', { name: 'Game name' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    const input = screen.getByRole('textbox', { name: 'Game name' });
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByText(/name.*empty/i)).toBeInTheDocument();
+    expect(useDefinitionStore.getState().definition.name).toBe('Duel of Wits');
+    unmount();
+    expect((await getGame('g1'))?.name).toBe('Duel of Wits');
+  });
+
+  it('drops the draft on Escape', async () => {
+    const user = userEvent.setup();
+    await seed({ id: 'g1', name: 'Duel of Wits' });
+    at('/game/g1/pools');
+
+    await user.click(await screen.findByRole('button', { name: 'Rename Duel of Wits' }));
+    await user.type(screen.getByRole('textbox', { name: 'Game name' }), 'Nope{Escape}');
+
+    expect(screen.queryByRole('textbox', { name: 'Game name' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Duel of Wits' })).toBeInTheDocument();
+  });
+
   it('does not write the game straight back just for opening it', async () => {
     const game = await seed({ id: 'g1', name: 'Duel of Wits' });
     const { unmount } = at('/game/g1/pools');
