@@ -6,7 +6,9 @@
 .cb-play {
   display: grid;
   grid-template-rows: auto 1fr auto;
-  block-size: 100vh;
+  /* Minus the app header (AppFrame): the table is overflow:hidden, so a full 100vh here would push
+     the bottom band off-screen with nothing to scroll it back. */
+  block-size: calc(100vh - var(--cb-topbar-h));
   overflow: hidden;
 }
 

@@ -208,9 +208,8 @@ export function Rail({
 
   return (
     <nav className="cb-rail" aria-label="Authoring">
-      <Link to="/" className="cb-rail__home">
-        ← Games
-      </Link>
+      {/* No "← Games" here: the header toolbar carries the way home on every route (AppFrame), and
+          two links to `/` a few centimetres apart is one link too many. */}
       <h2 className="cb-rail__title">{definition.name}</h2>
       {gameErrors.length > 0 && (
         <p className="cb-error" role="status">
@@ -241,7 +240,10 @@ export function Rail({
         );
       })}
 
-      <NavLink to="play" className="cb-rail__link">
+      {/* A button, not a rail link: `/play` is a sibling route, not a child of this layout, so the
+          rail never renders while it is current and the aria-current styling a rail link exists for
+          could never fire. It reads as the action it is, next to Export. */}
+      <NavLink to="play" className="cb-btn cb-rail__play">
         Play
       </NavLink>
 

@@ -57,10 +57,11 @@
 
 .cb-btn:hover:not(:disabled) {
   --cb-surface: var(--cb-kraft-50);
+  transform: rotate(var(--cb-jitter, 0deg)) scale(1.04);
 }
 
 .cb-btn:active:not(:disabled) {
-  transform: rotate(var(--cb-jitter, 0deg)) translateY(1px);
+  transform: rotate(var(--cb-jitter, 0deg)) translateY(1px) scale(1.04);
 }
 
 .cb-btn:disabled {
@@ -188,11 +189,40 @@
 
 /* ── App shell (§6.1) — persistent rail plus the routed outlet ───────────────────────────────── */
 
+/* ── Header toolbar ──────────────────────────────────────────────────────────────────────────────
+   Every route wears it (AppFrame). Height is the --cb-topbar-h token rather than intrinsic, because
+   the two viewport-sized layouts below subtract it. */
+.cb-topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--cb-s4);
+  block-size: var(--cb-topbar-h);
+  padding-inline: var(--cb-s4);
+  border-block-end: 2px dashed var(--cb-kraft-400);
+  background: var(--cb-kraft-100);
+}
+
+.cb-topbar__title {
+  font-size: 1.25em;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+/* Pushed to the far end; the title keeps the start. */
+.cb-topbar nav {
+  margin-inline-start: auto;
+}
+
+.cb-topbar__link {
+  color: var(--cb-fg);
+  padding: var(--cb-s1) var(--cb-s2);
+}
+
 .cb-shell {
   display: grid;
   grid-template-columns: minmax(11rem, max-content) 1fr;
   align-items: start;
-  min-block-size: 100vh;
+  min-block-size: calc(100vh - var(--cb-topbar-h));
 }
 
 .cb-screen {
@@ -239,11 +269,6 @@
   z-index: var(--cb-z-rail);
 }
 
-.cb-rail__home {
-  color: var(--cb-ink-700);
-  font-size: 0.85em;
-}
-
 .cb-rail__title {
   margin-block: var(--cb-s2) var(--cb-s3);
   font-size: 1.15em;
@@ -271,6 +296,20 @@
 
 .cb-rail__link:hover {
   background: var(--cb-kraft-100);
+}
+
+/* Play is a .cb-btn that happens to be a link: kill the anchor underline and centre it, so it and
+   Export below read as one stack of actions. */
+.cb-rail__play {
+  justify-content: center;
+  margin-block-start: var(--cb-s3);
+  text-decoration: none;
+}
+
+/* Export follows Play: same breathing room Replace gets below it, so the three actions are evenly
+   spaced instead of Play and Export sitting on the rail's tight link gap. */
+.cb-rail__play + .cb-btn {
+  margin-block-start: var(--cb-s2);
 }
 
 /* Replace-from-file sits under Export, and the confirm has to be readable in a narrow rail. */
@@ -363,6 +402,13 @@
 .cb-hint {
   color: var(--cb-ink-500);
   font-size: 0.85em;
+}
+
+/* A hint the screen itself owns is the section's blurb, and it was sitting flush against the panel
+   below it. Scoped to the direct child on purpose: the same class labels dozens of inline field
+   hints, which want to stay tight to what they describe. */
+.cb-screen > .cb-hint {
+  margin-block-end: var(--cb-s4);
 }
 
 /* ── Entity list (§6.2) ─────────────────────────────────────────────────────────────────────── */

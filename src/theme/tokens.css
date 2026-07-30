@@ -17,6 +17,8 @@
   --cb-s1:4px; --cb-s2:8px; --cb-s3:12px; --cb-s4:16px; --cb-s5:24px; --cb-s6:32px; --cb-s7:48px;
   --cb-jitter-sm:0.6deg; --cb-jitter-md:1.4deg; --cb-jitter-lg:2.5deg; --cb-jitter:0deg;
   --cb-card-w:132px; --cb-card-ar:5/7;
+  /* Fixed, not intrinsic: .cb-shell and .cb-play size against the viewport and subtract this. */
+  --cb-topbar-h:44px;
   --cb-rough:url(#cb-rough-md);
   --cb-font-marker:"Shantell Sans","Comic Sans MS","Segoe Print","Bradley Hand",cursive,sans-serif;
   --cb-z-table:0; --cb-z-zone:10; --cb-z-card:20; --cb-z-card-raised:30;
